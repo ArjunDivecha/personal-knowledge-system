@@ -1,0 +1,22 @@
+{
+  "run_id": "run_20251221_073340",
+  "triggered_by": "manual",
+  "started_at": "2025-12-21T07:33:40.504047",
+  "completed_at": "2025-12-21T07:38:21.944224",
+  "duration_seconds": 281.440177,
+  "status": "completed",
+  "conversations_total": 2822,
+  "conversations_new": 2819,
+  "conversations_parsed": 2822,
+  "conversations_filtered_in": 424,
+  "conversations_filtered_out": 2395,
+  "knowledge_entries_extracted": 23,
+  "project_entries_extracted": 17,
+  "entries_created": 40,
+  "entries_updated": 0,
+  "llm_input_tokens": 17843,
+  "llm_output_tokens": 18387,
+  "embedding_tokens": 1632,
+  "estimated_cost_usd": 0.32936664,
+  "errors": []
+}

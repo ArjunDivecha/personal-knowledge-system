@@ -1,0 +1,103 @@
+{
+  "run_id": "run_20251221_073128",
+  "triggered_by": "manual",
+  "started_at": "2025-12-21T07:31:28.426810",
+  "completed_at": "2025-12-21T07:31:38.650531",
+  "duration_seconds": 10.223721,
+  "status": "completed",
+  "conversations_total": 2822,
+  "conversations_new": 2819,
+  "conversations_parsed": 2822,
+  "conversations_filtered_in": 424,
+  "conversations_filtered_out": 2395,
+  "knowledge_entries_extracted": 0,
+  "project_entries_extracted": 0,
+  "entries_created": 0,
+  "entries_updated": 0,
+  "llm_input_tokens": 0,
+  "llm_output_tokens": 0,
+  "embedding_tokens": 0,
+  "estimated_cost_usd": 0.0,
+  "errors": [
+    {
+      "conv": "a9312a37-53ef-4a17-99af-a6dc57203206",
+      "error": "Error code: 404 - {'type': 'error', 'error': {'type': 'not_found_error', 'message': 'model: claude-sonnet-4-5-20250514'}, 'request_id': 'req_011CWKSbMd3dYsai3q1KBH65'}"
+    },
+    {
+      "conv": "48bec230-9b7d-44b0-8c48-cdba099537ef",
+      "error": "Error code: 404 - {'type': 'error', 'error': {'type': 'not_found_error', 'message': 'model: claude-sonnet-4-5-20250514'}, 'request_id': 'req_011CWKSbNJEEH5nfYoYusAtt'}"
+    },
+    {
+      "conv": "66c11bcd-e541-4808-b0b2-7b79809aef5f",
+      "error": "Error code: 404 - {'type': 'error', 'error': {'type': 'not_found_error', 'message': 'model: claude-sonnet-4-5-20250514'}, 'request_id': 'req_011CWKSbNz9f6m5Db5fL3mJS'}"
+    },
+    {
+      "conv": "cb463364-2430-4324-8dbf-caf8db31062d",
+      "error": "Error code: 404 - {'type': 'error', 'error': {'type': 'not_found_error', 'message': 'model: claude-sonnet-4-5-20250514'}, 'request_id': 'req_011CWKSbPgKoGWHKQcNGdtQ6'}"
+    },
+    {
+      "conv": "55bfcb05-239b-4dcb-a8d4-bab7d21ef93e",
+      "error": "Error code: 404 - {'type': 'error', 'error': {'type': 'not_found_error', 'message': 'model: claude-sonnet-4-5-20250514'}, 'request_id': 'req_011CWKSbQSU9FLHvMfq2AJfu'}"
+    },
+    {
+      "conv": "5f3f46dc-5c93-4a58-91ee-50ab09af1ae1",
+      "error": "Error code: 404 - {'type': 'error', 'error': {'type': 'not_found_error', 'message': 'model: claude-sonnet-4-5-20250514'}, 'request_id': 'req_011CWKSbR4RcKhbgsnv8VfeV'}"
+    },
+    {
+      "conv": "5ca0093b-5800-4668-9da4-bd756dadb4c1",
+      "error": "Error code: 404 - {'type': 'error', 'error': {'type': 'not_found_error', 'message': 'model: claude-sonnet-4-5-20250514'}, 'request_id': 'req_011CWKSbS5gvfi88JsmC7931'}"
+    },
+    {
+      "conv": "1138ba81-82bf-44ed-b080-ceb1ecbf6362",
+      "error": "Error code: 404 - {'type': 'error', 'error': {'type': 'not_found_error', 'message': 'model: claude-sonnet-4-5-20250514'}, 'request_id': 'req_011CWKSbSy2F9mQytrWJdsky'}"
+    },
+    {
+      "conv": "7b91cc53-a181-4735-878c-b08491dbfb36",
+      "error": "Error code: 404 - {'type': 'error', 'error': {'type': 'not_found_error', 'message': 'model: claude-sonnet-4-5-20250514'}, 'request_id': 'req_011CWKSbTfC7UvZeExV8WiPq'}"
+    },
+    {
+      "conv": "867c8219-b16b-4be1-a4bf-889ccd66cc5b",
+      "error": "Error code: 404 - {'type': 'error', 'error': {'type': 'not_found_error', 'message': 'model: claude-sonnet-4-5-20250514'}, 'request_id': 'req_011CWKSbUKscMAALPiU7iAjm'}"
+    },
+    {
+      "conv": "64802fe8-5201-42b4-8b8a-645e8d687a9c",
+      "error": "Error code: 404 - {'type': 'error', 'error': {'type': 'not_found_error', 'message': 'model: claude-sonnet-4-5-20250514'}, 'request_id': 'req_011CWKSbV3nUWDJqKNWwcdZ3'}"
+    },
+    {
+      "conv": "0a7aa1d3-c090-4fdd-9428-08ee091f7789",
+      "error": "Error code: 404 - {'type': 'error', 'error': {'type': 'not_found_error', 'message': 'model: claude-sonnet-4-5-20250514'}, 'request_id': 'req_011CWKSbVixahDtwgbFFBVm2'}"
+    },
+    {
+      "conv": "a3e7c376-6f4d-47bc-9f01-3133bea92d2e",
+      "error": "Error code: 404 - {'type': 'error', 'error': {'type': 'not_found_error', 'message': 'model: claude-sonnet-4-5-20250514'}, 'request_id': 'req_011CWKSbWQPhjSj3aFrXgT5s'}"
+    },
+    {
+      "conv": "3e0785a5-2299-40a5-80fe-1298a0f1a65f",
+      "error": "Error code: 404 - {'type': 'error', 'error': {'type': 'not_found_error', 'message': 'model: claude-sonnet-4-5-20250514'}, 'request_id': 'req_011CWKSbX3qCph6QqDBSvAaH'}"
+    },
+    {
+      "conv": "f6c1f4a6-ca89-45a0-add1-5711289ee589",
+      "error": "Error code: 404 - {'type': 'error', 'error': {'type': 'not_found_error', 'message': 'model: claude-sonnet-4-5-20250514'}, 'request_id': 'req_011CWKSbZ5sU3AEEr9Eu9jJj'}"
+    },
+    {
+      "conv": "506369c9-e84f-4aa1-b602-a01bb027349b",
+      "error": "Error code: 404 - {'type': 'error', 'error': {'type': 'not_found_error', 'message': 'model: claude-sonnet-4-5-20250514'}, 'request_id': 'req_011CWKSbZoXigwVaWEs1UbVR'}"
+    },
+    {
+      "conv": "8c67c2db-79e6-4544-9da8-ff7d3215ff69",
+      "error": "Error code: 404 - {'type': 'error', 'error': {'type': 'not_found_error', 'message': 'model: claude-sonnet-4-5-20250514'}, 'request_id': 'req_011CWKSbaaASZ2Xti48xXimU'}"
+    },
+    {
+      "conv": "fc361767-2d87-45b7-886b-ab6c3a11f5be",
+      "error": "Error code: 404 - {'type': 'error', 'error': {'type': 'not_found_error', 'message': 'model: claude-sonnet-4-5-20250514'}, 'request_id': 'req_011CWKSbbJa5A2pHHVwAhZwJ'}"
+    },
+    {
+      "conv": "4d759dba-70eb-4e6a-89b6-8e7968f89173",
+      "error": "Error code: 404 - {'type': 'error', 'error': {'type': 'not_found_error', 'message': 'model: claude-sonnet-4-5-20250514'}, 'request_id': 'req_011CWKSbbzVSu5ctsvtoQJcZ'}"
+    },
+    {
+      "conv": "c6875404-3cf5-4239-895c-13000d0a383e",
+      "error": "Error code: 404 - {'type': 'error', 'error': {'type': 'not_found_error', 'message': 'model: claude-sonnet-4-5-20250514'}, 'request_id': 'req_011CWKSbchQVWejdAZo9PvBm'}"
+    }
+  ]
+}

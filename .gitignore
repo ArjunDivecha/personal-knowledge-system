@@ -1,0 +1,45 @@
+# Environment files with secrets
+.env
+.dev.vars
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+eggs/
+*.egg
+.venv/
+venv/
+ENV/
+
+# Checkpoints (can be large, regenerated)
+distillation/checkpoints/
+
+# Node
+node_modules/
+.vercel/
+
+# Cloudflare
+.wrangler/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Archives (potentially large)
+archive/
+
+# Logs
+*.log
+

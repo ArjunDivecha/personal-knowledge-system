@@ -1,0 +1,37 @@
+# =============================================================================
+# KNOWLEDGE DISTILLATION PIPELINE - REQUIREMENTS
+# =============================================================================
+# Version: 1.0.0
+# Last Updated: December 2024
+#
+# PURPOSE:
+# Dependencies for the local Python distillation pipeline that processes
+# Claude and GPT conversation exports into structured knowledge entries.
+#
+# INSTALL:
+# pip install -r requirements.txt
+# =============================================================================
+
+# Upstash clients
+upstash-redis>=1.0.0
+upstash-vector>=0.3.0
+
+# LLM APIs
+anthropic>=0.18.0
+openai>=1.0.0
+
+# Data processing
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+
+# Utilities
+tiktoken>=0.5.0          # Token counting
+tqdm>=4.65.0             # Progress bars
+rich>=13.0.0             # Pretty console output
+
+# Parallel processing (standard library, no install needed)
+# concurrent.futures
+
+# Type checking (dev)
+mypy>=1.0.0
+
