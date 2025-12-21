@@ -1,205 +1,269 @@
-# Knowledge System
+# Personal Knowledge System
 
-A personal knowledge management system that distills AI chat histories (Claude, GPT) into structured, retrievable knowledge entries accessible via an MCP server during Claude conversations.
+A system that distills AI chat histories (Claude, ChatGPT) into structured, searchable knowledge entries. Access your accumulated insights, decisions, and learnings during future Claude conversations via MCP (Model Context Protocol).
+
+## What It Does
+
+1. **Distills** years of AI conversations into ~1000 structured knowledge entries
+2. **Stores** entries in Upstash Redis with semantic search via Upstash Vector
+3. **Exposes** knowledge through an MCP server (Cloudflare Workers)
+4. **Integrates** with Claude Desktop, iOS, and Web via MCP connector
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    LOCAL (M4 Max Mac)                       │
-├─────────────────────────────────────────────────────────────┤
-│  Dropbox Exports                 Python Distillation        │
-│  ├── Claude conversations.json   ├── Parse                  │
-│  └── GPT conversations.json      ├── Filter (score >= 3)    │
-│                                  ├── Extract (Claude API)   │
-│                                  ├── Merge                  │
-│                                  ├── Compress               │
-│                                  └── Index                  │
-└─────────────────────────────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    CLOUD STORAGE                            │
-├─────────────────────────────────────────────────────────────┤
-│  Upstash Redis                   Upstash Vector             │
-│  ├── Knowledge entries           └── Entry embeddings       │
-│  ├── Project entries                 (1536 dims)            │
-│  └── Thin index                                             │
-└─────────────────────────────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    VERCEL EDGE                              │
-├─────────────────────────────────────────────────────────────┤
-│  MCP Server (/mcp endpoint)                                 │
-│  ├── get_index()     - Returns thin index                   │
-│  ├── get_context()   - Returns entry summary                │
-│  ├── get_deep()      - Returns full entry                   │
-│  └── search()        - Semantic search                      │
-└─────────────────────────────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    CLAUDE PLATFORMS                         │
-├─────────────────────────────────────────────────────────────┤
-│  Desktop       iOS App        Web (claude.ai)               │
-│  └──────────── Claude Skill ──────────────┘                 │
-│                (Routing logic for when to call tools)       │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                      LOCAL (Your Machine)                        │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   Dropbox Exports              Python Distillation Pipeline     │
+│   ├── Claude (conversations.json)    ├── Parse exports          │
+│   └── ChatGPT (conversations.json)   ├── Filter (score ≥ 3)     │
+│                                      ├── Extract (Claude API)   │
+│                                      ├── Store + Embed          │
+│                                      └── Generate thin index    │
+│                                                                  │
+└──────────────────────────────┬──────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      UPSTASH (Cloud Storage)                     │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   Redis                           Vector                         │
+│   ├── knowledge:{id} entries      └── 3072-dim embeddings       │
+│   ├── project:{id} entries            (text-embedding-3-large)  │
+│   └── index:current (thin index)                                │
+│                                                                  │
+└──────────────────────────────┬──────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   CLOUDFLARE WORKERS (MCP Server)                │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   /sse endpoint (SSE transport for Claude MCP)                  │
+│   ├── get_index    → Returns overview of all topics/projects    │
+│   ├── get_context  → Returns summary for a specific topic       │
+│   ├── get_deep     → Returns full entry with provenance         │
+│   └── search       → Semantic search across all entries         │
+│                                                                  │
+└──────────────────────────────┬──────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      CLAUDE (All Platforms)                      │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   Desktop App    ←──┐                                           │
+│   iOS App        ←──┼── MCP Connector ── your-worker.workers.dev│
+│   claude.ai      ←──┘                                           │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ## Project Structure
 
 ```
 knowledge-system/
-├── distillation/           # Local Python pipeline
-│   ├── main.py             # CLI entry point
-│   ├── config.py           # Configuration
-│   ├── pipeline/           # Processing stages
-│   │   ├── parse.py        # Claude/GPT export parsing
-│   │   ├── filter.py       # Value scoring
-│   │   ├── extract.py      # LLM extraction
-│   │   ├── merge.py        # Entry merging
-│   │   ├── compress.py     # Compression/archiving
-│   │   └── index.py        # Index generation
-│   ├── prompts/            # LLM prompts
-│   ├── storage/            # Upstash clients
-│   ├── types/              # Data models
-│   └── utils/              # Helpers
+├── distillation/              # Python pipeline (runs locally)
+│   ├── run.py                 # Main entry point
+│   ├── config.py              # Configuration + env loading
+│   ├── pipeline/              # Processing stages
+│   │   ├── parse.py           # Parse Claude/GPT JSON exports
+│   │   ├── filter.py          # Score and filter conversations
+│   │   ├── extract.py         # LLM extraction with provenance
+│   │   ├── merge.py           # Merge logic (for incremental runs)
+│   │   ├── compress.py        # Archive old entries
+│   │   └── index.py           # Generate thin index
+│   ├── models/                # Data models (dataclasses)
+│   ├── prompts/               # LLM prompts for extraction
+│   ├── storage/               # Upstash Redis/Vector clients
+│   └── utils/                 # LLM + embedding wrappers
 │
-├── mcp-server/             # Vercel TypeScript server
-│   ├── api/mcp.ts          # Main API handler
-│   ├── src/
-│   │   ├── tools/          # MCP tool implementations
-│   │   ├── storage/        # Upstash clients
-│   │   └── types/          # TypeScript types
-│   └── vercel.json         # Deployment config
+├── cloudflare-mcp/            # MCP server (deployed)
+│   └── mcp-server/
+│       ├── src/index.ts       # Cloudflare Worker with MCP tools
+│       └── wrangler.jsonc     # Cloudflare config
 │
-├── skill/                  # Claude Skill
-│   ├── SKILL.md            # Routing instructions
-│   └── examples/           # Usage examples
+├── mcp-server/                # (Legacy) Vercel attempt - not used
 │
-└── docs/                   # PRDs and guides
+├── skill/                     # Claude Skill definition
+│   ├── SKILL.md               # Routing instructions for Claude
+│   └── examples/              # Example usage sessions
+│
+└── docs/                      # Design documents (PRDs)
 ```
 
 ## Quick Start
 
+### Prerequisites
+
+- Python 3.10+
+- Node.js 20+
+- Accounts: [Upstash](https://upstash.com), [Cloudflare](https://cloudflare.com), [Anthropic](https://anthropic.com), [OpenAI](https://openai.com)
+
 ### 1. Setup Upstash
 
-1. Create Redis database at [upstash.com](https://upstash.com)
-2. Create Vector index (1536 dimensions, cosine similarity)
-3. Copy credentials
+1. Create a **Redis** database at [console.upstash.com](https://console.upstash.com)
+2. Create a **Vector** index:
+   - Dimensions: **3072**
+   - Similarity: **Cosine**
+3. Copy the REST URLs and tokens
 
-### 2. Configure Environment
+### 2. Configure Local Environment
 
 ```bash
 cd distillation
 cp env.example .env
-# Edit .env with your credentials
 ```
 
-Required environment variables:
-- `UPSTASH_REDIS_REST_URL`
-- `UPSTASH_REDIS_REST_TOKEN`
-- `UPSTASH_VECTOR_REST_URL`
-- `UPSTASH_VECTOR_REST_TOKEN`
-- `ANTHROPIC_API_KEY`
-- `OPENAI_API_KEY`
-- `MCP_AUTH_TOKEN`
+Edit `.env` with your credentials:
 
-### 3. Install Dependencies
+```env
+# Upstash Redis
+UPSTASH_REDIS_REST_URL=https://your-redis.upstash.io
+UPSTASH_REDIS_REST_TOKEN=your_redis_token
+
+# Upstash Vector
+UPSTASH_VECTOR_REST_URL=https://your-vector.upstash.io
+UPSTASH_VECTOR_REST_TOKEN=your_vector_token
+
+# API Keys
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-proj-...
+```
+
+### 3. Configure Export Paths
+
+Edit `distillation/config.py` to point to your Claude/GPT export folders:
+
+```python
+CLAUDE_EXPORT_PATH = Path("/path/to/your/Claude/exports")
+GPT_EXPORT_PATH = Path("/path/to/your/ChatGPT/exports")
+```
+
+### 4. Install Dependencies & Run Pipeline
 
 ```bash
-# Distillation pipeline
 cd distillation
 pip install -r requirements.txt
+python run.py
+```
 
-# MCP server
-cd ../mcp-server
+The pipeline will:
+1. Parse all conversations from both exports
+2. Filter to valuable conversations (score ≥ 3)
+3. Extract knowledge entries using Claude Sonnet 4.5
+4. Store entries in Redis + embeddings in Vector
+5. Generate a thin index for fast context loading
+
+**Checkpointing**: Progress is saved after each stage. If interrupted, re-run to resume.
+
+### 5. Deploy MCP Server to Cloudflare
+
+```bash
+cd cloudflare-mcp/mcp-server
 npm install
+
+# Set secrets
+wrangler secret put UPSTASH_REDIS_REST_URL
+wrangler secret put UPSTASH_REDIS_REST_TOKEN
+wrangler secret put UPSTASH_VECTOR_REST_URL
+wrangler secret put UPSTASH_VECTOR_REST_TOKEN
+wrangler secret put OPENAI_API_KEY
+
+# Deploy
+wrangler deploy
 ```
 
-### 4. Test Connection
+Your MCP server will be at: `https://personal-knowledge-mcp.YOUR-SUBDOMAIN.workers.dev`
 
-```bash
-cd distillation
-python test_connection.py
-```
+### 6. Connect Claude
 
-### 5. Run Pipeline
+1. Go to Claude Settings → MCP Integrations
+2. Click "Add Integration"
+3. Enter your Cloudflare Worker URL: `https://personal-knowledge-mcp.YOUR-SUBDOMAIN.workers.dev/sse`
+4. No authentication required (authless)
 
-```bash
-# Dry run (preview)
-python main.py --dry-run
+### 7. Test It
 
-# Full run
-python main.py --run
-
-# Limited run (testing)
-python main.py --run --limit 5
-```
-
-### 6. Deploy MCP Server
-
-```bash
-cd mcp-server
-vercel env add UPSTASH_REDIS_REST_URL
-vercel env add UPSTASH_REDIS_REST_TOKEN
-vercel env add UPSTASH_VECTOR_REST_URL
-vercel env add UPSTASH_VECTOR_REST_TOKEN
-vercel env add OPENAI_API_KEY
-vercel env add MCP_AUTH_TOKEN
-vercel --prod
-```
-
-### 7. Configure Claude
-
-1. Add MCP Connector in Claude settings with your Vercel URL
-2. Upload skill ZIP (skill/SKILL.md + examples)
-3. Test with "What are my current projects?"
-
-## Pipeline Stages
-
-1. **Parse**: Convert Claude/GPT exports to normalized format
-2. **Filter**: Score conversations (keep score >= 3)
-3. **Extract**: Use Claude to extract knowledge with evidence
-4. **Merge**: Combine with existing entries, handle evolution/contests
-5. **Compress**: Archive old entries, generate compressed views
-6. **Index**: Update Upstash storage and thin index
+In Claude, try:
+- "What do I know about machine learning?"
+- "Show me my active projects"
+- "Search my knowledge for trading strategies"
 
 ## MCP Tools
 
-| Tool | Purpose | When to Use |
-|------|---------|-------------|
-| `get_index()` | Overview of all knowledge | Start of conversation |
-| `get_context(topic)` | Quick summary of topic | Discussing specific topic |
-| `get_deep(id)` | Full entry with evidence | Need provenance/evolution |
-| `search(query)` | Semantic search | "Have we discussed X?" |
+| Tool | Description | Example Trigger |
+|------|-------------|-----------------|
+| `get_index` | Returns overview of all topics + projects | "What topics do I have stored?" |
+| `get_context(topic)` | Returns current view + insights for a topic | "What's my view on MLX?" |
+| `get_deep(id)` | Returns full entry with evidence + evolution | "How did my view on X evolve?" |
+| `search(query)` | Semantic search across all entries | "Have we discussed volatility?" |
+
+## Updating with New Data
+
+When you have new Claude/GPT exports:
+
+```bash
+cd distillation
+
+# Clear old checkpoints
+rm checkpoints/*.pkl
+
+# Run full pipeline
+python run.py
+```
 
 ## Key Concepts
 
-- **Provenance**: Every insight links to source message IDs
-- **Conservative Merging**: Never silently overwrite; track evolution
-- **Contested State**: Preserves both sides when views contradict
-- **Thin Index**: ~3000 token summary for fast context injection
-- **Compression**: Old entries archived, compressed view kept active
+- **Knowledge Entry**: A structured insight on a topic with current view, key insights, know-how, and evidence
+- **Project Entry**: An ongoing project with goal, status, phase, decisions made, and blockers
+- **Provenance**: Every insight links back to source conversation + message IDs
+- **Thin Index**: A compressed (~10K token) overview of all topics/projects for fast context injection
+- **Semantic Search**: Uses OpenAI `text-embedding-3-large` (3072 dimensions) for relevance matching
+
+## Current Stats
+
+After initial distillation:
+- **1007** knowledge entries
+- **325** project entries
+- **1332** total vectors
+- **85** topics in thin index
+- **42** projects in thin index
 
 ## Troubleshooting
 
-### No conversations parsed
-- Check export paths in `config.py`
-- Verify JSON files exist in Dropbox folders
+### Pipeline hangs at extraction
+- Check `ANTHROPIC_API_KEY` is valid
+- Monitor with: `tail -f distillation/runs/*.json`
 
-### Extraction errors
-- Check ANTHROPIC_API_KEY is valid
-- Reduce `--limit` if hitting rate limits
+### MCP tools fail with "error code: 1016"
+- This is a DNS/network error from Cloudflare
+- Check Cloudflare Worker logs: `wrangler tail`
+- Verify all secrets are set: `wrangler secret list`
 
-### MCP not responding
-- Verify Vercel deployment succeeded
-- Check environment variables are set
-- Test with curl: `curl -X POST https://your-app.vercel.app/mcp -H "Authorization: Bearer $TOKEN" -d '{"tool": "get_index", "arguments": {}}'`
+### Search returns no results
+- Ensure Vector index has correct dimensions (3072)
+- Check `OPENAI_API_KEY` is valid for embeddings
+
+### Claude doesn't see the MCP tools
+- Verify the URL ends with `/sse`
+- Check MCP integration is enabled in Claude settings
+
+## Tech Stack
+
+- **Distillation**: Python 3.10+, Anthropic SDK, OpenAI SDK
+- **Storage**: Upstash Redis + Upstash Vector
+- **MCP Server**: Cloudflare Workers, TypeScript, @modelcontextprotocol/sdk
+- **Embeddings**: OpenAI text-embedding-3-large (3072 dims)
+- **Extraction**: Claude Sonnet 4.5 (claude-sonnet-4-5-20250929)
+
+## License
+
+Private repository. Not for redistribution.
 
 ## Version History
 
-- **1.0.0** (December 2024): Initial implementation
-
+- **1.0.0** (December 2024): Initial implementation with full pipeline, Cloudflare MCP server, and Claude integration
