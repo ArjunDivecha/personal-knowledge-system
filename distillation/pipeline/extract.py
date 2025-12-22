@@ -151,10 +151,24 @@ def validate_extraction(
 def convert_to_knowledge_entry(
     data: dict,
     conversation_id: str,
+    conversation_created_at: str = None,
+    conversation_updated_at: str = None,
 ) -> KnowledgeEntry:
-    """Convert extracted JSON to KnowledgeEntry object."""
+    """
+    Convert extracted JSON to KnowledgeEntry object.
+    
+    Args:
+        data: Extracted knowledge data from LLM
+        conversation_id: Original conversation ID
+        conversation_created_at: Original conversation creation timestamp (ISO8601)
+        conversation_updated_at: Original conversation update timestamp (ISO8601)
+    """
     entry_id = f"ke_{uuid.uuid4().hex[:12]}"
+    
+    # Use original conversation timestamps if available, otherwise use now
     now = datetime.utcnow().isoformat()
+    created_at = conversation_created_at or now
+    updated_at = conversation_updated_at or now
     
     # Collect all message IDs from evidence
     all_message_ids = set()
@@ -224,7 +238,7 @@ def convert_to_knowledge_entry(
         positions.append(Position(
             view=data.get("current_view", ""),
             confidence=data.get("confidence", "medium"),
-            as_of=now,
+            as_of=updated_at,  # Use original conversation date
             evidence=pos_evidence,
         ))
     
@@ -241,8 +255,8 @@ def convert_to_knowledge_entry(
         knows_how_to=knows_how_to,
         open_questions=open_questions,
         metadata=KnowledgeMetadata(
-            created_at=now,
-            updated_at=now,
+            created_at=created_at,  # Original conversation creation date
+            updated_at=updated_at,  # Original conversation update date
             source_conversations=[conversation_id],
             source_messages=list(all_message_ids),
             access_count=0,
@@ -253,10 +267,24 @@ def convert_to_knowledge_entry(
 def convert_to_project_entry(
     data: dict,
     conversation_id: str,
+    conversation_created_at: str = None,
+    conversation_updated_at: str = None,
 ) -> ProjectEntry:
-    """Convert extracted JSON to ProjectEntry object."""
+    """
+    Convert extracted JSON to ProjectEntry object.
+    
+    Args:
+        data: Extracted project data from LLM
+        conversation_id: Original conversation ID
+        conversation_created_at: Original conversation creation timestamp (ISO8601)
+        conversation_updated_at: Original conversation update timestamp (ISO8601)
+    """
     entry_id = f"pe_{uuid.uuid4().hex[:12]}"
+    
+    # Use original conversation timestamps if available, otherwise use now
     now = datetime.utcnow().isoformat()
+    created_at = conversation_created_at or now
+    updated_at = conversation_updated_at or now
     
     # Collect all message IDs
     all_message_ids = set()
@@ -271,7 +299,7 @@ def convert_to_project_entry(
         decisions_made.append(Decision(
             decision=item.get("decision", ""),
             rationale=item.get("rationale"),
-            date=now,
+            date=updated_at,  # Use original conversation date
             evidence=Evidence(
                 conversation_id=conversation_id,
                 message_ids=msg_ids,
@@ -292,15 +320,15 @@ def convert_to_project_entry(
         tech_stack=data.get("tech_stack", []),
         phase_history=[{
             "phase": data.get("current_phase", ""),
-            "entered_at": now,
+            "entered_at": updated_at,  # Use original conversation date
             "evidence": {"conversation_id": conversation_id},
         }] if data.get("current_phase") else [],
         metadata=ProjectMetadata(
-            created_at=now,
-            updated_at=now,
+            created_at=created_at,   # Original conversation creation date
+            updated_at=updated_at,   # Original conversation update date
             source_conversations=[conversation_id],
             source_messages=list(all_message_ids),
-            last_touched=now,
+            last_touched=updated_at,  # Original conversation date
         ),
     )
 
@@ -338,11 +366,20 @@ def extract_from_conversation(
         # Validate extraction
         validation_errors = validate_extraction(data, conversation)
         
+        # Get original conversation timestamps
+        conv_created_at = getattr(conversation, 'created_at', None)
+        conv_updated_at = getattr(conversation, 'updated_at', None)
+        
         # Convert to entries (even with validation errors, keep valid parts)
         knowledge_entries = []
         for entry_data in data.get("knowledge_entries", []):
             try:
-                entry = convert_to_knowledge_entry(entry_data, conversation.id)
+                entry = convert_to_knowledge_entry(
+                    entry_data, 
+                    conversation.id,
+                    conversation_created_at=conv_created_at,
+                    conversation_updated_at=conv_updated_at,
+                )
                 if entry.key_insights:  # Only keep if has at least one insight
                     knowledge_entries.append(entry)
             except Exception as e:
@@ -351,7 +388,12 @@ def extract_from_conversation(
         project_entries = []
         for entry_data in data.get("project_entries", []):
             try:
-                entry = convert_to_project_entry(entry_data, conversation.id)
+                entry = convert_to_project_entry(
+                    entry_data, 
+                    conversation.id,
+                    conversation_created_at=conv_created_at,
+                    conversation_updated_at=conv_updated_at,
+                )
                 if entry.name:  # Only keep if has a name
                     project_entries.append(entry)
             except Exception as e:

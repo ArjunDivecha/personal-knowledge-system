@@ -43,3 +43,9 @@ archive/
 # Logs
 *.log
 
+# Environment files with secrets
+**/.env
+**/.env.*
+!**/.env.example
+# Checkpoints (large binary files)
+**/checkpoints/

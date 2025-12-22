@@ -140,13 +140,15 @@ if __name__ == "__main__":
     
     for i, (entry, embedding) in enumerate(zip(knowledge_entries, k_embeddings)):
         redis.save_knowledge_entry(entry)
+        # Use the entry's original timestamp (from conversation) for vector metadata
+        entry_updated_at = entry.metadata.updated_at if entry.metadata else datetime.now().isoformat()
         vector.upsert_entry(
             entry_id=entry.id,
             vector=embedding,
             entry_type="knowledge",
             domain=entry.domain,
             state=entry.state,
-            updated_at=datetime.now().isoformat(),
+            updated_at=entry_updated_at,
         )
         if (i + 1) % 200 == 0:
             print(f"    Saved {i + 1}/{len(knowledge_entries)} knowledge entries...")
@@ -158,13 +160,15 @@ if __name__ == "__main__":
     
     for i, (entry, embedding) in enumerate(zip(project_entries, p_embeddings)):
         redis.save_project_entry(entry)
+        # Use the entry's original timestamp (from conversation) for vector metadata
+        entry_updated_at = entry.metadata.updated_at if entry.metadata else datetime.now().isoformat()
         vector.upsert_entry(
             entry_id=entry.id,
             vector=embedding,
             entry_type="project",
             domain=entry.name,
             state=entry.status,
-            updated_at=datetime.now().isoformat(),
+            updated_at=entry_updated_at,
         )
         if (i + 1) % 100 == 0:
             print(f"    Saved {i + 1}/{len(project_entries)} project entries...")

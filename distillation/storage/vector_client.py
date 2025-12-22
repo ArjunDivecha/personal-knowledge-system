@@ -73,28 +73,35 @@ class VectorClient:
         domain: str,
         state: str,
         updated_at: str,
+        source_conversations: list[str] = None,
     ):
         """
         Upsert a single entry's embedding.
         
         Args:
             entry_id: Entry ID (ke_xxx or pe_xxx)
-            vector: Embedding vector (1536 dimensions)
+            vector: Embedding vector (3072 dimensions for text-embedding-3-large)
             entry_type: "knowledge" or "project"
             domain: Topic domain or project name
             state: Current state
             updated_at: ISO8601 timestamp
+            source_conversations: List of source conversation IDs (for source weighting)
         """
+        metadata = {
+            "type": entry_type,
+            "domain": domain,
+            "state": state,
+            "updated_at": updated_at,
+        }
+        # Store first source for weighting (full list may exceed metadata limits)
+        if source_conversations:
+            metadata["source"] = source_conversations[0] if len(source_conversations) == 1 else ",".join(source_conversations[:3])
+        
         self.index.upsert(
             vectors=[{
                 "id": entry_id,
                 "vector": vector,
-                "metadata": {
-                    "type": entry_type,
-                    "domain": domain,
-                    "state": state,
-                    "updated_at": updated_at,
-                }
+                "metadata": metadata
             }]
         )
     
