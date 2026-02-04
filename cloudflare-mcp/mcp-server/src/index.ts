@@ -4,65 +4,89 @@ import { z } from "zod";
 import { Redis } from "@upstash/redis/cloudflare";
 import { Index } from "@upstash/vector";
 import OpenAI from "openai";
+import { OAuthProvider } from "@cloudflare/workers-oauth-provider";
+
+// GitHub accounts to query
+const GITHUB_ACCOUNTS = ['arjun-via', 'ArjunDivecha'];
+
+// GitHub API helper
+async function githubRequest(
+	endpoint: string,
+	token: string,
+	params: Record<string, string> = {}
+): Promise<any> {
+	const url = new URL(`https://api.github.com${endpoint}`);
+	Object.entries(params).forEach(([key, value]) => {
+		url.searchParams.append(key, value);
+	});
+
+	const response = await fetch(url.toString(), {
+		headers: {
+			'Authorization': `token ${token}`,
+			'Accept': 'application/vnd.github.v3+json',
+			'User-Agent': 'personal-knowledge-mcp',
+		},
+	});
+
+	if (!response.ok) {
+		if (response.status === 404) return null;
+		throw new Error(`GitHub API error: ${response.status}`);
+	}
+
+	return response.json();
+}
 
 // Calculate recency score based on how recently the entry was updated
-// Returns a score between 0.2 (very old) and 1.0 (very recent)
 function calculateRecencyScore(updatedAt: string | undefined): number {
-	if (!updatedAt) return 0.5; // Default for missing dates
-	
+	if (!updatedAt) return 0.5;
+
 	try {
 		const entryDate = new Date(updatedAt);
 		const now = new Date();
 		const daysSinceUpdate = (now.getTime() - entryDate.getTime()) / (1000 * 60 * 60 * 24);
-		
-		// Decay function: recent entries score higher
-		if (daysSinceUpdate <= 7) return 1.0;        // Last week: full score
-		if (daysSinceUpdate <= 30) return 0.9;       // Last month: 0.9
-		if (daysSinceUpdate <= 90) return 0.75;      // Last 3 months: 0.75
-		if (daysSinceUpdate <= 180) return 0.6;      // Last 6 months: 0.6
-		if (daysSinceUpdate <= 365) return 0.45;     // Last year: 0.45
-		if (daysSinceUpdate <= 730) return 0.3;      // Last 2 years: 0.3
-		return 0.2;                                   // Older: 0.2
+
+		if (daysSinceUpdate <= 7) return 1.0;
+		if (daysSinceUpdate <= 30) return 0.9;
+		if (daysSinceUpdate <= 90) return 0.75;
+		if (daysSinceUpdate <= 180) return 0.6;
+		if (daysSinceUpdate <= 365) return 0.45;
+		if (daysSinceUpdate <= 730) return 0.3;
+		return 0.2;
 	} catch {
-		return 0.5; // Default on parse error
+		return 0.5;
 	}
 }
 
-// Get source weight multiplier based on data source
-// Emails are downweighted since they dominate the corpus
+// Get source weight multiplier
 function getSourceWeight(source: string | undefined): number {
 	if (!source) return 1.0;
-	
+
 	const sourceLower = source.toLowerCase();
-	
-	// Check if source contains gmail/email indicators
+
 	if (sourceLower.includes('gmail') || sourceLower.includes('email') || sourceLower.includes('mbox')) {
-		return 0.6; // Emails get 60% weight
+		return 0.6;
 	}
-	
-	// GitHub entries get slight boost for being high-signal
+
 	if (sourceLower.includes('github') || sourceLower.includes('repo')) {
-		return 1.1; // GitHub gets 110% weight
+		return 1.1;
 	}
-	
-	return 1.0; // Chat/other sources: full weight
+
+	return 1.0;
 }
 
 // Combine semantic similarity with recency and source weight
-// Base: 70% semantic, 30% recency, then multiplied by source weight
 function calculateFinalScore(similarity: number, recency: number, sourceWeight: number = 1.0): number {
 	const baseScore = similarity * 0.7 + recency * 0.3;
 	return baseScore * sourceWeight;
 }
 
 // Define our MCP agent with knowledge tools
-export class KnowledgeMCP extends McpAgent {
+export class KnowledgeMCP extends McpAgent<Env, unknown, { userId: string }> {
 	server = new McpServer({
 		name: "Personal Knowledge System",
 		version: "1.0.0",
 	});
 
-	// Get Redis client
 	private getRedis(env: Env): Redis {
 		return new Redis({
 			url: env.UPSTASH_REDIS_REST_URL,
@@ -70,7 +94,6 @@ export class KnowledgeMCP extends McpAgent {
 		});
 	}
 
-	// Get Vector client
 	private getVector(env: Env): Index {
 		return new Index({
 			url: env.UPSTASH_VECTOR_REST_URL,
@@ -78,7 +101,6 @@ export class KnowledgeMCP extends McpAgent {
 		});
 	}
 
-	// Get embedding - using text-embedding-3-large (best OpenAI model)
 	private async getEmbedding(env: Env, text: string): Promise<number[]> {
 		if (!env.OPENAI_API_KEY) {
 			throw new Error("OPENAI_API_KEY not configured");
@@ -111,24 +133,20 @@ export class KnowledgeMCP extends McpAgent {
 					generated_at?: string;
 					token_count?: number;
 				} | null;
-				
+
 				if (!rawIndex) {
 					return { content: [{ type: "text", text: JSON.stringify({ topics: [], projects: [], message: "No index found" }) }] };
 				}
-				
-				// Compress the index to prevent overwhelming Claude
-				// Sort topics by recency and take top 100
+
 				const topics = rawIndex.topics || [];
 				const projects = rawIndex.projects || [];
-				
-				// Sort by last_updated descending
+
 				const sortedTopics = [...topics].sort((a, b) => {
 					const dateA = a.last_updated ? new Date(a.last_updated).getTime() : 0;
 					const dateB = b.last_updated ? new Date(b.last_updated).getTime() : 0;
 					return dateB - dateA;
 				});
-				
-				// Take top 100 topics, truncate summaries
+
 				const compactTopics = sortedTopics.slice(0, 100).map(t => ({
 					id: t.id,
 					domain: t.domain,
@@ -136,15 +154,13 @@ export class KnowledgeMCP extends McpAgent {
 					state: t.state,
 					updated: t.last_updated ? t.last_updated.substring(0, 10) : null
 				}));
-				
-				// Sort projects by last_touched descending
+
 				const sortedProjects = [...projects].sort((a, b) => {
 					const dateA = a.last_touched ? new Date(a.last_touched).getTime() : 0;
 					const dateB = b.last_touched ? new Date(b.last_touched).getTime() : 0;
 					return dateB - dateA;
 				});
-				
-				// Take top 50 projects, truncate summaries
+
 				const compactProjects = sortedProjects.slice(0, 50).map(p => ({
 					id: p.id,
 					name: p.name,
@@ -153,7 +169,7 @@ export class KnowledgeMCP extends McpAgent {
 					phase: (p.current_phase || "").substring(0, 60),
 					touched: p.last_touched ? p.last_touched.substring(0, 10) : null
 				}));
-				
+
 				const compactIndex = {
 					total_topics: topics.length,
 					total_projects: projects.length,
@@ -162,7 +178,7 @@ export class KnowledgeMCP extends McpAgent {
 					projects: compactProjects,
 					note: "Showing most recent entries. Use 'search' for specific queries or 'get_context' for full details."
 				};
-				
+
 				return {
 					content: [{ type: "text", text: JSON.stringify(compactIndex) }],
 				};
@@ -178,8 +194,7 @@ export class KnowledgeMCP extends McpAgent {
 				try {
 					const redis = this.getRedis(this.env);
 					const vector = this.getVector(this.env);
-					
-					// Step 1: Get embedding
+
 					let queryEmbedding: number[];
 					try {
 						queryEmbedding = await this.getEmbedding(this.env, topic);
@@ -187,8 +202,7 @@ export class KnowledgeMCP extends McpAgent {
 						const msg = embErr instanceof Error ? embErr.message : String(embErr);
 						return { content: [{ type: "text", text: JSON.stringify({ error: `Embedding step failed: ${msg}` }) }] };
 					}
-					
-					// Step 2: Query vector
+
 					let results;
 					try {
 						results = await vector.query({
@@ -205,7 +219,6 @@ export class KnowledgeMCP extends McpAgent {
 						return { content: [{ type: "text", text: `No entry found for: ${topic}` }] };
 					}
 
-					// Step 3: Get from Redis
 					const result = results[0];
 					const entryType = (result.metadata as Record<string, unknown>)?.type;
 					const key = entryType === "project" ? `project:${result.id}` : `knowledge:${result.id}`;
@@ -244,8 +257,7 @@ export class KnowledgeMCP extends McpAgent {
 				try {
 					const vector = this.getVector(this.env);
 					const queryEmbedding = await this.getEmbedding(this.env, query);
-					
-					// Fetch more results than needed to allow re-ranking
+
 					const fetchLimit = Math.min((limit || 5) * 3, 20);
 					const results = await vector.query({
 						vector: queryEmbedding,
@@ -253,16 +265,15 @@ export class KnowledgeMCP extends McpAgent {
 						includeMetadata: true,
 					});
 
-					// Apply recency and source weighting, then re-rank
 					const rankedResults = results.map((r) => {
 						const metadata = r.metadata as Record<string, unknown> | undefined;
 						const updatedAt = metadata?.updated_at as string | undefined;
 						const source = metadata?.source as string | undefined;
-						
+
 						const recencyScore = calculateRecencyScore(updatedAt);
 						const sourceWeight = getSourceWeight(source);
 						const finalScore = calculateFinalScore(r.score, recencyScore, sourceWeight);
-						
+
 						return {
 							id: r.id,
 							similarity_score: r.score,
@@ -272,8 +283,7 @@ export class KnowledgeMCP extends McpAgent {
 							metadata: r.metadata,
 						};
 					});
-					
-					// Sort by final score and take requested limit
+
 					rankedResults.sort((a, b) => b.final_score - a.final_score);
 					const topResults = rankedResults.slice(0, limit || 5);
 
@@ -292,23 +302,235 @@ export class KnowledgeMCP extends McpAgent {
 				}
 			}
 		);
+
+		// Tool: github - Dynamic GitHub repository queries
+		this.server.tool(
+			"github",
+			"Query GitHub repositories dynamically. Fetches LIVE data from both arjun-via and ArjunDivecha accounts. Use to find code, read files, list repos, or get commit history.",
+			{
+				operation: z.enum(['list_repos', 'search_code', 'get_file', 'get_repo', 'get_commits'])
+					.describe("Operation: list_repos, search_code, get_file, get_repo, get_commits"),
+				query: z.string().optional().describe("Search query (for search_code)"),
+				repo: z.string().optional().describe("Repository name (for get_file, get_repo, get_commits)"),
+				path: z.string().optional().describe("File path (for get_file)"),
+				language: z.string().optional().describe("Filter by language (for search_code)"),
+				limit: z.number().optional().describe("Max results (default 20)"),
+			},
+			async ({ operation, query, repo, path, language, limit }) => {
+				const token = this.env.GITHUB_TOKEN;
+				if (!token) {
+					return { content: [{ type: "text", text: JSON.stringify({ error: "GITHUB_TOKEN not configured" }) }] };
+				}
+
+				try {
+					switch (operation) {
+						case 'list_repos': {
+							const allRepos: any[] = [];
+							for (const account of GITHUB_ACCOUNTS) {
+								let page = 1;
+								let hasMore = true;
+								while (hasMore) {
+									const repos = await githubRequest(
+										`/users/${account}/repos`,
+										token,
+										{ per_page: '100', page: page.toString(), sort: 'updated' }
+									);
+									if (!repos || repos.length === 0) { hasMore = false; continue; }
+									for (const r of repos) {
+										allRepos.push({
+											name: r.name,
+											owner: account,
+											description: r.description,
+											language: r.language,
+											stars: r.stargazers_count || 0,
+											updated: r.updated_at,
+											private: r.private || false,
+										});
+									}
+									if (repos.length < 100) hasMore = false;
+									else page++;
+								}
+							}
+							allRepos.sort((a, b) => new Date(b.updated).getTime() - new Date(a.updated).getTime());
+							return { content: [{ type: "text", text: JSON.stringify({ total: allRepos.length, accounts: GITHUB_ACCOUNTS, repos: allRepos }) }] };
+						}
+
+						case 'search_code': {
+							if (!query) return { content: [{ type: "text", text: JSON.stringify({ error: "query required for search_code" }) }] };
+							const userFilter = GITHUB_ACCOUNTS.map(u => `user:${u}`).join(' ');
+							let searchQuery = `${query} ${userFilter}`;
+							if (language) searchQuery += ` language:${language}`;
+							const result = await githubRequest('/search/code', token, { q: searchQuery, per_page: '30' });
+							const results = (result?.items || []).map((item: any) => ({
+								repo: item.repository.full_name,
+								path: item.path,
+								url: item.html_url,
+							}));
+							return { content: [{ type: "text", text: JSON.stringify({ query, results }) }] };
+						}
+
+						case 'get_file': {
+							if (!repo || !path) return { content: [{ type: "text", text: JSON.stringify({ error: "repo and path required" }) }] };
+							let owner = '';
+							let repoName = repo;
+							if (repo.includes('/')) {
+								owner = repo.split('/')[0];
+								repoName = repo.split('/')[1];
+							} else {
+								for (const account of GITHUB_ACCOUNTS) {
+									const r = await githubRequest(`/repos/${account}/${repo}`, token);
+									if (r) { owner = account; break; }
+								}
+							}
+							if (!owner) return { content: [{ type: "text", text: JSON.stringify({ error: "Repository not found" }) }] };
+							const data = await githubRequest(`/repos/${owner}/${repoName}/contents/${path}`, token);
+							if (!data || !data.content) return { content: [{ type: "text", text: JSON.stringify({ error: "File not found" }) }] };
+							const content = atob(data.content.replace(/\n/g, ''));
+							return { content: [{ type: "text", text: JSON.stringify({ path: data.path, repo: `${owner}/${repoName}`, content }) }] };
+						}
+
+						case 'get_repo': {
+							if (!repo) return { content: [{ type: "text", text: JSON.stringify({ error: "repo required" }) }] };
+							let owner = '';
+							let repoName = repo;
+							let repoData: any = null;
+							if (repo.includes('/')) {
+								const [o, r] = repo.split('/');
+								repoData = await githubRequest(`/repos/${o}/${r}`, token);
+								if (repoData) { owner = o; repoName = r; }
+							} else {
+								for (const account of GITHUB_ACCOUNTS) {
+									repoData = await githubRequest(`/repos/${account}/${repo}`, token);
+									if (repoData) { owner = account; break; }
+								}
+							}
+							if (!repoData) return { content: [{ type: "text", text: JSON.stringify({ error: "Repository not found" }) }] };
+
+							let readme: string | null = null;
+							const readmeData = await githubRequest(`/repos/${owner}/${repoName}/readme`, token);
+							if (readmeData?.content) {
+								readme = atob(readmeData.content.replace(/\n/g, ''));
+							}
+
+							const treeData = await githubRequest(`/repos/${owner}/${repoName}/git/trees/${repoData.default_branch}`, token);
+							const files = treeData?.tree?.filter((f: any) => f.type === 'blob')?.slice(0, 30)?.map((f: any) => f.path) || [];
+
+							return { content: [{ type: "text", text: JSON.stringify({
+								info: {
+									name: repoData.name,
+									full_name: repoData.full_name,
+									description: repoData.description,
+									language: repoData.language,
+									stars: repoData.stargazers_count,
+									updated: repoData.updated_at,
+								},
+								readme: readme ? readme.substring(0, 5000) : null,
+								files,
+							}) }] };
+						}
+
+						case 'get_commits': {
+							if (!repo) return { content: [{ type: "text", text: JSON.stringify({ error: "repo required" }) }] };
+							let owner = '';
+							let repoName = repo;
+							if (repo.includes('/')) {
+								owner = repo.split('/')[0];
+								repoName = repo.split('/')[1];
+							} else {
+								for (const account of GITHUB_ACCOUNTS) {
+									const r = await githubRequest(`/repos/${account}/${repo}`, token);
+									if (r) { owner = account; break; }
+								}
+							}
+							if (!owner) return { content: [{ type: "text", text: JSON.stringify({ error: "Repository not found" }) }] };
+							const commits = await githubRequest(`/repos/${owner}/${repoName}/commits`, token, { per_page: (limit || 20).toString() });
+							const result = (commits || []).map((c: any) => ({
+								sha: c.sha?.slice(0, 7),
+								message: c.commit?.message,
+								date: c.commit?.author?.date,
+								author: c.commit?.author?.name,
+							}));
+							return { content: [{ type: "text", text: JSON.stringify({ repo: `${owner}/${repoName}`, commits: result }) }] };
+						}
+
+						default:
+							return { content: [{ type: "text", text: JSON.stringify({ error: `Unknown operation: ${operation}` }) }] };
+					}
+				} catch (error) {
+					const errMsg = error instanceof Error ? error.message : String(error);
+					return { content: [{ type: "text", text: JSON.stringify({ error: errMsg }) }] };
+				}
+			}
+		);
 	}
 }
 
-export default {
-	fetch(request: Request, env: Env, ctx: ExecutionContext) {
+// Default handler for non-API routes - must be an object with fetch method
+const defaultHandler = {
+	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const url = new URL(request.url);
 
-		// SSE endpoint for Claude MCP connector
-		if (url.pathname === "/sse" || url.pathname === "/sse/message") {
-			return KnowledgeMCP.serveSSE("/sse").fetch(request, env, ctx);
+		// Handle OAuth authorization - auto-approve for personal single-user system
+		if (url.pathname === "/authorize") {
+			try {
+				// Parse the OAuth authorization request
+				const authRequest = await env.OAUTH_PROVIDER.parseAuthRequest(request);
+
+				if (!authRequest.clientId) {
+					return new Response("Missing client_id", { status: 400 });
+				}
+
+				// Auto-approve: complete authorization immediately without login
+				// This is safe for a personal single-user system
+				const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
+					request: authRequest,
+					userId: "arjun",
+					metadata: {
+						label: "Personal Knowledge MCP"
+					},
+					scope: authRequest.scope,
+					props: {
+						userId: "arjun",
+					},
+				});
+
+				return Response.redirect(redirectTo, 302);
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				return new Response(`Authorization error: ${msg}`, { status: 500 });
+			}
 		}
 
-		// HTTP endpoint
-		if (url.pathname === "/mcp") {
-			return KnowledgeMCP.serve("/mcp").fetch(request, env, ctx);
-		}
-
-		return new Response("Personal Knowledge MCP Server. Connect via /sse", { status: 200 });
-	},
+		// Home page
+		return new Response(`
+			<html>
+				<head><title>Personal Knowledge MCP</title></head>
+				<body style="font-family: system-ui; padding: 2rem; max-width: 600px; margin: 0 auto;">
+					<h1>Personal Knowledge MCP Server</h1>
+					<p>This is Arjun's personal knowledge system with OAuth support.</p>
+					<h2>Endpoints</h2>
+					<ul>
+						<li><code>/sse</code> - MCP over SSE (for Claude)</li>
+						<li><code>/mcp</code> - MCP over HTTP</li>
+						<li><code>/authorize</code> - OAuth authorization</li>
+						<li><code>/token</code> - OAuth token endpoint</li>
+						<li><code>/register</code> - Dynamic client registration</li>
+					</ul>
+				</body>
+			</html>
+		`, {
+			headers: { "Content-Type": "text/html" }
+		});
+	}
 };
+
+// Export OAuth-wrapped handler
+export default new OAuthProvider({
+	apiRoute: ["/sse", "/mcp"],
+	apiHandler: KnowledgeMCP.mount("/sse") as any,
+	defaultHandler: defaultHandler,
+	authorizeEndpoint: "/authorize",
+	tokenEndpoint: "/token",
+	clientRegistrationEndpoint: "/register",
+	scopesSupported: ["mcp:read", "mcp:write"],
+});
