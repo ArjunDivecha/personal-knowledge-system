@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "personal-knowledge-mcp",
+  "name": "arjun-knowledge-mcp",
   "main": "src/index.ts",
   "compatibility_date": "2025-03-10",
   "compatibility_flags": [
@@ -30,5 +30,12 @@
   ],
   "observability": {
     "enabled": true
-  }
+  },
+  "workers_dev": true,
+  "routes": [
+    {
+      "pattern": "mcp.dancing-ganesh.com",
+      "custom_domain": true
+    }
+  ]
 }

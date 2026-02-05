@@ -124,7 +124,7 @@ Based on the knowledge system's content, these patterns apply:
 ## Integration with MCP Connector
 
 This skill works with the **Personal Knowledge** MCP connector at:
-`https://personal-knowledge-mcp.arjun-divecha.workers.dev/sse`
+`https://mcp.dancing-ganesh.com/sse`
 
 Ensure this connector is enabled in your Claude settings for this skill to function.
 

@@ -415,18 +415,22 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, { userId: string }> {
 							const treeData = await githubRequest(`/repos/${owner}/${repoName}/git/trees/${repoData.default_branch}`, token);
 							const files = treeData?.tree?.filter((f: any) => f.type === 'blob')?.slice(0, 30)?.map((f: any) => f.path) || [];
 
-							return { content: [{ type: "text", text: JSON.stringify({
-								info: {
-									name: repoData.name,
-									full_name: repoData.full_name,
-									description: repoData.description,
-									language: repoData.language,
-									stars: repoData.stargazers_count,
-									updated: repoData.updated_at,
-								},
-								readme: readme ? readme.substring(0, 5000) : null,
-								files,
-							}) }] };
+							return {
+								content: [{
+									type: "text", text: JSON.stringify({
+										info: {
+											name: repoData.name,
+											full_name: repoData.full_name,
+											description: repoData.description,
+											language: repoData.language,
+											stars: repoData.stargazers_count,
+											updated: repoData.updated_at,
+										},
+										readme: readme ? readme.substring(0, 5000) : null,
+										files,
+									})
+								}]
+							};
 						}
 
 						case 'get_commits': {
@@ -501,6 +505,23 @@ const defaultHandler = {
 			}
 		}
 
+		// OAuth discovery endpoint for iOS Claude
+		if (url.pathname === "/.well-known/oauth-authorization-server") {
+			const baseUrl = `${url.protocol}//${url.host}`;
+			return new Response(JSON.stringify({
+				issuer: baseUrl,
+				authorization_endpoint: `${baseUrl}/authorize`,
+				token_endpoint: `${baseUrl}/token`,
+				registration_endpoint: `${baseUrl}/register`,
+				scopes_supported: ["mcp:read", "mcp:write"],
+				response_types_supported: ["code"],
+				grant_types_supported: ["authorization_code", "refresh_token"],
+				token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic"],
+			}), {
+				headers: { "Content-Type": "application/json" }
+			});
+		}
+
 		// Home page
 		return new Response(`
 			<html>
@@ -524,7 +545,7 @@ const defaultHandler = {
 	}
 };
 
-// Export OAuth-wrapped handler
+// Export OAuth-wrapped handler for iOS Claude compatibility
 export default new OAuthProvider({
 	apiRoute: ["/sse", "/mcp"],
 	apiHandler: KnowledgeMCP.mount("/sse") as any,
