@@ -38,14 +38,14 @@ load_dotenv(env_path)
 CLAUDE_EXPORT_PATH = Path(
     os.getenv(
         "CLAUDE_EXPORT_PATH",
-        "/Users/macbook2024/Library/CloudStorage/Dropbox/Identity and Important Papers/Arjun Digital Identity/Anthropic"
+        "/Users/arjundivecha/Dropbox/Identity and Important Papers/Arjun Digital Identity/Anthropic"
     )
 )
 
 GPT_EXPORT_PATH = Path(
     os.getenv(
         "GPT_EXPORT_PATH",
-        "/Users/macbook2024/Library/CloudStorage/Dropbox/Identity and Important Papers/Arjun Digital Identity/ChatGPT"
+        "/Users/arjundivecha/Dropbox/Identity and Important Papers/Arjun Digital Identity/ChatGPT"
     )
 )
 
@@ -53,7 +53,7 @@ GPT_EXPORT_PATH = Path(
 ARCHIVE_PATH = Path(
     os.getenv(
         "ARCHIVE_PATH",
-        "/Users/macbook2024/Library/CloudStorage/Dropbox/AAA Backup/A Working/Memory/knowledge-system/archive"
+        "/Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system/archive"
     )
 )
 
@@ -103,7 +103,7 @@ EMBEDDING_MODEL = "text-embedding-3-large"
 EMBEDDING_DIMENSIONS = 3072
 
 # LLM model for extraction
-EXTRACTION_MODEL = "claude-sonnet-4-5-20250929"
+EXTRACTION_MODEL = "claude-opus-4-6"
 
 
 # -----------------------------------------------------------------------------
