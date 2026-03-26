@@ -1,10 +1,11 @@
 # Product Requirements Document: Knowledge Retrieval Layer
 
-**Version:** 1.0  
-**Author:** Claude + Arjun  
-**Date:** December 2024  
-**Status:** Draft  
+**Version:** 1.0
+**Author:** Claude + Arjun
+**Date:** December 2024 (updated March 2026)
+**Status:** Implemented
 **Depends On:** Knowledge Distillation Pipeline PRD v1.1
+**Note:** MCP server is deployed on Cloudflare Workers. Now serves entries from 5+ sources including auto-ingested Claude Code and Codex CLI sessions.
 
 ---
 

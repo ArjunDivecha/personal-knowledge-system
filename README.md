@@ -1,103 +1,165 @@
 # Personal Knowledge System
 
-A system that distills AI chat histories (Claude, ChatGPT) into structured, searchable knowledge entries. Access your accumulated insights, decisions, and learnings during future Claude conversations via MCP (Model Context Protocol).
+A system that distills AI conversations, coding agent sessions, GitHub repos, and email into structured, searchable knowledge entries. Access your accumulated insights, decisions, and learnings during future Claude conversations via MCP (Model Context Protocol).
 
 ## What It Does
 
-1. **Distills** years of AI conversations into ~1000 structured knowledge entries
-2. **Stores** entries in Upstash Redis with semantic search via Upstash Vector
-3. **Exposes** knowledge through an MCP server (Cloudflare Workers)
-4. **Integrates** with Claude Desktop, iOS, and Web via MCP connector
+1. **Ingests** from 5 sources: Claude AI exports, ChatGPT exports, Claude Code sessions, Codex CLI sessions, GitHub repos, and Gmail
+2. **Distills** raw content into structured knowledge entries using Claude Sonnet 4.6
+3. **Stores** entries in Upstash Redis with semantic search via Upstash Vector (3072-dim embeddings)
+4. **Links** coding sessions to their GitHub repos (URL, README summary)
+5. **Exposes** knowledge through an MCP server (Cloudflare Workers)
+6. **Integrates** with Claude Desktop, iOS, and Web via MCP connector
+7. **Runs automatically** — agent session ingestion every 6 hours via launchd
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      LOCAL (Your Machine)                        │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│   Dropbox Exports              Python Distillation Pipeline     │
-│   ├── Claude (conversations.json)    ├── Parse exports          │
-│   └── ChatGPT (conversations.json)   ├── Filter (score ≥ 3)     │
-│                                      ├── Extract (Claude API)   │
-│                                      ├── Store + Embed          │
-│                                      └── Generate thin index    │
-│                                                                  │
-└──────────────────────────────┬──────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                        LOCAL (Your Machine)                          │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│   Data Sources                      Ingestion Pipelines              │
+│   ├── Claude AI exports (.json)     ├── distillation/run.py          │
+│   ├── ChatGPT exports (.json)       ├── ingestion/github/run.py      │
+│   ├── Claude Code sessions (.jsonl) ├── ingestion/gmail/run.py       │
+│   ├── Codex CLI sessions (.jsonl)   └── ingestion/agent_sessions/    │
+│   ├── GitHub repos (API)                run.py (every 6h via launchd)│
+│   └── Gmail (mbox)                                                   │
+│                                                                      │
+│   All pipelines use:                                                 │
+│   ├── Claude Sonnet 4.6 (distillation/extraction)                    │
+│   ├── OpenAI text-embedding-3-large (embeddings, 3072 dims)          │
+│   └── StorageClient (unified Redis + Vector writer)                  │
+│                                                                      │
+└──────────────────────────────┬──────────────────────────────────────┘
                                │
                                ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      UPSTASH (Cloud Storage)                     │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│   Redis                           Vector                         │
-│   ├── knowledge:{id} entries      └── 3072-dim embeddings       │
-│   ├── project:{id} entries            (text-embedding-3-large)  │
-│   └── index:current (thin index)                                │
-│                                                                  │
-└──────────────────────────────┬──────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                        UPSTASH (Cloud Storage)                       │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│   Redis                             Vector                           │
+│   ├── knowledge:{id} entries        └── 3072-dim embeddings          │
+│   ├── project:{id} entries              (text-embedding-3-large)     │
+│   ├── by_domain:{domain} indexes                                     │
+│   ├── by_state:{state} indexes                                       │
+│   ├── ingested:{source}:{id} dedup                                   │
+│   └── index:current (thin index)                                     │
+│                                                                      │
+└──────────────────────────────┬──────────────────────────────────────┘
                                │
                                ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                   CLOUDFLARE WORKERS (MCP Server)                │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│   /sse endpoint (SSE transport for Claude MCP)                  │
-│   ├── get_index    → Returns overview of all topics/projects    │
-│   ├── get_context  → Returns summary for a specific topic       │
-│   ├── get_deep     → Returns full entry with provenance         │
-│   └── search       → Semantic search across all entries         │
-│                                                                  │
-└──────────────────────────────┬──────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                   CLOUDFLARE WORKERS (MCP Server)                    │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│   /sse endpoint (SSE transport for Claude MCP)                       │
+│   ├── get_index    → Overview of all topics/projects                 │
+│   ├── get_context  → Summary for a specific topic                    │
+│   ├── get_deep     → Full entry with provenance                      │
+│   ├── search       → Semantic search (70% relevance + 30% recency)  │
+│   └── github       → GitHub-linked entry lookup                      │
+│                                                                      │
+└──────────────────────────────┬──────────────────────────────────────┘
                                │
                                ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      CLAUDE (All Platforms)                      │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│   Desktop App    ←──┐                                           │
-│   iOS App        ←──┼── MCP Connector ── your-worker.workers.dev│
-│   claude.ai      ←──┘                                           │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                        CLAUDE (All Platforms)                        │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│   Desktop App    ←──┐                                                │
+│   iOS App        ←──┼── MCP Connector                                │
+│   claude.ai      ←──┘                                                │
+│   Claude Code    ←──── (also generates sessions that feed back in)   │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Project Structure
 
 ```
 knowledge-system/
-├── ingestion/                     # Data ingestion pipelines
-│   ├── .env                       # Credentials (Upstash, Anthropic, OpenAI, GitHub)
-│   ├── core/                      # Shared utilities
-│   │   ├── config.py              # Configuration + env loading
-│   │   ├── storage.py             # StorageClient (Redis + Vector)
-│   │   └── extractor.py           # LLM-based knowledge extraction
-│   ├── agent_sessions/            # Claude Code + Codex CLI ingestion (NEW)
-│   │   ├── run.py                 # Entry point (daily scan or backfill)
-│   │   ├── parsers.py             # JSONL parsers for both session formats
-│   │   └── github_linker.py       # Resolves cwd → GitHub repo + README
-│   ├── github/                    # GitHub repo ingestion
-│   │   ├── client.py              # GitHub API client
-│   │   └── run.py                 # GitHub ingestion pipeline
-│   ├── gmail/                     # Gmail ingestion
-│   │   ├── parser.py              # Mbox file parser
-│   │   └── run.py                 # Gmail ingestion pipeline
-│   └── checkpoints/               # Resumable state files
+├── ingestion/                         # Data ingestion pipelines
+│   ├── .env                           # Credentials (Upstash, Anthropic, OpenAI, GitHub)
+│   ├── core/                          # Shared utilities
+│   │   ├── config.py                  # Configuration + env loading
+│   │   ├── storage.py                 # StorageClient (Redis + Vector)
+│   │   └── extractor.py              # LLM-based knowledge extraction
+│   ├── agent_sessions/                # Claude Code + Codex CLI ingestion
+│   │   ├── run.py                     # Entry point (daily scan or backfill)
+│   │   ├── parsers.py                 # JSONL parsers for both session formats
+│   │   ├── github_linker.py           # Resolves cwd → GitHub repo + README
+│   │   └── com.arjun.knowledge-agent-sessions.plist  # launchd config
+│   ├── github/                        # GitHub repo ingestion
+│   │   ├── client.py                  # GitHub API client (repos, READMEs, commits)
+│   │   └── run.py                     # GitHub ingestion pipeline
+│   ├── gmail/                         # Gmail ingestion
+│   │   ├── parser.py                  # Mbox file parser
+│   │   └── run.py                     # Gmail ingestion pipeline
+│   ├── checkpoints/                   # Resumable state files
+│   └── logs/                          # Processing logs
 │
-├── distillation/                  # Original pipeline (Claude/GPT exports)
-│   ├── run.py                     # Main entry point
-│   ├── pipeline/                  # Processing stages
-│   └── ...
+├── distillation/                      # Original pipeline (Claude/GPT JSON exports)
+│   ├── run.py                         # Main entry point
+│   ├── requirements.txt               # Python dependencies
+│   ├── config.py                      # Export paths + settings
+│   ├── pipeline/                      # Processing stages
+│   │   ├── parse.py                   # Parse Claude/GPT JSON exports
+│   │   ├── filter.py                  # Score and filter conversations
+│   │   ├── extract.py                 # LLM extraction with provenance
+│   │   ├── merge.py                   # Merge logic (incremental runs)
+│   │   ├── compress.py                # Archive old entries
+│   │   └── index.py                   # Generate thin index
+│   ├── models/                        # Data models (dataclasses)
+│   ├── prompts/                       # LLM prompts for extraction
+│   ├── storage/                       # Upstash Redis/Vector clients
+│   └── utils/                         # LLM + embedding wrappers
 │
-├── cloudflare-mcp/                # MCP server (deployed)
+├── cloudflare-mcp/                    # MCP server (deployed, production)
 │   └── mcp-server/
-│       ├── src/index.ts           # Cloudflare Worker with MCP tools
-│       └── wrangler.jsonc         # Cloudflare config
+│       ├── src/index.ts               # Cloudflare Worker with MCP tools
+│       └── wrangler.jsonc             # Cloudflare config
 │
-├── skill/                         # Claude Skill definition
+├── mcp-server/                        # (Legacy) Vercel attempt — not used
 │
-└── docs/                          # Design documents
+├── skill/                             # Claude Skill definition
+│   ├── SKILL.md                       # Routing instructions for Claude
+│   └── examples/example-session.md    # Example usage sessions
+│
+├── docs/                              # Design documents
+│   ├── knowledge-distillation-prd-v1.1.md
+│   └── knowledge-retrieval-prd-v1.0_1.md
+│
+└── INGESTION_REPORT_2026-03-15.md     # Report from initial ingestion run
 ```
+
+## Data Sources
+
+| Source | Method | Frequency | Files |
+|--------|--------|-----------|-------|
+| **Claude Code sessions** | Parse `~/.claude/projects/**/*.jsonl` | Every 6h (launchd) | `ingestion/agent_sessions/` |
+| **Codex CLI sessions** | Parse `~/.codex/sessions/**/*.jsonl` | Every 6h (launchd) | `ingestion/agent_sessions/` |
+| **GitHub repos** | GitHub API (READMEs, commits, code comments) | Manual | `ingestion/github/` |
+| **Gmail** | Parse mbox export | Manual | `ingestion/gmail/` |
+| **Claude AI exports** | Parse `conversations.json` from claude.ai export | Manual | `distillation/` |
+| **ChatGPT exports** | Parse `conversations.json` from ChatGPT export | Manual | `distillation/` |
+
+## Models Used
+
+| Model | ID | Purpose |
+|-------|-----|---------|
+| **Claude Sonnet 4.6** | `claude-sonnet-4-6` | All knowledge extraction and distillation across all pipelines |
+| **OpenAI text-embedding-3-large** | `text-embedding-3-large` (3072 dims) | Vector embeddings for semantic search |
+
+## Current Stats
+
+As of March 2026:
+- **398** knowledge entries
+- **36** project entries
+- **6,354** total vectors
+- **299** agent session files processed
+- **5** ingestion sources active
 
 ## Quick Start
 
@@ -115,11 +177,11 @@ knowledge-system/
    - Similarity: **Cosine**
 3. Copy the REST URLs and tokens
 
-### 2. Configure Local Environment
+### 2. Configure Environment
 
 ```bash
-cd distillation
-cp env.example .env
+cd ingestion
+cp .env.example .env
 ```
 
 Edit `.env` with your credentials:
@@ -136,33 +198,36 @@ UPSTASH_VECTOR_REST_TOKEN=your_vector_token
 # API Keys
 ANTHROPIC_API_KEY=sk-ant-...
 OPENAI_API_KEY=sk-proj-...
+
+# GitHub (optional, for repo ingestion + agent session linking)
+GITHUB_API_KEY=ghp_...
+GITHUB_USERNAME=YourUsername
 ```
 
-### 3. Configure Export Paths
-
-Edit `distillation/config.py` to point to your Claude/GPT export folders:
-
-```python
-CLAUDE_EXPORT_PATH = Path("/path/to/your/Claude/exports")
-GPT_EXPORT_PATH = Path("/path/to/your/ChatGPT/exports")
-```
-
-### 4. Install Dependencies & Run Pipeline
+### 3. Install Dependencies
 
 ```bash
-cd distillation
-pip install -r requirements.txt
-python run.py
+pip install anthropic openai upstash-redis upstash-vector python-dotenv requests
 ```
 
-The pipeline will:
-1. Parse all conversations from both exports
-2. Filter to valuable conversations (score ≥ 3)
-3. Extract knowledge entries using Claude Sonnet 4.5
-4. Store entries in Redis + embeddings in Vector
-5. Generate a thin index for fast context loading
+### 4. Run Ingestion Pipelines
 
-**Checkpointing**: Progress is saved after each stage. If interrupted, re-run to resume.
+```bash
+cd ingestion
+
+# Agent sessions (Claude Code + Codex CLI) — backfill all history
+python agent_sessions/run.py --backfill
+
+# GitHub repos
+python github/run.py
+
+# Gmail (requires mbox export)
+python gmail/run.py
+
+# Claude/GPT exports (uses separate pipeline)
+cd ../distillation
+python run.py
+```
 
 ### 5. Deploy MCP Server to Cloudflare
 
@@ -190,12 +255,26 @@ Your MCP server will be at: `https://personal-knowledge-mcp.YOUR-SUBDOMAIN.worke
 3. Enter your Cloudflare Worker URL: `https://personal-knowledge-mcp.YOUR-SUBDOMAIN.workers.dev/sse`
 4. No authentication required (authless)
 
-### 7. Test It
+### 7. Install Agent Session Daemon (macOS)
 
-In Claude, try:
+```bash
+# Copy plist to LaunchAgents
+cp ingestion/agent_sessions/com.arjun.knowledge-agent-sessions.plist ~/Library/LaunchAgents/
+
+# Load and start
+launchctl load ~/Library/LaunchAgents/com.arjun.knowledge-agent-sessions.plist
+launchctl start com.arjun.knowledge-agent-sessions
+
+# Verify
+launchctl list | grep knowledge-agent
+```
+
+### 8. Test It
+
+In Claude (any platform), try:
 - "What do I know about machine learning?"
-- "Show me my active projects"
-- "Search my knowledge for trading strategies"
+- "Search my knowledge for LoopPilot"
+- "What are my active projects?"
 
 ## MCP Tools
 
@@ -204,7 +283,8 @@ In Claude, try:
 | `get_index` | Returns overview of all topics + projects | "What topics do I have stored?" |
 | `get_context(topic)` | Returns current view + insights for a topic | "What's my view on MLX?" |
 | `get_deep(id)` | Returns full entry with evidence + evolution | "How did my view on X evolve?" |
-| `search(query)` | Semantic search across all entries | "Have we discussed volatility?" |
+| `search(query)` | Semantic search (70% relevance + 30% recency) | "Have we discussed volatility?" |
+| `github(query)` | GitHub-linked entry lookup | "What repos have I worked on?" |
 
 ## Agent Session Ingestion (Claude Code + Codex CLI)
 
@@ -218,10 +298,30 @@ Automatically pulls knowledge from your Claude Code and Codex CLI sessions every
                                  │       ↓
                                  │  Detect GitHub repo from cwd (github_linker.py)
                                  │       ↓
-                                 │  Claude API distillation → structured entries
+                                 │  Claude Sonnet 4.6 distillation → structured entries
                                  │       ↓
                                  └→ StorageClient → Upstash Redis + Vector
+                                          ↓
+                                 Immediately available via MCP (no redeploy)
 ```
+
+### Session File Formats
+
+**Claude Code** (`~/.claude/projects/<encoded-path>/<session-uuid>.jsonl`):
+- Event types: `user`, `assistant`, `queue-operation`, `progress`
+- Content can be string or list of text blocks
+- `cwd` field on events identifies the working directory
+
+**Codex CLI** (`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`):
+- Wrapper format: `{timestamp, type, payload}`
+- Event types: `session_meta`, `response_item`, `turn_context`, `compacted`
+- Uses `developer` role for user messages
+
+### Filtering
+
+Sessions are skipped if they have:
+- Fewer than 4 turns (trivial sessions like `cd`/`ls`)
+- Less than 300 chars of user content
 
 ### Manual Run
 
@@ -244,7 +344,7 @@ python agent_sessions/run.py --source codex_cli
 
 ### launchd Daemon
 
-Installed at `~/Library/LaunchAgents/com.arjun.knowledge-agent-sessions.plist`. Runs every 6 hours + at login.
+Installed at `~/Library/LaunchAgents/com.arjun.knowledge-agent-sessions.plist`. Runs every 6 hours (21600 seconds) + at login.
 
 ```bash
 # Check status
@@ -256,6 +356,7 @@ launchctl start com.arjun.knowledge-agent-sessions
 
 # View logs
 tail -f ~/.knowledge_agent_sessions_stdout.log
+tail -f ingestion/logs/agent_sessions.log
 ```
 
 ### GitHub Linking
@@ -265,49 +366,92 @@ When a session's working directory is inside a git repo with a GitHub remote, en
 - `metadata.github_url`: e.g. `https://github.com/ArjunDivecha/loop-pilot`
 - `metadata.readme_summary`: First 500 chars of the repo README
 
+The linker resolves repos by:
+1. Walking up from `cwd` to find `.git` directory
+2. Parsing `git remote get-url origin`
+3. Matching SSH (`git@github.com:`) or HTTPS (`https://github.com/`) formats
+4. Fetching README via GitHub API (cached per repo)
+
+### Deduplication
+
+Entry IDs are deterministic: `ke_` + MD5 of `source:session_id:domain`. Re-running backfill skips already-saved entries.
+
 ## Updating with New Data
 
 ### Agent Sessions (automatic)
-The launchd daemon runs every 6 hours. No manual action needed.
+The launchd daemon runs every 6 hours. No manual action needed. State is tracked in `ingestion/checkpoints/agent_sessions_state.json` (byte offsets per file).
+
+### GitHub Repos (manual)
+```bash
+cd ingestion
+python github/run.py                    # All repos
+python github/run.py --repos "A,B,C"   # Specific repos
+python github/run.py --dry-run          # Preview without saving
+```
+
+### Gmail (manual)
+```bash
+cd ingestion
+python gmail/run.py                     # Since 2020
+python gmail/run.py --since 2024        # Custom start year
+```
 
 ### Claude/GPT Exports (manual)
-
 ```bash
 cd distillation
-
-# Clear old checkpoints
-rm checkpoints/*.pkl
-
-# Run full pipeline
+rm checkpoints/*.pkl                    # Clear old checkpoints
 python run.py
 ```
 
 ## Key Concepts
 
-- **Knowledge Entry**: A structured insight on a topic with current view, key insights, know-how, and evidence
-- **Project Entry**: An ongoing project with goal, status, phase, decisions made, and blockers
-- **Provenance**: Every insight links back to source conversation + message IDs
+- **Knowledge Entry** (`ke_*`): A structured insight on a topic with current view, key insights, know-how, and evidence
+- **Project Entry** (`pe_*`): An ongoing project with goal, status, phase, decisions made, and blockers
+- **Provenance**: Every insight links back to source conversation, session, or repo
 - **Thin Index**: A compressed (~10K token) overview of all topics/projects for fast context injection
-- **Semantic Search**: Uses OpenAI `text-embedding-3-large` (3072 dimensions) for relevance matching
+- **Semantic Search**: 70% semantic similarity + 30% recency weighting, with source-based scoring (GitHub 1.1x, email 0.6x)
+- **GitHub Linking**: Agent session entries include repo URL and README summary when the session was in a git repo
 
-## Current Stats
+## Knowledge Entry Schema
 
-After initial distillation:
-- **1007** knowledge entries
-- **325** project entries
-- **1332** total vectors
-- **85** topics in thin index
-- **42** projects in thin index
+```json
+{
+  "id": "ke_a1b2c3d4e5f6",
+  "domain": "MLX LoRA fine-tuning",
+  "current_view": "For LoRA on MLX use layers 8-16 for domain adaptation...",
+  "state": "active",
+  "confidence": "high",
+  "detail_level": "full",
+  "metadata": {
+    "updated_at": "2026-03-26T07:06:38+00:00",
+    "sources": ["codex_cli:session_abc123"],
+    "project": "loop-pilot",
+    "source_type": "codex_cli",
+    "github_repo": "ArjunDivecha/loop-pilot",
+    "github_url": "https://github.com/ArjunDivecha/loop-pilot",
+    "readme_summary": "# Loop Pilot\nAutomated research loop..."
+  }
+}
+```
 
 ## Troubleshooting
 
+### Agent session daemon not running
+```bash
+launchctl list | grep knowledge-agent
+# If not listed:
+launchctl load ~/Library/LaunchAgents/com.arjun.knowledge-agent-sessions.plist
+# Check logs:
+cat ~/.knowledge_agent_sessions_stderr.log
+```
+
 ### Pipeline hangs at extraction
 - Check `ANTHROPIC_API_KEY` is valid
-- Monitor with: `tail -f distillation/runs/*.json`
+- Monitor with: `tail -f ingestion/logs/agent_sessions.log`
 
 ### MCP tools fail with "error code: 1016"
-- This is a DNS/network error from Cloudflare
-- Check Cloudflare Worker logs: `wrangler tail`
+- DNS/network error from Cloudflare
+- Check Worker logs: `wrangler tail`
 - Verify all secrets are set: `wrangler secret list`
 
 ### Search returns no results
@@ -318,13 +462,22 @@ After initial distillation:
 - Verify the URL ends with `/sse`
 - Check MCP integration is enabled in Claude settings
 
+### Prevent Claude Code session cleanup
+Sessions older than 30 days are deleted by default. To keep all history:
+```bash
+# In ~/.claude/settings.json, set:
+"cleanupPeriodDays": 99999
+```
+
 ## Tech Stack
 
-- **Distillation**: Python 3.10+, Anthropic SDK, OpenAI SDK
-- **Storage**: Upstash Redis + Upstash Vector
-- **MCP Server**: Cloudflare Workers, TypeScript, @modelcontextprotocol/sdk
-- **Embeddings**: OpenAI text-embedding-3-large (3072 dims)
-- **Extraction**: Claude Sonnet 4.5 (claude-sonnet-4-5-20250929)
+- **Extraction**: Claude Sonnet 4.6 (`claude-sonnet-4-6`) via Anthropic SDK
+- **Embeddings**: OpenAI `text-embedding-3-large` (3072 dimensions)
+- **Storage**: Upstash Redis (key-value + indexes) + Upstash Vector (semantic search)
+- **MCP Server**: Cloudflare Workers, TypeScript, `@modelcontextprotocol/sdk`
+- **Session Parsing**: Python, byte-offset JSONL parsing, `watchdog` (optional)
+- **Scheduling**: macOS launchd (6-hour interval)
+- **GitHub Integration**: GitHub REST API via custom client
 
 ## License
 
@@ -332,5 +485,6 @@ Private repository. Not for redistribution.
 
 ## Version History
 
-- **1.1.0** (March 2026): Agent session ingestion — auto-pulls from Claude Code + Codex CLI, GitHub repo linking, launchd daemon
-- **1.0.0** (December 2024): Initial implementation with full pipeline, Cloudflare MCP server, and Claude integration
+- **1.1.0** (March 2026): Agent session ingestion — auto-pulls from Claude Code + Codex CLI, GitHub repo linking, launchd daemon, model upgrade to Claude Sonnet 4.6
+- **1.0.1** (March 2026): GitHub + Gmail ingestion pipelines, recency weighting, source-based scoring, thin index compaction
+- **1.0.0** (December 2024): Initial implementation with distillation pipeline, Cloudflare MCP server, and Claude integration

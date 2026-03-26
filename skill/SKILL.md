@@ -2,7 +2,13 @@
 
 ## Overview
 
-This skill provides access to my personal knowledge base - a distilled collection of insights, decisions, and learnings from past conversations. Use it to maintain consistency across conversations and avoid re-explaining past decisions.
+This skill provides access to my personal knowledge base - a distilled collection of insights, decisions, and learnings from multiple sources:
+- **Claude Code + Codex CLI sessions** (auto-ingested every 6 hours, linked to GitHub repos)
+- **Claude AI and ChatGPT conversation exports**
+- **GitHub repositories** (READMEs, commits, code comments)
+- **Gmail** (sent emails with technical content)
+
+Use it to maintain consistency across conversations and avoid re-explaining past decisions.
 
 ## Available Tools
 
@@ -83,6 +89,8 @@ Entry is contested (shown in index)
 2. **Compressed entries** have `has_full_content: false` - mention that archive exists
 3. **Evolution history** shows how thinking changed - useful for explaining past shifts
 4. **Evidence** links back to specific conversations - use for credibility
+5. **GitHub-linked entries** from agent sessions include `metadata.github_repo` and `metadata.github_url` - reference the repo when relevant
+6. **Source types** include `claude_code`, `codex_cli`, `github`, `gmail`, `claude_export`, `gpt_export` - visible in `metadata.source_type`
 
 ## Response Format
 

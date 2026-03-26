@@ -1,9 +1,10 @@
 # Product Requirements Document: Knowledge Distillation Pipeline
 
-**Version:** 1.1  
-**Author:** Claude + Arjun  
-**Date:** December 2024  
-**Status:** Draft
+**Version:** 1.1
+**Author:** Claude + Arjun
+**Date:** December 2024 (updated March 2026)
+**Status:** Implemented
+**Note:** This PRD covers the original distillation pipeline (Claude/GPT exports). Agent session ingestion (Claude Code + Codex CLI) is documented in README.md and `ingestion/agent_sessions/run.py`. Model updated to Claude Sonnet 4.6 (`claude-sonnet-4-6`).
 
 ---
 
