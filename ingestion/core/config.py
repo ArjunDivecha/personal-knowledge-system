@@ -86,7 +86,7 @@ EMBEDDING_MODEL = "text-embedding-3-large"
 EMBEDDING_DIMENSIONS = 3072
 
 # LLM model for extraction
-EXTRACTION_MODEL = "claude-sonnet-4-5-20250929"
+EXTRACTION_MODEL = "claude-sonnet-4-6"
 
 # Parallel processing
 MAX_WORKERS = 8

@@ -50,7 +50,7 @@ USAGE:
     python agent_sessions/run.py --source codex_cli
 
 NOTES:
-- Uses claude-sonnet-4-5-20250929 for distillation (cost-effective)
+- Uses claude-sonnet-4-6 for distillation (cost-effective)
 - Deterministic entry IDs prevent duplicates on re-run
 - Rate-limits API calls with 0.5s sleep between sessions
 - GitHub README fetching is cached per repo (no repeated API calls)
@@ -90,7 +90,7 @@ MIN_USER_CHARS = 300    # Skip trivial sessions (just cd/ls)
 MIN_TURNS = 4           # Skip sessions with too few back-and-forth turns
 
 # Distillation model
-DISTILL_MODEL = "claude-sonnet-4-5-20250929"
+DISTILL_MODEL = "claude-sonnet-4-6"
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
