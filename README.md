@@ -66,33 +66,37 @@ A system that distills AI chat histories (Claude, ChatGPT) into structured, sear
 
 ```
 knowledge-system/
-├── distillation/              # Python pipeline (runs locally)
-│   ├── run.py                 # Main entry point
-│   ├── config.py              # Configuration + env loading
-│   ├── pipeline/              # Processing stages
-│   │   ├── parse.py           # Parse Claude/GPT JSON exports
-│   │   ├── filter.py          # Score and filter conversations
-│   │   ├── extract.py         # LLM extraction with provenance
-│   │   ├── merge.py           # Merge logic (for incremental runs)
-│   │   ├── compress.py        # Archive old entries
-│   │   └── index.py           # Generate thin index
-│   ├── models/                # Data models (dataclasses)
-│   ├── prompts/               # LLM prompts for extraction
-│   ├── storage/               # Upstash Redis/Vector clients
-│   └── utils/                 # LLM + embedding wrappers
+├── ingestion/                     # Data ingestion pipelines
+│   ├── .env                       # Credentials (Upstash, Anthropic, OpenAI, GitHub)
+│   ├── core/                      # Shared utilities
+│   │   ├── config.py              # Configuration + env loading
+│   │   ├── storage.py             # StorageClient (Redis + Vector)
+│   │   └── extractor.py           # LLM-based knowledge extraction
+│   ├── agent_sessions/            # Claude Code + Codex CLI ingestion (NEW)
+│   │   ├── run.py                 # Entry point (daily scan or backfill)
+│   │   ├── parsers.py             # JSONL parsers for both session formats
+│   │   └── github_linker.py       # Resolves cwd → GitHub repo + README
+│   ├── github/                    # GitHub repo ingestion
+│   │   ├── client.py              # GitHub API client
+│   │   └── run.py                 # GitHub ingestion pipeline
+│   ├── gmail/                     # Gmail ingestion
+│   │   ├── parser.py              # Mbox file parser
+│   │   └── run.py                 # Gmail ingestion pipeline
+│   └── checkpoints/               # Resumable state files
 │
-├── cloudflare-mcp/            # MCP server (deployed)
+├── distillation/                  # Original pipeline (Claude/GPT exports)
+│   ├── run.py                     # Main entry point
+│   ├── pipeline/                  # Processing stages
+│   └── ...
+│
+├── cloudflare-mcp/                # MCP server (deployed)
 │   └── mcp-server/
-│       ├── src/index.ts       # Cloudflare Worker with MCP tools
-│       └── wrangler.jsonc     # Cloudflare config
+│       ├── src/index.ts           # Cloudflare Worker with MCP tools
+│       └── wrangler.jsonc         # Cloudflare config
 │
-├── mcp-server/                # (Legacy) Vercel attempt - not used
+├── skill/                         # Claude Skill definition
 │
-├── skill/                     # Claude Skill definition
-│   ├── SKILL.md               # Routing instructions for Claude
-│   └── examples/              # Example usage sessions
-│
-└── docs/                      # Design documents (PRDs)
+└── docs/                          # Design documents
 ```
 
 ## Quick Start
@@ -202,9 +206,71 @@ In Claude, try:
 | `get_deep(id)` | Returns full entry with evidence + evolution | "How did my view on X evolve?" |
 | `search(query)` | Semantic search across all entries | "Have we discussed volatility?" |
 
+## Agent Session Ingestion (Claude Code + Codex CLI)
+
+Automatically pulls knowledge from your Claude Code and Codex CLI sessions every 6 hours via launchd. Detects which GitHub repo each session was working in and links the repo URL + README to knowledge entries.
+
+### How It Works
+
+```
+~/.claude/projects/**/*.jsonl    ┐
+~/.codex/sessions/**/*.jsonl     ┤→ parsers.py (byte-offset tracking)
+                                 │       ↓
+                                 │  Detect GitHub repo from cwd (github_linker.py)
+                                 │       ↓
+                                 │  Claude API distillation → structured entries
+                                 │       ↓
+                                 └→ StorageClient → Upstash Redis + Vector
+```
+
+### Manual Run
+
+```bash
+cd ingestion
+
+# Process new sessions since last run
+python agent_sessions/run.py
+
+# Full backfill of all history
+python agent_sessions/run.py --backfill
+
+# Dry run (parse + distill, don't save)
+python agent_sessions/run.py --dry-run --limit 5
+
+# Process only one source
+python agent_sessions/run.py --source claude_code
+python agent_sessions/run.py --source codex_cli
+```
+
+### launchd Daemon
+
+Installed at `~/Library/LaunchAgents/com.arjun.knowledge-agent-sessions.plist`. Runs every 6 hours + at login.
+
+```bash
+# Check status
+launchctl list | grep knowledge-agent
+
+# Restart
+launchctl stop com.arjun.knowledge-agent-sessions
+launchctl start com.arjun.knowledge-agent-sessions
+
+# View logs
+tail -f ~/.knowledge_agent_sessions_stdout.log
+```
+
+### GitHub Linking
+
+When a session's working directory is inside a git repo with a GitHub remote, entries are enriched with:
+- `metadata.github_repo`: e.g. `ArjunDivecha/loop-pilot`
+- `metadata.github_url`: e.g. `https://github.com/ArjunDivecha/loop-pilot`
+- `metadata.readme_summary`: First 500 chars of the repo README
+
 ## Updating with New Data
 
-When you have new Claude/GPT exports:
+### Agent Sessions (automatic)
+The launchd daemon runs every 6 hours. No manual action needed.
+
+### Claude/GPT Exports (manual)
 
 ```bash
 cd distillation
@@ -266,4 +332,5 @@ Private repository. Not for redistribution.
 
 ## Version History
 
+- **1.1.0** (March 2026): Agent session ingestion — auto-pulls from Claude Code + Codex CLI, GitHub repo linking, launchd daemon
 - **1.0.0** (December 2024): Initial implementation with full pipeline, Cloudflare MCP server, and Claude integration

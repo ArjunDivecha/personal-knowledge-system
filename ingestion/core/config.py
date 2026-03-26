@@ -48,7 +48,7 @@ GMAIL_MBOX_PATH = Path(
 CHECKPOINT_DIR = Path(
     os.getenv(
         "CHECKPOINT_DIR",
-        "/Users/macbook2024/Library/CloudStorage/Dropbox/AAA Backup/A Working/Memory/knowledge-system/ingestion/checkpoints"
+        str(Path(__file__).parent.parent / "checkpoints")
     )
 )
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)

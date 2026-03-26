@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.arjun.knowledge-agent-sessions</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system/ingestion/agent_sessions/run.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system/ingestion</string>
+
+    <!-- Run every 6 hours (21600 seconds) -->
+    <key>StartInterval</key>
+    <integer>21600</integer>
+
+    <!-- Also run at load (login) -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/arjundivecha/.knowledge_agent_sessions_stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/arjundivecha/.knowledge_agent_sessions_stderr.log</string>
+
+    <!-- Don't restart immediately on failure -->
+    <key>KeepAlive</key>
+    <false/>
+
+    <!-- Environment variables (point to the .env via python-dotenv in script) -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+    </dict>
+</dict>
+</plist>
