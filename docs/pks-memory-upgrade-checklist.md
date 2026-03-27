@@ -109,16 +109,17 @@ Phase 4 notes:
   - external runner / GitHub Actions
   - or Cron trigger that only wakes a Durable Object / Queue consumer
 - [ ] Add `index:rebuild:lock` plus staging-key swap for index rebuilds
-- [ ] Add timestamped archive keys plus `:latest` pointers
+- [x] Add timestamped archive keys plus `:latest` pointers
 - [x] Define `dream:run:{iso}` schema
 - [ ] Define `consolidation_notes` schema/format
 - [ ] Add Dream audit retention policy
 - [ ] Add Dream alert thresholds
 
 Phase 5 notes:
-- Dream is currently `dry_run` only. It writes audit records and archive candidates but does not mutate or archive entries yet.
+- The nightly scheduled Dream path is currently `dry_run` only. It writes audit records and archive candidates but does not mutate or archive entries on cron.
 - A local scheduled dry-run on `2026-03-27` completed successfully and wrote `dream:last_run` plus `dream:run:{run_id}` with `83` archive candidates.
 - Live cron registration is now active for `0 3 * * *` UTC.
+- Reversible archival writes and restore semantics are implemented behind the Dream engine and were verified on `2026-03-27` with a controlled single-entry archive/restore test.
 
 ## Phase 6: Ingestion Hardening And Operator Tools
 
@@ -139,6 +140,7 @@ Phase 5 notes:
 - [ ] `search("investing")` ranks Tier 1 and Tier 2 above Tier 3
 - [x] Repeated retrieval increments access counters without races
 - [x] Dream dry run produces reversible archive candidates only
+- [x] Controlled live archive/restore preserves a timestamped snapshot and returns the entry to active state
 - [ ] New write-capable MCP tools reject unauthorized calls
 
 ## Cloudflare Free Plan Notes

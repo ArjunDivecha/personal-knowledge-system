@@ -133,7 +133,7 @@ This is the software analog of strategic forgetting: preserve what matters, but 
 
 The most ambitious part of the design is the Dream job.
 
-Dream is partially live now. The scheduler, audit trail, and dry-run candidate discovery loop are running. The full archival and replay-heavy consolidation path is still planned. The intended structure is:
+Dream is partially live now. The scheduler, audit trail, candidate discovery loop, and reversible archive/restore mechanics are implemented. Nightly scheduled runs still operate in dry-run mode while replay-heavy consolidation and operator-facing write tools remain planned. The intended structure is:
 
 1. Survey
    Load active entries, compute salience, and bucket them into stable, active, weak, and decay candidates.
@@ -338,7 +338,7 @@ Dream is the long-horizon maintenance loop. The idea is:
 - archive low-value memories with reversible pointers
 - rebuild the current self-model without re-injecting everything forever
 
-Dream is Phase 5 work. The dry-run scheduler and audit output are live; reversible archival writes are not yet enabled.
+Dream is Phase 5 work. The dry-run scheduler and audit output are live, and the reversible archive/restore path has been verified on a controlled live sample. Nightly scheduled Dream runs still remain `dry_run` only.
 
 ## What Is Live Today
 
@@ -352,6 +352,7 @@ As of March 27, 2026, the live system has:
 - tier counts of `500` Tier 1, `24` Tier 2, `85` Tier 3
 - `0` archived entries
 - latest Dream dry-run surfaced `83` archive candidates without mutating active memory
+- reversible archive snapshot and restore semantics have been verified on a single live entry, which was immediately restored to active memory
 
 Operationally, the following are live:
 
@@ -362,11 +363,12 @@ Operationally, the following are live:
 - OAuth-enabled Cloudflare MCP server
 - background reconsolidation on retrieval
 - nightly Dream dry-run scheduler and audit records
+- reversible Dream archive snapshot and restore mechanics
 - `/health` and `/status` rollout endpoints
 
 Not live yet:
 
-- live Dream archival and replay-heavy consolidation
+- nightly scheduled Dream archival and replay-heavy consolidation
 - write-capable operator MCP tools such as restore/archive overrides
 
 ## How The Repo Is Organized

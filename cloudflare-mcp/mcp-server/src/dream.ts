@@ -1,4 +1,5 @@
 import { Redis } from "@upstash/redis/cloudflare";
+import { Index } from "@upstash/vector";
 import { computeSalience, MEMORY_POLICY, resolveStoredInjectionTier } from "./salience";
 
 type EntryType = "knowledge" | "project";
@@ -11,6 +12,9 @@ interface RunDreamOptions {
 	cron?: string | null;
 	scheduledTime?: number | null;
 	note?: string | null;
+	candidateIds?: string[] | null;
+	archiveLimit?: number | null;
+	setAsLatest?: boolean;
 }
 
 interface LoadedEntry {
@@ -24,13 +28,25 @@ interface LoadedEntry {
 	injectionTier: 1 | 2 | 3;
 	mentionCount: number;
 	accessCount: number;
+	sourceConversationCount: number;
 	salienceScore: number;
+}
+
+interface ArchivedSnapshot {
+	schema_version: 1;
+	entry_id: string;
+	entry_type: EntryType;
+	run_id: string;
+	archived_at: string;
+	archive_reason: string;
+	snapshot: Record<string, unknown>;
 }
 
 const DREAM_LOCK_KEY = "dream:lock";
 const DREAM_LAST_RUN_KEY = "dream:last_run";
 const DREAM_LAST_ATTEMPT_KEY = "dream:last_attempt";
 const DREAM_RUN_PREFIX = "dream:run:";
+const ARCHIVED_PREFIX = "archived";
 const DREAM_LOCK_TTL_SECONDS = 30 * 60;
 const DREAM_SAMPLE_LIMIT = 25;
 const DREAM_SCAN_COUNT = 200;
@@ -39,6 +55,13 @@ function createRedisClient(env: Env): Redis {
 	return new Redis({
 		url: env.UPSTASH_REDIS_REST_URL,
 		token: env.UPSTASH_REDIS_REST_TOKEN,
+	});
+}
+
+function createVectorClient(env: Env): Index {
+	return new Index({
+		url: env.UPSTASH_VECTOR_REST_URL,
+		token: env.UPSTASH_VECTOR_REST_TOKEN,
 	});
 }
 
@@ -103,6 +126,18 @@ function getEntryAccessKey(entryId: string): string {
 
 function getEntryLastAccessedKey(entryId: string): string {
 	return `entry_last_accessed:${entryId}`;
+}
+
+function getEntryKey(entryType: EntryType, entryId: string): string {
+	return `${entryType}:${entryId}`;
+}
+
+function getArchivedSnapshotKey(entryType: EntryType, entryId: string, runId: string): string {
+	return `${ARCHIVED_PREFIX}:${entryType}:${entryId}:${runId}`;
+}
+
+function getArchivedLatestKey(entryType: EntryType, entryId: string): string {
+	return `${ARCHIVED_PREFIX}:${entryType}:${entryId}:latest`;
 }
 
 function getEntryLabel(entry: Record<string, unknown>): string {
@@ -170,6 +205,26 @@ function overlayAccessSignals(
 	return entry;
 }
 
+function appendConsolidationNote(metadata: Record<string, unknown>, note: string): void {
+	const notes = toStringArray(metadata.consolidation_notes);
+	if (notes[notes.length - 1] !== note) {
+		notes.push(note);
+	}
+	metadata.consolidation_notes = notes.slice(-20);
+}
+
+function setVectorMetadataBase(entry: LoadedEntry): Record<string, unknown> {
+	return {
+		type: entry.type,
+		archived: Boolean(entry.metadata.archived),
+		context_type: entry.metadata.context_type,
+		injection_tier: entry.metadata.injection_tier,
+		salience_score: entry.metadata.salience_score,
+		mention_count: entry.metadata.mention_count,
+		last_consolidated: entry.metadata.last_consolidated,
+	};
+}
+
 async function scanKeys(redis: Redis, match: string): Promise<string[]> {
 	let cursor = "0";
 	const keys: string[] = [];
@@ -229,6 +284,7 @@ async function loadEntriesByType(redis: Redis, entryType: EntryType): Promise<Lo
 			injectionTier: resolveStoredInjectionTier(metadata),
 			mentionCount,
 			accessCount,
+			sourceConversationCount: toStringArray(metadata.source_conversations).length,
 			salienceScore,
 		});
 	}
@@ -242,6 +298,14 @@ function isArchiveCandidate(entry: LoadedEntry): boolean {
 		entry.mentionCount === 1 &&
 		entry.accessCount === 0 &&
 		entry.salienceScore < MEMORY_POLICY.dream_thresholds.archive_candidate_salience
+	);
+}
+
+function isPromotionCandidate(entry: LoadedEntry): boolean {
+	return (
+		entry.contextType === "task_query" &&
+		entry.mentionCount >= MEMORY_POLICY.dream_thresholds.promote_candidate_min_mentions &&
+		(entry.accessCount > 0 || entry.sourceConversationCount > 1)
 	);
 }
 
@@ -327,16 +391,208 @@ function buildBaseRunRecord(
 	};
 }
 
+async function persistEntry(
+	redis: Redis,
+	vector: Index,
+	entry: LoadedEntry,
+): Promise<void> {
+	entry.metadata.salience_score = computeSalience(entry.entry);
+	entry.entry.metadata = entry.metadata;
+	await redis.set(getEntryKey(entry.type, entry.id), JSON.stringify(entry.entry));
+	await vector.update({
+		id: entry.id,
+		metadata: setVectorMetadataBase(entry),
+		metadataUpdateMode: "PATCH",
+	});
+}
+
+async function promoteEntry(
+	redis: Redis,
+	vector: Index,
+	entry: LoadedEntry,
+	runId: string,
+	timestamp: string,
+): Promise<Record<string, unknown>> {
+	entry.metadata.context_type = "recurring_pattern";
+	entry.metadata.injection_tier = 2;
+	entry.metadata.last_consolidated = timestamp;
+	appendConsolidationNote(
+		entry.metadata,
+		`${timestamp}: Dream promoted task_query -> recurring_pattern (run ${runId})`,
+	);
+	entry.contextType = "recurring_pattern";
+	entry.injectionTier = 2;
+	entry.salienceScore = computeSalience(entry.entry);
+	entry.metadata.salience_score = entry.salienceScore;
+	entry.entry.metadata = entry.metadata;
+	await persistEntry(redis, vector, entry);
+
+	return {
+		id: entry.id,
+		type: entry.type,
+		label: entry.label,
+		context_type: entry.contextType,
+		injection_tier: entry.injectionTier,
+		salience_score: entry.salienceScore,
+	};
+}
+
+async function archiveEntry(
+	redis: Redis,
+	vector: Index,
+	entry: LoadedEntry,
+	runId: string,
+	timestamp: string,
+	reason: string,
+): Promise<Record<string, unknown>> {
+	const activeKey = getEntryKey(entry.type, entry.id);
+	const latestEntry = normalizeEntry(await redis.get(activeKey), entry.type) ?? entry.entry;
+	const [accessCountRaw, lastAccessedRaw] = await Promise.all([
+		redis.get(getEntryAccessKey(entry.id)),
+		redis.get(getEntryLastAccessedKey(entry.id)),
+	]);
+	overlayAccessSignals(latestEntry, accessCountRaw, lastAccessedRaw);
+	const latestMetadata = (latestEntry.metadata as Record<string, unknown> | undefined) ?? {};
+
+	const archiveSnapshotKey = getArchivedSnapshotKey(entry.type, entry.id, runId);
+	const archivedSnapshot: ArchivedSnapshot = {
+		schema_version: 1,
+		entry_id: entry.id,
+		entry_type: entry.type,
+		run_id: runId,
+		archived_at: timestamp,
+		archive_reason: reason,
+		snapshot: JSON.parse(JSON.stringify(latestEntry)),
+	};
+
+	await redis.set(archiveSnapshotKey, JSON.stringify(archivedSnapshot));
+	await redis.set(
+		getArchivedLatestKey(entry.type, entry.id),
+		JSON.stringify({
+			entry_id: entry.id,
+			entry_type: entry.type,
+			run_id: runId,
+			archived_at: timestamp,
+			snapshot_key: archiveSnapshotKey,
+		}),
+	);
+
+	latestMetadata.archived = true;
+	latestMetadata.archived_at = timestamp;
+	latestMetadata.archived_reason = reason;
+	latestMetadata.archived_run_id = runId;
+	latestMetadata.archive_snapshot_key = archiveSnapshotKey;
+	latestMetadata.last_consolidated = timestamp;
+	appendConsolidationNote(
+		latestMetadata,
+		`${timestamp}: Dream archived entry (run ${runId}) because ${reason}`,
+	);
+	latestEntry.metadata = latestMetadata;
+
+	const archivedEntry: LoadedEntry = {
+		...entry,
+		entry: latestEntry,
+		metadata: latestMetadata,
+		contextType:
+			typeof latestMetadata.context_type === "string" ? latestMetadata.context_type : entry.contextType,
+		injectionTier: resolveStoredInjectionTier(latestMetadata),
+		salienceScore: computeSalience(latestEntry),
+	};
+	archivedEntry.metadata.salience_score = archivedEntry.salienceScore;
+	await persistEntry(redis, vector, archivedEntry);
+
+	return {
+		id: entry.id,
+		type: entry.type,
+		label: entry.label,
+		snapshot_key: archiveSnapshotKey,
+		archived_at: timestamp,
+		reason,
+	};
+}
+
+export async function restoreArchivedEntry(
+	env: Env,
+	entryId: string,
+	reason: string,
+): Promise<Record<string, unknown>> {
+	const redis = createRedisClient(env);
+	const vector = createVectorClient(env);
+	const entryType: EntryType = entryId.startsWith("pe_") ? "project" : "knowledge";
+	const latestPointer = parseStoredObject(await redis.get(getArchivedLatestKey(entryType, entryId)));
+	if (!latestPointer?.snapshot_key || typeof latestPointer.snapshot_key !== "string") {
+		throw new Error(`No archived snapshot found for ${entryId}`);
+	}
+
+	const archivedSnapshot = parseStoredObject(await redis.get(latestPointer.snapshot_key));
+	const snapshotEntry = parseStoredObject(archivedSnapshot?.snapshot);
+	if (!snapshotEntry) {
+		throw new Error(`Archived snapshot is missing entry data for ${entryId}`);
+	}
+
+	const restoredEntry = normalizeEntry(snapshotEntry, entryType);
+	if (!restoredEntry) {
+		throw new Error(`Unable to restore archived entry ${entryId}`);
+	}
+
+	const timestamp = new Date().toISOString();
+	const metadata = (restoredEntry.metadata as Record<string, unknown> | undefined) ?? {};
+	metadata.archived = false;
+	metadata.context_type = "explicit_save";
+	metadata.injection_tier = 1;
+	metadata.last_consolidated = timestamp;
+	metadata.restored_at = timestamp;
+	metadata.restored_reason = reason;
+	appendConsolidationNote(
+		metadata,
+		`${timestamp}: Restored archived entry as explicit_save (${reason})`,
+	);
+	delete metadata.archived_at;
+	delete metadata.archived_reason;
+	delete metadata.archived_run_id;
+	delete metadata.archive_snapshot_key;
+	restoredEntry.metadata = metadata;
+
+	const restoredLoadedEntry: LoadedEntry = {
+		id: entryId,
+		type: entryType,
+		entry: restoredEntry,
+		metadata,
+		label: getEntryLabel(restoredEntry),
+		updatedAt: getEntryUpdatedAt(restoredEntry, metadata),
+		contextType: "explicit_save",
+		injectionTier: 1,
+		mentionCount: Math.max(1, toOptionalInteger(metadata.mention_count) ?? 1),
+		accessCount: Math.max(0, toOptionalInteger(metadata.access_count) ?? 0),
+		sourceConversationCount: toStringArray(metadata.source_conversations).length,
+		salienceScore: computeSalience(restoredEntry),
+	};
+	restoredLoadedEntry.metadata.salience_score = restoredLoadedEntry.salienceScore;
+
+	await persistEntry(redis, vector, restoredLoadedEntry);
+
+	return {
+		id: entryId,
+		type: entryType,
+		context_type: restoredLoadedEntry.contextType,
+		injection_tier: restoredLoadedEntry.injectionTier,
+		snapshot_key: latestPointer.snapshot_key,
+		restored_at: timestamp,
+	};
+}
+
 export async function runDreamCycle(
 	env: Env,
 	options: RunDreamOptions,
 ): Promise<Record<string, unknown>> {
 	const redis = createRedisClient(env);
+	const vector = createVectorClient(env);
 	const startedAt = new Date(
 		typeof options.scheduledTime === "number" ? options.scheduledTime : Date.now(),
 	).toISOString();
 	const runId = `dr_${startedAt.replace(/[:.]/g, "-")}`;
 	const baseRunRecord = buildBaseRunRecord(runId, options, startedAt);
+	const setAsLatest = options.setAsLatest ?? true;
 
 	const migrationBackfillComplete = await redis.get("migration:backfill_complete");
 	if (!migrationBackfillComplete) {
@@ -352,7 +608,7 @@ export async function runDreamCycle(
 				prune: { status: "skipped", reason: "migration_backfill_incomplete" },
 			},
 		};
-		await writeRunRecord(redis, skippedRecord, true);
+		await writeRunRecord(redis, skippedRecord, setAsLatest);
 		return skippedRecord;
 	}
 
@@ -389,12 +645,18 @@ export async function runDreamCycle(
 			loadEntriesByType(redis, "project"),
 		]);
 		const allEntries = [...knowledgeEntries, ...projectEntries];
-		const archiveCandidates = allEntries.filter(isArchiveCandidate);
-		const promotionCandidates = allEntries.filter(
-			(entry) =>
-				entry.contextType === "task_query" &&
-				entry.mentionCount >= MEMORY_POLICY.dream_thresholds.promote_candidate_min_mentions,
-		);
+		const candidateIdFilter =
+			options.candidateIds && options.candidateIds.length > 0
+				? new Set(options.candidateIds)
+				: null;
+		const promotionCandidates = allEntries.filter((entry) => {
+			if (candidateIdFilter && !candidateIdFilter.has(entry.id)) return false;
+			return isPromotionCandidate(entry);
+		});
+		const archiveCandidates = allEntries.filter((entry) => {
+			if (candidateIdFilter && !candidateIdFilter.has(entry.id)) return false;
+			return isArchiveCandidate(entry);
+		});
 		const bucketCounts: Record<DreamBucket, number> = {
 			stable: 0,
 			active: 0,
@@ -404,6 +666,28 @@ export async function runDreamCycle(
 
 		for (const entry of allEntries) {
 			bucketCounts[classifyBucket(entry)] += 1;
+		}
+
+		const promotedEntries: Array<Record<string, unknown>> = [];
+		if (!options.dryRun) {
+			for (const entry of promotionCandidates) {
+				promotedEntries.push(await promoteEntry(redis, vector, entry, runId, startedAt));
+			}
+		}
+
+		const archiveReason =
+			"salience below archive threshold with single mention and no retrieval reinforcement";
+		const archiveCandidatesLimited =
+			typeof options.archiveLimit === "number" && options.archiveLimit >= 0
+				? archiveCandidates.slice(0, options.archiveLimit)
+				: archiveCandidates;
+		const archivedEntries: Array<Record<string, unknown>> = [];
+		if (!options.dryRun) {
+			for (const entry of archiveCandidatesLimited) {
+				archivedEntries.push(
+					await archiveEntry(redis, vector, entry, runId, startedAt, archiveReason),
+				);
+			}
 		}
 
 		const completedAt = new Date().toISOString();
@@ -419,19 +703,24 @@ export async function runDreamCycle(
 					buckets: bucketCounts,
 				},
 				replay: {
-					status: "deferred",
+					status: options.dryRun ? "dry_run" : "completed",
 					promotion_candidate_count: promotionCandidates.length,
-					reason:
-						"Phase 5 scaffolding only; transcript replay, contradiction detection, and dedupe are not enabled yet.",
+					promoted_count: promotedEntries.length,
+					promoted_entries: promotedEntries,
+					deferred_items: [
+						"duplicate merge detection",
+						"contradiction detection",
+						"temporal reference cleanup",
+					],
 				},
 				consolidate: {
-					status: options.dryRun ? "dry_run" : "blocked",
-					reason:
-						"Current Dream implementation writes audit output only. Live consolidation and archival are intentionally disabled.",
+					status: options.dryRun ? "dry_run" : "completed",
+					promoted_count: promotedEntries.length,
 				},
 				prune: {
-					status: options.dryRun ? "dry_run" : "blocked",
+					status: options.dryRun ? "dry_run" : "completed",
 					archive_candidate_count: archiveCandidates.length,
+					archived_count: archivedEntries.length,
 				},
 			},
 			counts: {
@@ -443,7 +732,9 @@ export async function runDreamCycle(
 				weak: bucketCounts.weak,
 				decay_candidates: bucketCounts.decay_candidate,
 				archive_candidates: archiveCandidates.length,
+				archived: archivedEntries.length,
 				promotion_candidates: promotionCandidates.length,
+				promoted: promotedEntries.length,
 			},
 			archive_candidates: archiveCandidates.map((entry) => ({
 				id: entry.id,
@@ -456,12 +747,15 @@ export async function runDreamCycle(
 				access_count: entry.accessCount,
 				updated_at: entry.updatedAt,
 			})),
+			archived_entries: archivedEntries,
+			promoted_entries: promotedEntries,
 			archive_candidates_sample: summarizeArchiveCandidates(archiveCandidates),
-			next_action:
-				"Review archive candidates and enable live archive writes only after validating the dry-run output.",
+			next_action: options.dryRun
+				? "Review archive candidates and enable live archive writes only after validating the dry-run output."
+				: "Review archived entries and confirm restore semantics before enabling live nightly archival.",
 		};
 
-		await writeRunRecord(redis, runRecord, true);
+		await writeRunRecord(redis, runRecord, setAsLatest);
 		return runRecord;
 	} catch (error) {
 		const failedRecord = {
