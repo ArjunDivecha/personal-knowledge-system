@@ -12,7 +12,7 @@ import {
 	getSourceWeightFromMetadata,
 	resolveStoredInjectionTier,
 } from "./salience";
-import { runDreamCycle } from "./dream";
+import { restoreArchivedEntry, runDreamCycle } from "./dream";
 
 // GitHub accounts to query
 const GITHUB_ACCOUNTS = ['arjun-via', 'ArjunDivecha'];
@@ -20,6 +20,7 @@ const MEMORY_SCHEMA_VERSION = 2;
 const MAX_RECONSOLIDATION_SEARCH_RESULTS = 5;
 const MAX_RECONSOLIDATION_ERROR_LOGS = 100;
 const RECONSOLIDATION_PROMOTION_THRESHOLD = 3;
+const MAX_OPERATOR_DREAM_ARCHIVE_LIMIT = 10;
 
 type EntryType = "knowledge" | "project";
 
@@ -174,6 +175,19 @@ function getEntryLastAccessedKey(entryId: string): string {
 
 function getReconsolidationErrorKey(now: Date = new Date()): string {
 	return `reconsolidation:errors:${now.toISOString().slice(0, 10)}`;
+}
+
+function getOperatorBearerToken(request: Request): string | null {
+	const authHeader = request.headers.get("authorization");
+	if (!authHeader) return null;
+	const match = authHeader.match(/^Bearer\s+(.+)$/i);
+	return match ? match[1] : null;
+}
+
+function isAuthorizedOperatorRequest(request: Request, env: Env): boolean {
+	if (!env.DREAM_OPERATOR_TOKEN) return false;
+	const bearerToken = getOperatorBearerToken(request);
+	return bearerToken !== null && bearerToken === env.DREAM_OPERATOR_TOKEN;
 }
 
 function latestIsoTimestamp(...values: Array<string | null | undefined>): string | null {
@@ -1026,6 +1040,70 @@ const defaultHandler = {
 			} catch (error) {
 				const msg = error instanceof Error ? error.message : String(error);
 				return Response.json({ status: "error", error: msg }, { status: 500 });
+			}
+		}
+
+		if (url.pathname === "/ops/dream/run" && request.method === "POST") {
+			if (!isAuthorizedOperatorRequest(request, env)) {
+				return Response.json({ error: "Unauthorized" }, { status: 401 });
+			}
+
+			try {
+				const body = await request.json();
+				const parsed = z.object({
+					dry_run: z.boolean().default(true),
+					candidate_ids: z.array(z.string().min(1)).max(MAX_OPERATOR_DREAM_ARCHIVE_LIMIT).optional(),
+					archive_limit: z.number().int().positive().max(MAX_OPERATOR_DREAM_ARCHIVE_LIMIT).optional(),
+					set_as_latest: z.boolean().default(false),
+					note: z.string().max(500).optional(),
+				}).parse(body);
+
+				if (!parsed.dry_run && (!parsed.candidate_ids || parsed.candidate_ids.length === 0)) {
+					return Response.json(
+						{ error: "Non-dry-run operator Dream calls require candidate_ids." },
+						{ status: 400 },
+					);
+				}
+
+				const archiveLimit =
+					parsed.archive_limit ??
+					(parsed.candidate_ids && parsed.candidate_ids.length > 0
+						? parsed.candidate_ids.length
+						: undefined);
+
+				const result = await runDreamCycle(env, {
+					dryRun: parsed.dry_run,
+					trigger: "manual",
+					candidateIds: parsed.candidate_ids ?? null,
+					archiveLimit: archiveLimit ?? null,
+					setAsLatest: parsed.set_as_latest,
+					note: parsed.note ?? "Operator-triggered Dream test run",
+				});
+
+				return Response.json(result, { headers: { "Content-Type": "application/json" } });
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				return Response.json({ error: msg }, { status: 500 });
+			}
+		}
+
+		if (url.pathname === "/ops/dream/restore" && request.method === "POST") {
+			if (!isAuthorizedOperatorRequest(request, env)) {
+				return Response.json({ error: "Unauthorized" }, { status: 401 });
+			}
+
+			try {
+				const body = await request.json();
+				const parsed = z.object({
+					entry_id: z.string().min(1),
+					reason: z.string().min(1).max(500),
+				}).parse(body);
+
+				const result = await restoreArchivedEntry(env, parsed.entry_id, parsed.reason);
+				return Response.json(result, { headers: { "Content-Type": "application/json" } });
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				return Response.json({ error: msg }, { status: 500 });
 			}
 		}
 

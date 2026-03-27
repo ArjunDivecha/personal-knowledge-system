@@ -9,6 +9,7 @@
 		"lint:fix": "biome lint --fix",
 		"start": "wrangler dev",
 		"cf-typegen": "wrangler types",
+		"test:dream-live": "node --experimental-strip-types scripts/test-dream-live.ts",
 		"type-check": "tsc --noEmit"
 	},
 	"dependencies": {

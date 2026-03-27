@@ -9,6 +9,7 @@ declare global {
 		UPSTASH_VECTOR_REST_TOKEN: string;
 		OPENAI_API_KEY: string;
 		GITHUB_TOKEN: string;
+		DREAM_OPERATOR_TOKEN: string;
 		MCP_OBJECT: DurableObjectNamespace<import("./index").KnowledgeMCP>;
 		OAUTH_KV: KVNamespace;
 		OAUTH_PROVIDER: OAuthHelpers;
