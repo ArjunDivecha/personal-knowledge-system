@@ -42,6 +42,149 @@ The target system has these behaviors:
 
 That full design is larger than what is currently live. Some parts are already running in production; some are the next phases.
 
+## Why Forgetting Matters
+
+There is a specific kind of irritation that comes from watching an intelligent system confidently misread you.
+
+I was deep in a conversation about country equity rotation signals, the kind of technical discussion that represents the actual center of my professional life, when Claude helpfully suggested that I might want to think about the question through the lens of Ayurvedic medicine because I had apparently expressed interest in Panchakarma once, in a single conversation, three months earlier.
+
+I had asked one question. I did not need that interest preserved in perpetuity.
+
+This is not Claude's fault. It is the fault of how AI memory systems are usually designed.
+
+Most deployed AI memory systems run on what I think of as single-gate ingestion:
+
+- did something appear in a conversation?
+- yes
+- store it forever
+- full weight
+- no decay
+- no frequency threshold
+
+There is no mechanism to distinguish between something discussed across a hundred professional conversations spanning decades and something mentioned once on a slow Tuesday. Everything that clears the gate is treated as equally durable, equally salient, and equally worthy of surfacing later.
+
+The brain does not work this way.
+
+Modern memory research makes the point clearly: optimal memory is not maximal memory. During slow-wave sleep, the hippocampus replays recent experience selectively, not uniformly. Weak signals do not consolidate like strong ones. The Synaptic Homeostasis Hypothesis proposes that sleep globally downscales synaptic strength while preserving stronger connections proportionally better, improving signal-to-noise ratio. The goal of memory is not to retain everything. The goal is to improve future decisions.
+
+That is the design principle behind this repository.
+
+The system is being rebuilt around a simple premise:
+
+- forgetting is not failure
+- forgetting is how a memory system becomes useful
+
+### What The Old System Got Wrong
+
+Before the current upgrade, the memory layer behaved too much like a write-only archive.
+
+Entries such as:
+
+- "Ayurvedic medicine — Panchakarma therapy"
+- "NFL playoff psychology"
+
+could sit at effectively the same retrieval weight as:
+
+- "30 years in quantitative investing"
+- "Senior Advisor at GMO"
+
+The system had no real evidence model. It had almost no way to distinguish durable identity from incidental curiosity. It also was not properly learning from use: access counters and last-accessed timestamps were not wired into retrieval behavior, so the store could accumulate entries without any feedback loop telling it which ones continued to matter.
+
+The result was completeness without judgment.
+
+### Evidence Strength
+
+The first structural change was to make the system aware of what it does not yet know: how strong the evidence is behind any given memory.
+
+Every entry now carries a `context_type`, a classification of why the information is being stored. The taxonomy runs from stable identity and active project context down to task-query and passing-reference material.
+
+Every entry also carries a `mention_count`, which tracks how many independent source conversations or source clusters surfaced that topic. This is the frequency signal the system uses to distinguish a durable pattern from a one-off appearance.
+
+From there, the system derives an `injection_tier`:
+
+- Tier 1
+  Stable identity, stated preferences, and active projects.
+- Tier 2
+  Recurring patterns and medium-priority topic-adjacent context.
+- Tier 3
+  Passing references and direct-query-only material.
+
+The important property is that Tier 3 material does not need to vanish to stop being intrusive. It can remain fully retrievable while no longer surfacing uninvited.
+
+### The Salience Function
+
+Evidence strength is not binary. It is continuous, and it changes over time.
+
+The salience model in this repository combines:
+
+- recency decay, with different half-lives by context type
+- mention frequency, with diminishing returns
+- type multipliers, so identity and project context are not treated like passing references
+- a small retrieval bonus, so repeatedly used memories can strengthen over time
+
+This lets the system represent a practical difference between:
+
+- a core professional identity fact that should remain available indefinitely
+- a one-off query that should become functionally invisible unless reinforced
+
+This is the software analog of strategic forgetting: preserve what matters, but stop letting weak traces compete for attention forever.
+
+### The Dream Job
+
+The most ambitious part of the design is the Dream job.
+
+Dream is not fully live yet. It is the planned long-horizon maintenance loop for the memory system. The intended structure is:
+
+1. Survey
+   Load active entries, compute salience, and bucket them into stable, active, weak, and decay candidates.
+2. Replay
+   Scan recent activity for repeated topics, contradictions, promotion candidates, and duplicates.
+3. Consolidate
+   Upgrade context where warranted, merge duplicates, recompute salience, and log the changes.
+4. Prune
+   Archive weak, low-evidence, low-use entries into a reversible namespace instead of deleting them.
+
+The point of Dream is not to erase the past. The point is to keep the active memory layer aligned with what remains useful.
+
+### Reconsolidation On Retrieval
+
+The shorter-horizon companion to Dream is reconsolidation on retrieval.
+
+This is Phase 4 work and is not fully live yet, but the intended behavior is straightforward:
+
+- every meaningful retrieval becomes a write event
+- access count increments
+- last accessed updates
+- the system can reconsider whether the memory has earned a stronger context type or tier
+
+In other words, use matters. A memory that continues to be retrieved across different conversations should not be treated the same way as one that was never touched again after ingestion.
+
+### The Larger Point
+
+The problem here is not specific to Claude. It is a design philosophy problem that shows up across AI memory systems.
+
+Most systems are optimized for recall coverage:
+
+- do not miss anything
+- do not forget anything
+- preserve everything forever
+
+But a memory system that never forgets is not automatically intelligent. It may simply be a system that traded judgment for completeness.
+
+The brain solved this a long time ago:
+
+- fast encoding
+- slow integration
+- selective replay
+- active weakening of noise
+- durable retention for what survives repeated relevance
+
+That is the model this repository is trying to approximate.
+
+The goal is not a perfect record.
+
+The goal is a memory system that gets better at representing what matters.
+
 ## System Model
 
 ```text
