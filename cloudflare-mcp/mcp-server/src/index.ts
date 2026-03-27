@@ -12,6 +12,7 @@ import {
 	getSourceWeightFromMetadata,
 	resolveStoredInjectionTier,
 } from "./salience";
+import { runDreamCycle } from "./dream";
 
 // GitHub accounts to query
 const GITHUB_ACCOUNTS = ['arjun-via', 'ArjunDivecha'];
@@ -326,6 +327,14 @@ async function buildHealthPayload(env: Env): Promise<Record<string, unknown>> {
 		pending_classification_count: pendingClassificationCount || 0,
 		reconsolidation_error_count_today: reconsolidationErrorCount || 0,
 		last_dream_run: typeof dreamSummary?.run_at === "string" ? dreamSummary.run_at : null,
+		last_dream_status: typeof dreamSummary?.status === "string" ? dreamSummary.status : null,
+		last_dream_dry_run: typeof dreamSummary?.dry_run === "boolean" ? dreamSummary.dry_run : null,
+		last_dream_archive_candidate_count:
+			typeof dreamSummary?.counts === "object" &&
+			dreamSummary.counts &&
+			typeof (dreamSummary.counts as Record<string, unknown>).archive_candidates === "number"
+				? (dreamSummary.counts as Record<string, number>).archive_candidates
+				: null,
 		thin_index: {
 			generated_at: typeof rawIndex.generated_at === "string" ? rawIndex.generated_at : null,
 			stored_topic_count: topics.length,
@@ -580,6 +589,26 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, { userId: string }> {
 
 				return {
 					content: [{ type: "text", text: JSON.stringify(compactIndex) }],
+				};
+			}
+		);
+
+		// Tool: get_dream_summary
+		this.server.tool(
+			"get_dream_summary",
+			"Get the most recent Dream job audit summary, including dry-run status and archive-candidate counts.",
+			{},
+			async () => {
+				const redis = this.getRedis(this.env);
+				const dreamSummary = parseStoredObject(await redis.get("dream:last_run"));
+				if (!dreamSummary) {
+					return {
+						content: [{ type: "text", text: JSON.stringify({ message: "No Dream runs recorded yet." }) }],
+					};
+				}
+
+				return {
+					content: [{ type: "text", text: JSON.stringify(dreamSummary) }],
 				};
 			}
 		);
@@ -1042,7 +1071,7 @@ const defaultHandler = {
 };
 
 // Export OAuth-wrapped handler for iOS Claude compatibility
-export default new OAuthProvider({
+const oauthProvider = new OAuthProvider({
 	apiHandlers: {
 		"/mcp": KnowledgeMCP.serve("/mcp", { binding: "MCP_OBJECT" }) as any,
 		"/sse": KnowledgeMCP.serveSSE("/sse", { binding: "MCP_OBJECT" }) as any,
@@ -1053,3 +1082,23 @@ export default new OAuthProvider({
 	clientRegistrationEndpoint: "/register",
 	scopesSupported: ["mcp:read", "mcp:write"],
 });
+
+export default {
+	fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+		return oauthProvider.fetch(request, env, ctx);
+	},
+	async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+		const promise = runDreamCycle(env, {
+			dryRun: true,
+			trigger: "scheduled",
+			cron: controller.cron,
+			scheduledTime: controller.scheduledTime,
+			note: "Phase 5 scaffolding run: audit and archive-candidate discovery only.",
+		});
+		ctx.waitUntil(promise);
+		const result = await promise;
+		if (result.status === "skipped_no_backfill" || result.status === "skipped_locked") {
+			controller.noRetry();
+		}
+	},
+};

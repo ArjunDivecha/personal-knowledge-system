@@ -133,7 +133,7 @@ This is the software analog of strategic forgetting: preserve what matters, but 
 
 The most ambitious part of the design is the Dream job.
 
-Dream is not fully live yet. It is the planned long-horizon maintenance loop for the memory system. The intended structure is:
+Dream is partially live now. The scheduler, audit trail, and dry-run candidate discovery loop are running. The full archival and replay-heavy consolidation path is still planned. The intended structure is:
 
 1. Survey
    Load active entries, compute salience, and bucket them into stable, active, weak, and decay candidates.
@@ -150,7 +150,7 @@ The point of Dream is not to erase the past. The point is to keep the active mem
 
 The shorter-horizon companion to Dream is reconsolidation on retrieval.
 
-This is Phase 4 work and is not fully live yet, but the intended behavior is straightforward:
+This is now live. The behavior is straightforward:
 
 - every meaningful retrieval becomes a write event
 - access count increments
@@ -326,7 +326,7 @@ Reconsolidation is the short-horizon maintenance loop. The idea is:
 - repeated retrieval can strengthen salience
 - the system records consolidation notes and errors
 
-This is Phase 4 work. It is not live yet.
+This is Phase 4 work and is live.
 
 ### Dream
 
@@ -338,7 +338,7 @@ Dream is the long-horizon maintenance loop. The idea is:
 - archive low-value memories with reversible pointers
 - rebuild the current self-model without re-injecting everything forever
 
-Dream is Phase 5 work. It is not live yet.
+Dream is Phase 5 work. The dry-run scheduler and audit output are live; reversible archival writes are not yet enabled.
 
 ## What Is Live Today
 
@@ -347,10 +347,11 @@ As of March 27, 2026, the live system has:
 - `573` knowledge topics
 - `36` projects
 - schema version `2`
-- completed Phase 1, Phase 2, and Phase 3 of the current memory upgrade
+- completed Phase 1, Phase 2, Phase 3, and Phase 4 of the current memory upgrade
 - `0` pending classifications in `classification:pending`
 - tier counts of `500` Tier 1, `24` Tier 2, `85` Tier 3
 - `0` archived entries
+- latest Dream dry-run surfaced `83` archive candidates without mutating active memory
 
 Operationally, the following are live:
 
@@ -359,12 +360,13 @@ Operationally, the following are live:
 - vector metadata normalization
 - rebuilt thin index with tier/salience metadata
 - OAuth-enabled Cloudflare MCP server
+- background reconsolidation on retrieval
+- nightly Dream dry-run scheduler and audit records
 - `/health` and `/status` rollout endpoints
 
 Not live yet:
 
-- access-counter reconsolidation
-- Dream scheduler and archive pipeline
+- live Dream archival and replay-heavy consolidation
 - write-capable operator MCP tools such as restore/archive overrides
 
 ## How The Repo Is Organized
@@ -455,11 +457,11 @@ Completed:
 - Phase 1 schema and migration hooks
 - Phase 2 live backfill and normalization
 - Phase 3 tier-aware retrieval and rollout status endpoint
+- Phase 4 reconsolidation on retrieval
 
 Next:
 
-- Phase 4 reconsolidation
-- Phase 5 Dream orchestration and reversible archiving
+- Phase 5 Dream archival writes, replay logic, and reversibility controls
 - Phase 6 ingestion hardening and operator tools
 
 The upgrade checklist lives in `docs/pks-memory-upgrade-checklist.md`.

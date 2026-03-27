@@ -6,6 +6,14 @@
   "compatibility_flags": [
     "nodejs_compat"
   ],
+  "triggers": {
+    "crons": [
+      "0 3 * * *"
+    ]
+  },
+  "limits": {
+    "cpu_ms": 30000
+  },
   "migrations": [
     {
       "new_sqlite_classes": [

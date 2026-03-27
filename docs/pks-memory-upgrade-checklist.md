@@ -100,27 +100,32 @@ Phase 4 notes:
 
 ## Phase 5: Dream Job
 
-- [ ] Add migration guard so Dream no-ops until backfill is complete
-- [ ] Add scheduled Worker handler
-- [ ] Add cron config
-- [ ] Keep initial Dream deterministic and non-LLM
+- [x] Add migration guard so Dream no-ops until backfill is complete
+- [x] Add scheduled Worker handler
+- [x] Add cron config
+- [x] Keep initial Dream deterministic and non-LLM
 - [ ] Add external-runner fallback path for replay-heavy work
 - [ ] Decide free-plan-compatible execution path for Dream:
   - external runner / GitHub Actions
   - or Cron trigger that only wakes a Durable Object / Queue consumer
 - [ ] Add `index:rebuild:lock` plus staging-key swap for index rebuilds
 - [ ] Add timestamped archive keys plus `:latest` pointers
-- [ ] Define `dream:run:{iso}` schema
+- [x] Define `dream:run:{iso}` schema
 - [ ] Define `consolidation_notes` schema/format
 - [ ] Add Dream audit retention policy
 - [ ] Add Dream alert thresholds
+
+Phase 5 notes:
+- Dream is currently `dry_run` only. It writes audit records and archive candidates but does not mutate or archive entries yet.
+- A local scheduled dry-run on `2026-03-27` completed successfully and wrote `dream:last_run` plus `dream:run:{run_id}` with `83` archive candidates.
+- Live cron registration is now active for `0 3 * * *` UTC.
 
 ## Phase 6: Ingestion Hardening And Operator Tools
 
 - [ ] Add cross-source fusion helper
 - [ ] Add source-aware mention counting
 - [ ] Add project staleness rule to classification
-- [ ] Add `get_dream_summary`
+- [x] Add `get_dream_summary`
 - [ ] Add `restore_archived`
 - [ ] Add `set_context_type`
 - [ ] Add OAuth scope checks and rate limits for write-capable tools
@@ -133,7 +138,7 @@ Phase 4 notes:
 - [x] Redis and vector metadata match on sampled entries
 - [ ] `search("investing")` ranks Tier 1 and Tier 2 above Tier 3
 - [x] Repeated retrieval increments access counters without races
-- [ ] Dream dry run produces reversible archive candidates only
+- [x] Dream dry run produces reversible archive candidates only
 - [ ] New write-capable MCP tools reject unauthorized calls
 
 ## Cloudflare Free Plan Notes
