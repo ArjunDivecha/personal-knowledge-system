@@ -5,9 +5,150 @@ import { Redis } from "@upstash/redis/cloudflare";
 import { Index } from "@upstash/vector";
 import OpenAI from "openai";
 import { OAuthProvider } from "@cloudflare/workers-oauth-provider";
+import {
+	computeSalience,
+	computeSearchScore,
+	deriveSearchTier,
+	getSourceWeightFromMetadata,
+	resolveStoredInjectionTier,
+} from "./salience";
 
 // GitHub accounts to query
 const GITHUB_ACCOUNTS = ['arjun-via', 'ArjunDivecha'];
+const MEMORY_SCHEMA_VERSION = 2;
+
+function createRedisClient(env: Env): Redis {
+	return new Redis({
+		url: env.UPSTASH_REDIS_REST_URL,
+		token: env.UPSTASH_REDIS_REST_TOKEN,
+	});
+}
+
+function createVectorClient(env: Env): Index {
+	return new Index({
+		url: env.UPSTASH_VECTOR_REST_URL,
+		token: env.UPSTASH_VECTOR_REST_TOKEN,
+	});
+}
+
+function parseStoredObject(raw: unknown): Record<string, unknown> | null {
+	if (typeof raw === "string") {
+		try {
+			const parsed = JSON.parse(raw);
+			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+				return parsed as Record<string, unknown>;
+			}
+		} catch {
+			return null;
+		}
+	}
+
+	if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+		return { ...(raw as Record<string, unknown>) };
+	}
+
+	return null;
+}
+
+function toStringArray(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	return value.filter((item): item is string => typeof item === "string");
+}
+
+function toOptionalNumber(value: unknown): number | null {
+	if (typeof value === "number" && Number.isFinite(value)) {
+		return value;
+	}
+	if (typeof value === "string" && value.trim() !== "") {
+		const parsed = Number(value);
+		return Number.isFinite(parsed) ? parsed : null;
+	}
+	return null;
+}
+
+function toOptionalInteger(value: unknown): number | null {
+	const parsed = toOptionalNumber(value);
+	return parsed === null ? null : Math.trunc(parsed);
+}
+
+function toSourceWeights(value: unknown): Record<string, number> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return {};
+	}
+
+	const normalized: Record<string, number> = {};
+	for (const [key, rawValue] of Object.entries(value as Record<string, unknown>)) {
+		const parsed = toOptionalNumber(rawValue);
+		if (parsed !== null) {
+			normalized[key] = parsed;
+		}
+	}
+	return normalized;
+}
+
+function normalizeEntryMetadata(rawMetadata: unknown, entryType?: string): Record<string, unknown> {
+	const metadata = parseStoredObject(rawMetadata) ?? {};
+	const sourceConversations = toStringArray(metadata.source_conversations);
+	const sourceMessages = toStringArray(metadata.source_messages);
+	const updatedAt =
+		typeof metadata.updated_at === "string"
+			? metadata.updated_at
+			: typeof metadata.last_touched === "string"
+				? metadata.last_touched
+				: typeof metadata.created_at === "string"
+					? metadata.created_at
+					: "";
+	const createdAt = typeof metadata.created_at === "string" ? metadata.created_at : updatedAt;
+
+	const normalized: Record<string, unknown> = {
+		...metadata,
+		created_at: createdAt,
+		updated_at: updatedAt,
+		source_conversations: sourceConversations,
+		source_messages: sourceMessages,
+		access_count: toOptionalInteger(metadata.access_count) ?? 0,
+		last_accessed: typeof metadata.last_accessed === "string" ? metadata.last_accessed : null,
+		schema_version: toOptionalInteger(metadata.schema_version) ?? MEMORY_SCHEMA_VERSION,
+		classification_status:
+			typeof metadata.classification_status === "string" && metadata.classification_status.length > 0
+				? metadata.classification_status
+				: "pending",
+		context_type: typeof metadata.context_type === "string" ? metadata.context_type : null,
+		mention_count: toOptionalInteger(metadata.mention_count) ?? Math.max(1, sourceConversations.length || 1),
+		first_seen: typeof metadata.first_seen === "string" ? metadata.first_seen : null,
+		last_seen: typeof metadata.last_seen === "string" ? metadata.last_seen : null,
+		auto_inferred: typeof metadata.auto_inferred === "boolean" ? metadata.auto_inferred : null,
+		source_weights: toSourceWeights(metadata.source_weights),
+		injection_tier: toOptionalInteger(metadata.injection_tier),
+		salience_score: toOptionalNumber(metadata.salience_score),
+		last_consolidated: typeof metadata.last_consolidated === "string" ? metadata.last_consolidated : null,
+		consolidation_notes: toStringArray(metadata.consolidation_notes),
+		archived: Boolean(metadata.archived),
+	};
+
+	if (entryType === "project") {
+		normalized.last_touched =
+			typeof metadata.last_touched === "string" ? metadata.last_touched : updatedAt;
+	}
+
+	return normalized;
+}
+
+function normalizeEntry(raw: unknown, entryTypeHint?: string): Record<string, unknown> | null {
+	const entry = parseStoredObject(raw);
+	if (!entry) return null;
+
+	const entryType = typeof entry.type === "string" ? entry.type : entryTypeHint;
+	const normalized = {
+		...entry,
+		type: entryType ?? entry.type,
+		metadata: normalizeEntryMetadata(entry.metadata, entryType),
+	};
+	const metadata = normalized.metadata as Record<string, unknown>;
+	metadata.injection_tier = resolveStoredInjectionTier(metadata);
+	metadata.salience_score = computeSalience(normalized);
+	return normalized;
+}
 
 // GitHub API helper
 async function githubRequest(
@@ -57,27 +198,72 @@ function calculateRecencyScore(updatedAt: string | undefined): number {
 	}
 }
 
-// Get source weight multiplier
-function getSourceWeight(source: string | undefined): number {
-	if (!source) return 1.0;
-
-	const sourceLower = source.toLowerCase();
-
-	if (sourceLower.includes('gmail') || sourceLower.includes('email') || sourceLower.includes('mbox')) {
-		return 0.6;
-	}
-
-	if (sourceLower.includes('github') || sourceLower.includes('repo')) {
-		return 1.1;
-	}
-
-	return 1.0;
+function getEntryMetadata(entry: Record<string, unknown> | null): Record<string, unknown> {
+	return (entry?.metadata as Record<string, unknown> | undefined) ?? {};
 }
 
-// Combine semantic similarity with recency and source weight
-function calculateFinalScore(similarity: number, recency: number, sourceWeight: number = 1.0): number {
-	const baseScore = similarity * 0.7 + recency * 0.3;
-	return baseScore * sourceWeight;
+function getEntryUpdatedAt(entry: Record<string, unknown>): string | undefined {
+	const metadata = getEntryMetadata(entry);
+	return (
+		(typeof metadata.last_seen === "string" && metadata.last_seen) ||
+		(typeof metadata.updated_at === "string" && metadata.updated_at) ||
+		(typeof metadata.last_touched === "string" && metadata.last_touched) ||
+		undefined
+	);
+}
+
+function getEntryState(entry: Record<string, unknown>): string | null {
+	if (typeof entry.state === "string") return entry.state;
+	if (typeof entry.status === "string") return entry.status;
+	return null;
+}
+
+function getEntryLabel(entry: Record<string, unknown>): string {
+	if (typeof entry.domain === "string") return entry.domain;
+	if (typeof entry.name === "string") return entry.name;
+	return String(entry.id ?? "unknown");
+}
+
+function getEntrySummary(entry: Record<string, unknown>): string {
+	if (typeof entry.current_view === "string" && entry.current_view.length > 0) {
+		return entry.current_view.slice(0, 160);
+	}
+	if (typeof entry.goal === "string" && entry.goal.length > 0) {
+		return entry.goal.slice(0, 160);
+	}
+	return "";
+}
+
+async function buildHealthPayload(env: Env): Promise<Record<string, unknown>> {
+	const redis = createRedisClient(env);
+	const rawIndex = parseStoredObject(await redis.get("index:current")) ?? {};
+	const dreamSummary = parseStoredObject(await redis.get("dream:last_run"));
+	const backfillComplete = await redis.get("migration:backfill_complete");
+	const pendingClassificationCount = await redis.scard("classification:pending") as number;
+	const topics = Array.isArray(rawIndex.topics) ? rawIndex.topics : [];
+	const projects = Array.isArray(rawIndex.projects) ? rawIndex.projects : [];
+
+	return {
+		status: "ok",
+		retrieved_at: new Date().toISOString(),
+		schema_version: MEMORY_SCHEMA_VERSION,
+		migration_backfill_complete: backfillComplete,
+		pending_classification_count: pendingClassificationCount || 0,
+		last_dream_run: typeof dreamSummary?.run_at === "string" ? dreamSummary.run_at : null,
+		thin_index: {
+			generated_at: typeof rawIndex.generated_at === "string" ? rawIndex.generated_at : null,
+			stored_topic_count: topics.length,
+			stored_project_count: projects.length,
+			total_topic_count:
+				typeof rawIndex.total_topic_count === "number" ? rawIndex.total_topic_count : topics.length,
+			total_project_count:
+				typeof rawIndex.total_project_count === "number" ? rawIndex.total_project_count : projects.length,
+			tier_1_count: typeof rawIndex.tier_1_count === "number" ? rawIndex.tier_1_count : null,
+			tier_2_count: typeof rawIndex.tier_2_count === "number" ? rawIndex.tier_2_count : null,
+			tier_3_count: typeof rawIndex.tier_3_count === "number" ? rawIndex.tier_3_count : null,
+			archived_count: typeof rawIndex.archived_count === "number" ? rawIndex.archived_count : 0,
+		},
+	};
 }
 
 // Define our MCP agent with knowledge tools
@@ -88,17 +274,11 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, { userId: string }> {
 	});
 
 	private getRedis(env: Env): Redis {
-		return new Redis({
-			url: env.UPSTASH_REDIS_REST_URL,
-			token: env.UPSTASH_REDIS_REST_TOKEN,
-		});
+		return createRedisClient(env);
 	}
 
 	private getVector(env: Env): Index {
-		return new Index({
-			url: env.UPSTASH_VECTOR_REST_URL,
-			token: env.UPSTASH_VECTOR_REST_TOKEN,
-		});
+		return createVectorClient(env);
 	}
 
 	private async getEmbedding(env: Env, text: string): Promise<number[]> {
@@ -128,20 +308,33 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, { userId: string }> {
 			async () => {
 				const redis = this.getRedis(this.env);
 				const rawIndex = await redis.get("index:current") as {
-					topics?: Array<{ id: string; domain: string; current_view_summary?: string; state?: string; confidence?: string; last_updated?: string }>;
-					projects?: Array<{ id: string; name: string; goal_summary?: string; status?: string; current_phase?: string; last_touched?: string }>;
+					topics?: Array<{ id: string; domain: string; current_view_summary?: string; state?: string; confidence?: string; last_updated?: string; context_type?: string; injection_tier?: number; salience_score?: number; mention_count?: number; archived?: boolean }>;
+					projects?: Array<{ id: string; name: string; goal_summary?: string; status?: string; current_phase?: string; last_touched?: string; context_type?: string; injection_tier?: number; salience_score?: number; mention_count?: number; archived?: boolean }>;
 					generated_at?: string;
 					token_count?: number;
+					total_topic_count?: number;
+					total_project_count?: number;
+					tier_1_count?: number;
+					tier_2_count?: number;
+					tier_3_count?: number;
+					archived_count?: number;
 				} | null;
+				const dreamSummary = parseStoredObject(await redis.get("dream:last_run"));
 
 				if (!rawIndex) {
 					return { content: [{ type: "text", text: JSON.stringify({ topics: [], projects: [], message: "No index found" }) }] };
 				}
 
-				const topics = rawIndex.topics || [];
-				const projects = rawIndex.projects || [];
+				const topics = (rawIndex.topics || []).filter((topic) => !topic.archived);
+				const projects = (rawIndex.projects || []).filter((project) => !project.archived);
 
 				const sortedTopics = [...topics].sort((a, b) => {
+					const tierA = typeof a.injection_tier === "number" ? a.injection_tier : 3;
+					const tierB = typeof b.injection_tier === "number" ? b.injection_tier : 3;
+					if (tierA !== tierB) return tierA - tierB;
+					const salienceA = typeof a.salience_score === "number" ? a.salience_score : 0;
+					const salienceB = typeof b.salience_score === "number" ? b.salience_score : 0;
+					if (salienceA !== salienceB) return salienceB - salienceA;
 					const dateA = a.last_updated ? new Date(a.last_updated).getTime() : 0;
 					const dateB = b.last_updated ? new Date(b.last_updated).getTime() : 0;
 					return dateB - dateA;
@@ -152,10 +345,20 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, { userId: string }> {
 					domain: t.domain,
 					summary: (t.current_view_summary || "").substring(0, 100),
 					state: t.state,
-					updated: t.last_updated ? t.last_updated.substring(0, 10) : null
+					updated: t.last_updated ? t.last_updated.substring(0, 10) : null,
+					injection_tier: typeof t.injection_tier === "number" ? t.injection_tier : 3,
+					context_type: t.context_type || null,
+					salience_score: typeof t.salience_score === "number" ? t.salience_score : null,
+					mention_count: typeof t.mention_count === "number" ? t.mention_count : null,
 				}));
 
 				const sortedProjects = [...projects].sort((a, b) => {
+					const tierA = typeof a.injection_tier === "number" ? a.injection_tier : 3;
+					const tierB = typeof b.injection_tier === "number" ? b.injection_tier : 3;
+					if (tierA !== tierB) return tierA - tierB;
+					const salienceA = typeof a.salience_score === "number" ? a.salience_score : 0;
+					const salienceB = typeof b.salience_score === "number" ? b.salience_score : 0;
+					if (salienceA !== salienceB) return salienceB - salienceA;
 					const dateA = a.last_touched ? new Date(a.last_touched).getTime() : 0;
 					const dateB = b.last_touched ? new Date(b.last_touched).getTime() : 0;
 					return dateB - dateA;
@@ -167,16 +370,26 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, { userId: string }> {
 					goal: (p.goal_summary || "").substring(0, 80),
 					status: p.status,
 					phase: (p.current_phase || "").substring(0, 60),
-					touched: p.last_touched ? p.last_touched.substring(0, 10) : null
+					touched: p.last_touched ? p.last_touched.substring(0, 10) : null,
+					injection_tier: typeof p.injection_tier === "number" ? p.injection_tier : 3,
+					context_type: p.context_type || null,
+					salience_score: typeof p.salience_score === "number" ? p.salience_score : null,
+					mention_count: typeof p.mention_count === "number" ? p.mention_count : null,
 				}));
 
 				const compactIndex = {
-					total_topics: topics.length,
-					total_projects: projects.length,
+					total_topics: typeof rawIndex.total_topic_count === "number" ? rawIndex.total_topic_count : topics.length,
+					total_projects: typeof rawIndex.total_project_count === "number" ? rawIndex.total_project_count : projects.length,
+					tier_1_count: typeof rawIndex.tier_1_count === "number" ? rawIndex.tier_1_count : null,
+					tier_2_count: typeof rawIndex.tier_2_count === "number" ? rawIndex.tier_2_count : null,
+					tier_3_count: typeof rawIndex.tier_3_count === "number" ? rawIndex.tier_3_count : null,
+					archived_count: typeof rawIndex.archived_count === "number" ? rawIndex.archived_count : 0,
+					last_dream_run: typeof dreamSummary?.run_at === "string" ? dreamSummary.run_at : null,
+					generated_at: rawIndex.generated_at || null,
 					showing_recent: { topics: compactTopics.length, projects: compactProjects.length },
 					topics: compactTopics,
 					projects: compactProjects,
-					note: "Showing most recent entries. Use 'search' for specific queries or 'get_context' for full details."
+					note: "Showing the thin-index subset ordered by tier then salience. Use 'search' for query-specific retrieval or 'get_context' for the full entry."
 				};
 
 				return {
@@ -207,7 +420,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, { userId: string }> {
 					try {
 						results = await vector.query({
 							vector: queryEmbedding,
-							topK: 1,
+							topK: 5,
 							includeMetadata: true,
 						});
 					} catch (vecErr) {
@@ -215,16 +428,34 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, { userId: string }> {
 						return { content: [{ type: "text", text: JSON.stringify({ error: `Vector query failed: ${msg}` }) }] };
 					}
 
-					if (results.length === 0) {
-						return { content: [{ type: "text", text: `No entry found for: ${topic}` }] };
+					const entry = await (async () => {
+						for (const result of results) {
+							const vectorMetadata = parseStoredObject(result.metadata) ?? {};
+							if (vectorMetadata.archived === true) {
+								continue;
+							}
+							const entryType = vectorMetadata.type === "project" ? "project" : "knowledge";
+							const candidate = normalizeEntry(
+								await redis.get(`${entryType}:${result.id}`),
+								entryType,
+							);
+							if (!candidate) {
+								continue;
+							}
+							const candidateMetadata = getEntryMetadata(candidate);
+							if (candidateMetadata.archived === true) {
+								continue;
+							}
+							return candidate;
+						}
+						return null;
+					})();
+
+					if (!entry) {
+						return { content: [{ type: "text", text: `No active entry found for: ${topic}` }] };
 					}
 
-					const result = results[0];
-					const entryType = (result.metadata as Record<string, unknown>)?.type;
-					const key = entryType === "project" ? `project:${result.id}` : `knowledge:${result.id}`;
-					const entry = await redis.get(key);
-
-					return { content: [{ type: "text", text: JSON.stringify(entry || { error: "Not found in Redis" }) }] };
+					return { content: [{ type: "text", text: JSON.stringify(entry) }] };
 				} catch (error) {
 					const errMsg = error instanceof Error ? error.message : String(error);
 					return { content: [{ type: "text", text: JSON.stringify({ error: `Unexpected: ${errMsg}` }) }] };
@@ -240,7 +471,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, { userId: string }> {
 			async ({ id }) => {
 				const redis = this.getRedis(this.env);
 				const type = id.startsWith("pe_") ? "project" : "knowledge";
-				const entry = await redis.get(`${type}:${id}`);
+				const entry = normalizeEntry(await redis.get(`${type}:${id}`), type);
 				return { content: [{ type: "text", text: JSON.stringify(entry || { error: "Not found" }) }] };
 			}
 		);
@@ -248,51 +479,104 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, { userId: string }> {
 		// Tool: search
 		this.server.tool(
 			"search",
-			"Semantic search across all knowledge and project entries. Results are ranked by a combination of relevance (70%) and recency (30%), so recent knowledge is prioritized.",
+			"Tier-aware semantic search across all knowledge and project entries. Archived entries are excluded by default, and results are reranked by semantic match, salience, recency, and retrieval tier.",
 			{
 				query: z.string().describe("Search query"),
 				limit: z.number().optional().describe("Max results (default 5)"),
+				tier_filter: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional()
+					.describe("Optional tier filter: 1, 2, or 3"),
 			},
-			async ({ query, limit }) => {
+			async ({ query, limit, tier_filter }) => {
 				try {
+					const redis = this.getRedis(this.env);
 					const vector = this.getVector(this.env);
 					const queryEmbedding = await this.getEmbedding(this.env, query);
 
-					const fetchLimit = Math.min((limit || 5) * 3, 20);
+					const requestedLimit = Math.max(1, Math.min(limit || 5, 20));
+					const fetchLimit = Math.min(requestedLimit * 8, 60);
 					const results = await vector.query({
 						vector: queryEmbedding,
 						topK: fetchLimit,
 						includeMetadata: true,
 					});
 
-					const rankedResults = results.map((r) => {
-						const metadata = r.metadata as Record<string, unknown> | undefined;
-						const updatedAt = metadata?.updated_at as string | undefined;
-						const source = metadata?.source as string | undefined;
+					const rankedResults = await Promise.all(results.map(async (result) => {
+						const vectorMetadata = parseStoredObject(result.metadata) ?? {};
+						const entryType = vectorMetadata.type === "project" ? "project" : "knowledge";
+						const entry = normalizeEntry(await redis.get(`${entryType}:${result.id}`), entryType);
+						if (!entry) return null;
 
+						const entryMetadata = getEntryMetadata(entry);
+						if (entryMetadata.archived === true) {
+							return null;
+						}
+
+						const salienceScore = computeSalience(entry);
+						entryMetadata.salience_score = salienceScore;
+						entryMetadata.injection_tier = resolveStoredInjectionTier(entryMetadata);
+
+						const effectiveTier = deriveSearchTier(entry, result.score);
+						if (tier_filter && effectiveTier !== tier_filter) {
+							return null;
+						}
+
+						const updatedAt = getEntryUpdatedAt(entry);
 						const recencyScore = calculateRecencyScore(updatedAt);
-						const sourceWeight = getSourceWeight(source);
-						const finalScore = calculateFinalScore(r.score, recencyScore, sourceWeight);
+						const sourceWeight = getSourceWeightFromMetadata({
+							...vectorMetadata,
+							...entryMetadata,
+						});
+						const finalScore = computeSearchScore({
+							similarity: result.score,
+							recency: recencyScore,
+							salience: salienceScore,
+							tier: effectiveTier,
+							sourceWeight,
+						});
 
 						return {
-							id: r.id,
-							similarity_score: r.score,
+							id: result.id,
+							type: entryType,
+							label: getEntryLabel(entry),
+							summary: getEntrySummary(entry),
+							state: getEntryState(entry),
+							context_type: typeof entryMetadata.context_type === "string" ? entryMetadata.context_type : null,
+							injection_tier: effectiveTier,
+							stored_injection_tier: resolveStoredInjectionTier(entryMetadata),
+							salience_score: salienceScore,
+							mention_count: typeof entryMetadata.mention_count === "number" ? entryMetadata.mention_count : null,
+							similarity_score: result.score,
 							recency_score: recencyScore,
 							source_weight: sourceWeight,
 							final_score: finalScore,
-							metadata: r.metadata,
+							updated: updatedAt ?? null,
+							metadata: {
+								classification_status: entryMetadata.classification_status,
+								context_type: entryMetadata.context_type,
+								injection_tier: effectiveTier,
+								salience_score: salienceScore,
+								mention_count: entryMetadata.mention_count,
+								archived: false,
+							},
 						};
-					});
+					}));
 
-					rankedResults.sort((a, b) => b.final_score - a.final_score);
-					const topResults = rankedResults.slice(0, limit || 5);
+					const filteredResults = rankedResults.filter((result): result is NonNullable<typeof result> => result !== null);
+					filteredResults.sort((a, b) => {
+						if (a.injection_tier !== b.injection_tier) return a.injection_tier - b.injection_tier;
+						if (a.final_score !== b.final_score) return b.final_score - a.final_score;
+						return b.similarity_score - a.similarity_score;
+					});
+					const topResults = filteredResults.slice(0, requestedLimit);
 
 					return {
 						content: [{
 							type: "text",
 							text: JSON.stringify({
 								results: topResults,
-								scoring: "70% semantic + 30% recency, with source weighting (emails 0.6x, github 1.1x)"
+								query,
+								tier_filter: tier_filter ?? null,
+								scoring: "ranked by retrieval tier, then a weighted score of semantic similarity, recency, salience, and source weight; archived entries excluded by default"
 							})
 						}],
 					};
@@ -505,6 +789,17 @@ const defaultHandler = {
 			}
 		}
 
+		if (url.pathname === "/health" || url.pathname === "/status") {
+			try {
+				return Response.json(await buildHealthPayload(env), {
+					headers: { "Content-Type": "application/json" },
+				});
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				return Response.json({ status: "error", error: msg }, { status: 500 });
+			}
+		}
+
 		// OAuth discovery endpoint for iOS Claude
 		if (url.pathname === "/.well-known/oauth-authorization-server") {
 			const baseUrl = `${url.protocol}//${url.host}`;
@@ -536,6 +831,7 @@ const defaultHandler = {
 						<li><code>/authorize</code> - OAuth authorization</li>
 						<li><code>/token</code> - OAuth token endpoint</li>
 						<li><code>/register</code> - Dynamic client registration</li>
+						<li><code>/health</code> - Rollout and migration status</li>
 					</ul>
 				</body>
 			</html>
@@ -549,7 +845,7 @@ const defaultHandler = {
 export default new OAuthProvider({
 	apiRoute: ["/sse", "/mcp"],
 	apiHandler: KnowledgeMCP.mount("/sse") as any,
-	defaultHandler: defaultHandler,
+	defaultHandler: defaultHandler as any,
 	authorizeEndpoint: "/authorize",
 	tokenEndpoint: "/token",
 	clientRegistrationEndpoint: "/register",

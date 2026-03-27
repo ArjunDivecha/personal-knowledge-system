@@ -43,6 +43,11 @@ class ThinIndexTopic:
     confidence: Literal["high", "medium", "low"]
     last_updated: str             # ISO8601
     top_repo: Optional[str] = None  # Most relevant repo
+    context_type: Optional[str] = None
+    injection_tier: Optional[int] = None
+    salience_score: Optional[float] = None
+    mention_count: Optional[int] = None
+    archived: bool = False
     
     def to_dict(self) -> dict:
         """Convert to dictionary."""
@@ -54,6 +59,11 @@ class ThinIndexTopic:
             "confidence": self.confidence,
             "last_updated": self.last_updated,
             "top_repo": self.top_repo,
+            "context_type": self.context_type,
+            "injection_tier": self.injection_tier,
+            "salience_score": self.salience_score,
+            "mention_count": self.mention_count,
+            "archived": self.archived,
         }
     
     @classmethod
@@ -67,6 +77,11 @@ class ThinIndexTopic:
             confidence=data["confidence"],
             last_updated=data["last_updated"],
             top_repo=data.get("top_repo"),
+            context_type=data.get("context_type"),
+            injection_tier=data.get("injection_tier"),
+            salience_score=data.get("salience_score"),
+            mention_count=data.get("mention_count"),
+            archived=data.get("archived", False),
         )
 
 
@@ -87,6 +102,11 @@ class ThinIndexProject:
     blocked_on: Optional[str] = None
     last_touched: str = ""        # ISO8601
     primary_repo: Optional[str] = None
+    context_type: Optional[str] = None
+    injection_tier: Optional[int] = None
+    salience_score: Optional[float] = None
+    mention_count: Optional[int] = None
+    archived: bool = False
     
     def to_dict(self) -> dict:
         """Convert to dictionary."""
@@ -99,6 +119,11 @@ class ThinIndexProject:
             "blocked_on": self.blocked_on,
             "last_touched": self.last_touched,
             "primary_repo": self.primary_repo,
+            "context_type": self.context_type,
+            "injection_tier": self.injection_tier,
+            "salience_score": self.salience_score,
+            "mention_count": self.mention_count,
+            "archived": self.archived,
         }
     
     @classmethod
@@ -113,6 +138,11 @@ class ThinIndexProject:
             blocked_on=data.get("blocked_on"),
             last_touched=data.get("last_touched", ""),
             primary_repo=data.get("primary_repo"),
+            context_type=data.get("context_type"),
+            injection_tier=data.get("injection_tier"),
+            salience_score=data.get("salience_score"),
+            mention_count=data.get("mention_count"),
+            archived=data.get("archived", False),
         )
 
 
@@ -170,6 +200,12 @@ class ThinIndex:
     projects: list[ThinIndexProject] = field(default_factory=list)
     recent_evolutions: list[ThinIndexEvolution] = field(default_factory=list)
     contested_count: int = 0      # Number of entries in contested state
+    total_topic_count: int = 0    # True topic count before token-budget trimming
+    total_project_count: int = 0  # True project count before token-budget trimming
+    tier_1_count: int = 0
+    tier_2_count: int = 0
+    tier_3_count: int = 0
+    archived_count: int = 0
     
     @property
     def topic_count(self) -> int:
@@ -188,7 +224,9 @@ class ThinIndex:
     
     def get_summary(self) -> str:
         """Get a one-line summary of the index."""
-        return f"{self.topic_count} topics, {self.project_count} projects ({self.active_project_count} active)"
+        topic_total = self.total_topic_count or self.topic_count
+        project_total = self.total_project_count or self.project_count
+        return f"{topic_total} topics, {project_total} projects ({self.active_project_count} active shown)"
     
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
@@ -199,6 +237,12 @@ class ThinIndex:
             "projects": [p.to_dict() for p in self.projects],
             "recent_evolutions": [e.to_dict() for e in self.recent_evolutions],
             "contested_count": self.contested_count,
+            "total_topic_count": self.total_topic_count or len(self.topics),
+            "total_project_count": self.total_project_count or len(self.projects),
+            "tier_1_count": self.tier_1_count,
+            "tier_2_count": self.tier_2_count,
+            "tier_3_count": self.tier_3_count,
+            "archived_count": self.archived_count,
         }
     
     @classmethod
@@ -215,8 +259,13 @@ class ThinIndex:
             projects=projects,
             recent_evolutions=evolutions,
             contested_count=data.get("contested_count", 0),
+            total_topic_count=data.get("total_topic_count", len(topics)),
+            total_project_count=data.get("total_project_count", len(projects)),
+            tier_1_count=data.get("tier_1_count", 0),
+            tier_2_count=data.get("tier_2_count", 0),
+            tier_3_count=data.get("tier_3_count", 0),
+            archived_count=data.get("archived_count", 0),
         )
     
     def __repr__(self) -> str:
         return f"ThinIndex({self.get_summary()}, {self.token_count} tokens)"
-

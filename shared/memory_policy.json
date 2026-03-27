@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "context_types": [
+    "professional_identity",
+    "stated_preference",
+    "explicit_save",
+    "active_project",
+    "recurring_pattern",
+    "task_query",
+    "passing_reference"
+  ],
+  "default_injection_tier_by_context_type": {
+    "professional_identity": 1,
+    "stated_preference": 1,
+    "explicit_save": 1,
+    "active_project": 1,
+    "recurring_pattern": 2,
+    "task_query": 3,
+    "passing_reference": 3
+  },
+  "half_lives_days": {
+    "professional_identity": "infinity",
+    "stated_preference": "infinity",
+    "explicit_save": "infinity",
+    "active_project": "infinity",
+    "recurring_pattern": 90.0,
+    "task_query": 30.0,
+    "passing_reference": 14.0
+  },
+  "type_multipliers": {
+    "professional_identity": 1.0,
+    "stated_preference": 1.0,
+    "explicit_save": 1.0,
+    "active_project": 0.95,
+    "recurring_pattern": 0.8,
+    "task_query": 0.2,
+    "passing_reference": 0.05
+  },
+  "confidence_map": {
+    "high": 1.0,
+    "medium": 0.7,
+    "low": 0.4,
+    "speculative": 0.2
+  },
+  "source_type_weights": {
+    "explicit_save": 3.0,
+    "claude_code": 1.5,
+    "codex": 1.5,
+    "claude_ai": 1.0,
+    "github_readme": 1.2,
+    "github_commits": 0.9,
+    "email": 0.6
+  },
+  "search_scoring_weights": {
+    "semantic": 0.55,
+    "recency": 0.15,
+    "salience": 0.3
+  },
+  "search_tier_multipliers": {
+    "1": 1.15,
+    "2": 1.0,
+    "3": 0.85
+  },
+  "tier_rules": {
+    "always_tier_1_context_types": [
+      "professional_identity",
+      "stated_preference",
+      "explicit_save",
+      "active_project"
+    ],
+    "tier_2_context_types": [
+      "recurring_pattern"
+    ],
+    "tier_2_similarity_min": 0.65
+  },
+  "dream_thresholds": {
+    "promote_candidate_min_mentions": 3,
+    "decay_candidate_salience": 0.1,
+    "archive_candidate_salience": 0.05
+  }
+}

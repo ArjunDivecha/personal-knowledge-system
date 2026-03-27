@@ -24,6 +24,98 @@ from dataclasses import dataclass, field
 from typing import Literal, Optional
 from datetime import datetime
 
+MEMORY_SCHEMA_VERSION = 2
+
+
+def _coerce_int(value: object, default: int = 0) -> int:
+    """Best-effort integer coercion for metadata loaded from Redis JSON."""
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_optional_int(value: object) -> Optional[int]:
+    """Best-effort optional integer coercion."""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_optional_float(value: object) -> Optional[float]:
+    """Best-effort optional float coercion."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def normalize_knowledge_metadata_dict(metadata: Optional[dict]) -> dict:
+    """Apply Phase 1 schema defaults to a knowledge metadata block."""
+    meta = dict(metadata or {})
+    updated_at = meta.get("updated_at") or meta.get("created_at") or ""
+    created_at = meta.get("created_at") or updated_at
+
+    normalized = dict(meta)
+    normalized["created_at"] = created_at
+    normalized["updated_at"] = updated_at
+    normalized["source_conversations"] = list(meta.get("source_conversations") or [])
+    normalized["source_messages"] = list(meta.get("source_messages") or [])
+    normalized["access_count"] = _coerce_int(meta.get("access_count"), 0)
+    normalized["last_accessed"] = meta.get("last_accessed")
+    normalized["schema_version"] = _coerce_int(meta.get("schema_version"), MEMORY_SCHEMA_VERSION)
+    normalized["classification_status"] = meta.get("classification_status") or "pending"
+    normalized["context_type"] = meta.get("context_type")
+    normalized["mention_count"] = _coerce_optional_int(meta.get("mention_count"))
+    normalized["first_seen"] = meta.get("first_seen")
+    normalized["last_seen"] = meta.get("last_seen")
+    normalized["auto_inferred"] = meta.get("auto_inferred") if isinstance(meta.get("auto_inferred"), bool) else None
+    normalized["source_weights"] = dict(meta.get("source_weights")) if isinstance(meta.get("source_weights"), dict) else {}
+    normalized["injection_tier"] = _coerce_optional_int(meta.get("injection_tier"))
+    normalized["salience_score"] = _coerce_optional_float(meta.get("salience_score"))
+    normalized["last_consolidated"] = meta.get("last_consolidated")
+    normalized["consolidation_notes"] = list(meta.get("consolidation_notes") or [])
+    normalized["archived"] = bool(meta.get("archived", False))
+    return normalized
+
+
+def normalize_project_metadata_dict(metadata: Optional[dict]) -> dict:
+    """Apply Phase 1 schema defaults to a project metadata block."""
+    meta = dict(metadata or {})
+    updated_at = meta.get("updated_at") or meta.get("last_touched") or meta.get("created_at") or ""
+    created_at = meta.get("created_at") or updated_at
+    last_touched = meta.get("last_touched") or updated_at
+
+    normalized = dict(meta)
+    normalized["created_at"] = created_at
+    normalized["updated_at"] = updated_at
+    normalized["source_conversations"] = list(meta.get("source_conversations") or [])
+    normalized["source_messages"] = list(meta.get("source_messages") or [])
+    normalized["last_touched"] = last_touched
+    normalized["access_count"] = _coerce_int(meta.get("access_count"), 0)
+    normalized["last_accessed"] = meta.get("last_accessed")
+    normalized["schema_version"] = _coerce_int(meta.get("schema_version"), MEMORY_SCHEMA_VERSION)
+    normalized["classification_status"] = meta.get("classification_status") or "pending"
+    normalized["context_type"] = meta.get("context_type")
+    normalized["mention_count"] = _coerce_optional_int(meta.get("mention_count"))
+    normalized["first_seen"] = meta.get("first_seen")
+    normalized["last_seen"] = meta.get("last_seen")
+    normalized["auto_inferred"] = meta.get("auto_inferred") if isinstance(meta.get("auto_inferred"), bool) else None
+    normalized["source_weights"] = dict(meta.get("source_weights")) if isinstance(meta.get("source_weights"), dict) else {}
+    normalized["injection_tier"] = _coerce_optional_int(meta.get("injection_tier"))
+    normalized["salience_score"] = _coerce_optional_float(meta.get("salience_score"))
+    normalized["last_consolidated"] = meta.get("last_consolidated")
+    normalized["consolidation_notes"] = list(meta.get("consolidation_notes") or [])
+    normalized["archived"] = bool(meta.get("archived", False))
+    return normalized
+
 
 # -----------------------------------------------------------------------------
 # EVIDENCE - Links insights back to source messages
@@ -109,6 +201,19 @@ class KnowledgeMetadata:
     source_messages: list[str]    # All message IDs referenced
     access_count: int = 0         # How many times retrieved
     last_accessed: Optional[str] = None  # ISO8601
+    schema_version: int = MEMORY_SCHEMA_VERSION
+    classification_status: str = "pending"
+    context_type: Optional[str] = None
+    mention_count: Optional[int] = None
+    first_seen: Optional[str] = None
+    last_seen: Optional[str] = None
+    auto_inferred: Optional[bool] = None
+    source_weights: dict[str, float] = field(default_factory=dict)
+    injection_tier: Optional[int] = None
+    salience_score: Optional[float] = None
+    last_consolidated: Optional[str] = None
+    consolidation_notes: list[str] = field(default_factory=list)
+    archived: bool = False
 
 
 # -----------------------------------------------------------------------------
@@ -244,14 +349,27 @@ class KnowledgeEntry:
                     }
                 } for e in self.evolution
             ],
-            "metadata": {
+            "metadata": normalize_knowledge_metadata_dict({
                 "created_at": self.metadata.created_at,
                 "updated_at": self.metadata.updated_at,
                 "source_conversations": self.metadata.source_conversations,
                 "source_messages": self.metadata.source_messages,
                 "access_count": self.metadata.access_count,
                 "last_accessed": self.metadata.last_accessed,
-            } if self.metadata else None,
+                "schema_version": self.metadata.schema_version,
+                "classification_status": self.metadata.classification_status,
+                "context_type": self.metadata.context_type,
+                "mention_count": self.metadata.mention_count,
+                "first_seen": self.metadata.first_seen,
+                "last_seen": self.metadata.last_seen,
+                "auto_inferred": self.metadata.auto_inferred,
+                "source_weights": self.metadata.source_weights,
+                "injection_tier": self.metadata.injection_tier,
+                "salience_score": self.metadata.salience_score,
+                "last_consolidated": self.metadata.last_consolidated,
+                "consolidation_notes": self.metadata.consolidation_notes,
+                "archived": self.metadata.archived,
+            }) if self.metadata else None,
             "full_content_ref": self.full_content_ref,
         }
     
@@ -342,7 +460,7 @@ class KnowledgeEntry:
             ))
         
         # Parse metadata
-        meta_data = data.get("metadata")
+        meta_data = normalize_knowledge_metadata_dict(data.get("metadata"))
         metadata = KnowledgeMetadata(
             created_at=meta_data.get("created_at", ""),
             updated_at=meta_data.get("updated_at", ""),
@@ -350,7 +468,20 @@ class KnowledgeEntry:
             source_messages=meta_data.get("source_messages", []),
             access_count=meta_data.get("access_count", 0),
             last_accessed=meta_data.get("last_accessed"),
-        ) if meta_data else None
+            schema_version=meta_data.get("schema_version", MEMORY_SCHEMA_VERSION),
+            classification_status=meta_data.get("classification_status", "pending"),
+            context_type=meta_data.get("context_type"),
+            mention_count=meta_data.get("mention_count"),
+            first_seen=meta_data.get("first_seen"),
+            last_seen=meta_data.get("last_seen"),
+            auto_inferred=meta_data.get("auto_inferred"),
+            source_weights=meta_data.get("source_weights", {}),
+            injection_tier=meta_data.get("injection_tier"),
+            salience_score=meta_data.get("salience_score"),
+            last_consolidated=meta_data.get("last_consolidated"),
+            consolidation_notes=meta_data.get("consolidation_notes", []),
+            archived=meta_data.get("archived", False),
+        ) if data.get("metadata") else None
         
         return cls(
             id=data["id"],
@@ -393,6 +524,21 @@ class ProjectMetadata:
     source_conversations: list[str]
     source_messages: list[str]
     last_touched: str             # Most recent activity
+    access_count: int = 0
+    last_accessed: Optional[str] = None
+    schema_version: int = MEMORY_SCHEMA_VERSION
+    classification_status: str = "pending"
+    context_type: Optional[str] = None
+    mention_count: Optional[int] = None
+    first_seen: Optional[str] = None
+    last_seen: Optional[str] = None
+    auto_inferred: Optional[bool] = None
+    source_weights: dict[str, float] = field(default_factory=dict)
+    injection_tier: Optional[int] = None
+    salience_score: Optional[float] = None
+    last_consolidated: Optional[str] = None
+    consolidation_notes: list[str] = field(default_factory=list)
+    archived: bool = False
 
 
 # -----------------------------------------------------------------------------
@@ -477,13 +623,28 @@ class ProjectEntry:
             ],
             "related_knowledge": self.related_knowledge,
             "phase_history": self.phase_history,
-            "metadata": {
+            "metadata": normalize_project_metadata_dict({
                 "created_at": self.metadata.created_at,
                 "updated_at": self.metadata.updated_at,
                 "source_conversations": self.metadata.source_conversations,
                 "source_messages": self.metadata.source_messages,
                 "last_touched": self.metadata.last_touched,
-            } if self.metadata else None,
+                "access_count": self.metadata.access_count,
+                "last_accessed": self.metadata.last_accessed,
+                "schema_version": self.metadata.schema_version,
+                "classification_status": self.metadata.classification_status,
+                "context_type": self.metadata.context_type,
+                "mention_count": self.metadata.mention_count,
+                "first_seen": self.metadata.first_seen,
+                "last_seen": self.metadata.last_seen,
+                "auto_inferred": self.metadata.auto_inferred,
+                "source_weights": self.metadata.source_weights,
+                "injection_tier": self.metadata.injection_tier,
+                "salience_score": self.metadata.salience_score,
+                "last_consolidated": self.metadata.last_consolidated,
+                "consolidation_notes": self.metadata.consolidation_notes,
+                "archived": self.metadata.archived,
+            }) if self.metadata else None,
             "full_content_ref": self.full_content_ref,
         }
     
@@ -517,14 +678,29 @@ class ProjectEntry:
             ))
         
         # Parse metadata
-        meta_data = data.get("metadata")
+        meta_data = normalize_project_metadata_dict(data.get("metadata"))
         metadata = ProjectMetadata(
             created_at=meta_data.get("created_at", ""),
             updated_at=meta_data.get("updated_at", ""),
             source_conversations=meta_data.get("source_conversations", []),
             source_messages=meta_data.get("source_messages", []),
             last_touched=meta_data.get("last_touched", ""),
-        ) if meta_data else None
+            access_count=meta_data.get("access_count", 0),
+            last_accessed=meta_data.get("last_accessed"),
+            schema_version=meta_data.get("schema_version", MEMORY_SCHEMA_VERSION),
+            classification_status=meta_data.get("classification_status", "pending"),
+            context_type=meta_data.get("context_type"),
+            mention_count=meta_data.get("mention_count"),
+            first_seen=meta_data.get("first_seen"),
+            last_seen=meta_data.get("last_seen"),
+            auto_inferred=meta_data.get("auto_inferred"),
+            source_weights=meta_data.get("source_weights", {}),
+            injection_tier=meta_data.get("injection_tier"),
+            salience_score=meta_data.get("salience_score"),
+            last_consolidated=meta_data.get("last_consolidated"),
+            consolidation_notes=meta_data.get("consolidation_notes", []),
+            archived=meta_data.get("archived", False),
+        ) if data.get("metadata") else None
         
         return cls(
             id=data["id"],
@@ -543,4 +719,3 @@ class ProjectEntry:
             metadata=metadata,
             full_content_ref=data.get("full_content_ref"),
         )
-

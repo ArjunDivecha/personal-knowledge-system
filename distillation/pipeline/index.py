@@ -40,6 +40,7 @@ from storage.redis_client import RedisClient
 from storage.vector_client import VectorClient
 from utils.embedding import get_embedding, get_embeddings_batch
 from utils.llm import count_tokens
+from utils.salience import compute_salience, resolve_stored_tier
 
 
 # -----------------------------------------------------------------------------
@@ -68,6 +69,16 @@ def truncate(text: str, max_length: int) -> str:
     return text[:max_length - 3] + "..."
 
 
+def sort_timestamp(value: str | None) -> float:
+    """Convert ISO timestamp to a descending-sortable numeric key."""
+    if not value:
+        return float("-inf")
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return float("-inf")
+
+
 # -----------------------------------------------------------------------------
 # THIN INDEX GENERATION
 # -----------------------------------------------------------------------------
@@ -90,21 +101,49 @@ def generate_thin_index(
         projects=[],
         recent_evolutions=[],
         contested_count=0,
+        tier_1_count=0,
+        tier_2_count=0,
+        tier_3_count=0,
+        archived_count=0,
     )
-    
-    # Sort knowledge by relevance: active first, then by access count, then by recency
-    sorted_knowledge = sorted(
-        [e for e in knowledge_entries if e.state != "deprecated"],
-        key=lambda e: (
-            e.state == "active",
-            e.metadata.access_count if e.metadata else 0,
-            e.metadata.updated_at if e.metadata else "",
-        ),
-        reverse=True,
+
+    ranked_topics = []
+    for entry in knowledge_entries:
+        if entry.state == "deprecated":
+            continue
+        salience_score = compute_salience(entry)
+        stored_tier = resolve_stored_tier(entry)
+        archived = bool(entry.metadata.archived) if entry.metadata else False
+        if archived:
+            index.archived_count += 1
+            continue
+        if stored_tier == 1:
+            index.tier_1_count += 1
+        elif stored_tier == 2:
+            index.tier_2_count += 1
+        else:
+            index.tier_3_count += 1
+
+        ranked_topics.append(
+            (
+                stored_tier,
+                salience_score,
+                entry.metadata.updated_at if entry.metadata else now,
+                entry,
+            )
+        )
+        if entry.state == "contested":
+            index.contested_count += 1
+
+    ranked_topics.sort(
+        key=lambda item: (
+            item[0],
+            -item[1],
+            -sort_timestamp(item[2]),
+        )
     )
-    
-    # Build topics list
-    for entry in sorted_knowledge:
+
+    for stored_tier, salience_score, _, entry in ranked_topics:
         index.topics.append(ThinIndexTopic(
             id=entry.id,
             domain=entry.domain,
@@ -113,23 +152,45 @@ def generate_thin_index(
             confidence=entry.confidence,
             last_updated=entry.metadata.updated_at if entry.metadata else now,
             top_repo=entry.related_repos[0].repo if entry.related_repos else None,
+            context_type=entry.metadata.context_type if entry.metadata else None,
+            injection_tier=stored_tier,
+            salience_score=salience_score,
+            mention_count=entry.metadata.mention_count if entry.metadata else None,
+            archived=False,
         ))
-        
-        if entry.state == "contested":
-            index.contested_count += 1
-    
-    # Sort projects: active first, then by last_touched
-    sorted_projects = sorted(
-        project_entries,
-        key=lambda e: (
-            e.status == "active",
-            e.metadata.last_touched if e.metadata else "",
-        ),
-        reverse=True,
+
+    ranked_projects = []
+    for entry in project_entries:
+        salience_score = compute_salience(entry)
+        stored_tier = resolve_stored_tier(entry)
+        archived = bool(entry.metadata.archived) if entry.metadata else False
+        if archived:
+            index.archived_count += 1
+            continue
+        if stored_tier == 1:
+            index.tier_1_count += 1
+        elif stored_tier == 2:
+            index.tier_2_count += 1
+        else:
+            index.tier_3_count += 1
+        ranked_projects.append(
+            (
+                stored_tier,
+                salience_score,
+                entry.metadata.last_touched if entry.metadata else now,
+                entry,
+            )
+        )
+
+    ranked_projects.sort(
+        key=lambda item: (
+            item[0],
+            -item[1],
+            -sort_timestamp(item[2]),
+        )
     )
-    
-    # Build projects list
-    for entry in sorted_projects:
+
+    for stored_tier, salience_score, _, entry in ranked_projects:
         primary_repo = None
         for repo in entry.related_repos:
             if getattr(repo, "is_primary", False):
@@ -147,7 +208,15 @@ def generate_thin_index(
             blocked_on=entry.blocked_on,
             last_touched=entry.metadata.last_touched if entry.metadata else now,
             primary_repo=primary_repo,
+            context_type=entry.metadata.context_type if entry.metadata else None,
+            injection_tier=stored_tier,
+            salience_score=salience_score,
+            mention_count=entry.metadata.mention_count if entry.metadata else None,
+            archived=False,
         ))
+
+    index.total_topic_count = len(index.topics)
+    index.total_project_count = len(index.projects)
     
     # Collect recent evolutions (last 30 days)
     thirty_days_ago = datetime.utcnow() - timedelta(days=30)
@@ -247,6 +316,12 @@ def update_vectors(
             "domain": getattr(entry, "domain", entry.name),
             "state": getattr(entry, "state", entry.status),
             "updated_at": entry.metadata.updated_at if entry.metadata else datetime.utcnow().isoformat(),
+            "source_conversations": entry.metadata.source_conversations if entry.metadata else [],
+            "classification_status": entry.metadata.classification_status if entry.metadata else "pending",
+            "context_type": entry.metadata.context_type if entry.metadata else None,
+            "injection_tier": entry.metadata.injection_tier if entry.metadata else None,
+            "salience_score": entry.metadata.salience_score if entry.metadata else None,
+            "archived": entry.metadata.archived if entry.metadata else False,
         })
     
     # Upsert
@@ -327,4 +402,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

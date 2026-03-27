@@ -36,7 +36,7 @@ def backup_redis(redis: RedisClient, backup_dir: Path) -> dict:
     backup_data["knowledge_entries"] = [
         {
             "id": k.id,
-            "data": k.model_dump()
+            "data": k.to_dict()
         }
         for k in knowledge
     ]
@@ -48,7 +48,7 @@ def backup_redis(redis: RedisClient, backup_dir: Path) -> dict:
     backup_data["project_entries"] = [
         {
             "id": p.id,
-            "data": p.model_dump()
+            "data": p.to_dict()
         }
         for p in projects
     ]
@@ -58,7 +58,7 @@ def backup_redis(redis: RedisClient, backup_dir: Path) -> dict:
     print("  - Thin index...")
     thin_index = redis.get_thin_index()
     if thin_index:
-        backup_data["thin_index"] = thin_index.model_dump()
+        backup_data["thin_index"] = thin_index.to_dict()
         print("    Backed up thin index")
     else:
         print("    No thin index found")
@@ -98,13 +98,13 @@ def backup_vector(vector: VectorClient, backup_dir: Path) -> dict:
     # Get index info
     print("  - Index info...")
     try:
-        info = vector.info()
+        info = vector.get_info()
         backup_data["index_info"] = {
-            "vector_count": info.vector_count,
-            "dimension": info.dimension,
-            "metric": info.metric
+            "vector_count": info["vector_count"],
+            "dimension": info["dimension"],
+            "metric": info["similarity_function"],
         }
-        print(f"    Index has {info.vector_count} vectors ({info.dimension} dimensions)")
+        print(f"    Index has {info['vector_count']} vectors ({info['dimension']} dimensions)")
     except Exception as e:
         print(f"    Error getting index info: {e}")
     

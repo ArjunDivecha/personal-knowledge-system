@@ -149,6 +149,12 @@ if __name__ == "__main__":
             domain=entry.domain,
             state=entry.state,
             updated_at=entry_updated_at,
+            source_conversations=entry.metadata.source_conversations if entry.metadata else None,
+            classification_status=entry.metadata.classification_status if entry.metadata else "pending",
+            context_type=entry.metadata.context_type if entry.metadata else None,
+            injection_tier=entry.metadata.injection_tier if entry.metadata else None,
+            salience_score=entry.metadata.salience_score if entry.metadata else None,
+            archived=entry.metadata.archived if entry.metadata else False,
         )
         if (i + 1) % 200 == 0:
             print(f"    Saved {i + 1}/{len(knowledge_entries)} knowledge entries...")
@@ -169,6 +175,12 @@ if __name__ == "__main__":
             domain=entry.name,
             state=entry.status,
             updated_at=entry_updated_at,
+            source_conversations=entry.metadata.source_conversations if entry.metadata else None,
+            classification_status=entry.metadata.classification_status if entry.metadata else "pending",
+            context_type=entry.metadata.context_type if entry.metadata else None,
+            injection_tier=entry.metadata.injection_tier if entry.metadata else None,
+            salience_score=entry.metadata.salience_score if entry.metadata else None,
+            archived=entry.metadata.archived if entry.metadata else False,
         )
         if (i + 1) % 100 == 0:
             print(f"    Saved {i + 1}/{len(project_entries)} project entries...")
@@ -196,4 +208,3 @@ if __name__ == "__main__":
     print(f"\nFinal counts:")
     print(f"  Knowledge entries: {len(all_knowledge)}")
     print(f"  Project entries: {len(all_projects)}")
-

@@ -74,6 +74,11 @@ class VectorClient:
         state: str,
         updated_at: str,
         source_conversations: list[str] = None,
+        classification_status: str = "pending",
+        context_type: Optional[str] = None,
+        injection_tier: Optional[int] = None,
+        salience_score: Optional[float] = None,
+        archived: bool = False,
     ):
         """
         Upsert a single entry's embedding.
@@ -92,10 +97,18 @@ class VectorClient:
             "domain": domain,
             "state": state,
             "updated_at": updated_at,
+            "classification_status": classification_status,
+            "archived": archived,
         }
         # Store first source for weighting (full list may exceed metadata limits)
         if source_conversations:
             metadata["source"] = source_conversations[0] if len(source_conversations) == 1 else ",".join(source_conversations[:3])
+        if context_type:
+            metadata["context_type"] = context_type
+        if injection_tier is not None:
+            metadata["injection_tier"] = injection_tier
+        if salience_score is not None:
+            metadata["salience_score"] = salience_score
         
         self.index.upsert(
             vectors=[{
@@ -125,8 +138,18 @@ class VectorClient:
                     "domain": entry["domain"],
                     "state": entry["state"],
                     "updated_at": entry["updated_at"],
+                    "classification_status": entry.get("classification_status", "pending"),
+                    "archived": entry.get("archived", False),
                 }
             })
+            if entry.get("source_conversations"):
+                vectors[-1]["metadata"]["source"] = entry["source_conversations"][0] if len(entry["source_conversations"]) == 1 else ",".join(entry["source_conversations"][:3])
+            if entry.get("context_type"):
+                vectors[-1]["metadata"]["context_type"] = entry["context_type"]
+            if entry.get("injection_tier") is not None:
+                vectors[-1]["metadata"]["injection_tier"] = entry["injection_tier"]
+            if entry.get("salience_score") is not None:
+                vectors[-1]["metadata"]["salience_score"] = entry["salience_score"]
         
         # Upstash Vector has batch limits, process in chunks
         batch_size = 100
@@ -224,6 +247,23 @@ class VectorClient:
         """Delete multiple entries' vectors."""
         if entry_ids:
             self.index.delete(ids=entry_ids)
+
+    def fetch_entries(self, entry_ids: list[str], include_metadata: bool = False, include_vectors: bool = False):
+        """Fetch vector rows by ID."""
+        if not entry_ids:
+            return []
+        return self.index.fetch(
+            ids=entry_ids,
+            include_metadata=include_metadata,
+            include_vectors=include_vectors,
+        )
+
+    def update_entry_metadata(self, entry_id: str, metadata: dict):
+        """Overwrite metadata for an existing vector row."""
+        return self.index.update(
+            id=entry_id,
+            metadata=metadata,
+        )
     
     # -------------------------------------------------------------------------
     # INFO
@@ -237,4 +277,3 @@ class VectorClient:
             "pending_vector_count": info.pending_vector_count,
             "similarity_function": info.similarity_function,
         }
-
