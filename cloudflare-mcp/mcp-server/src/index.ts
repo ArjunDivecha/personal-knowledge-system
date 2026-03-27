@@ -16,6 +16,11 @@ import {
 // GitHub accounts to query
 const GITHUB_ACCOUNTS = ['arjun-via', 'ArjunDivecha'];
 const MEMORY_SCHEMA_VERSION = 2;
+const MAX_RECONSOLIDATION_SEARCH_RESULTS = 5;
+const MAX_RECONSOLIDATION_ERROR_LOGS = 100;
+const RECONSOLIDATION_PROMOTION_THRESHOLD = 3;
+
+type EntryType = "knowledge" | "project";
 
 function createRedisClient(env: Env): Redis {
 	return new Redis({
@@ -150,6 +155,75 @@ function normalizeEntry(raw: unknown, entryTypeHint?: string): Record<string, un
 	return normalized;
 }
 
+function getEntryId(entry: Record<string, unknown> | null): string | null {
+	return typeof entry?.id === "string" && entry.id.length > 0 ? entry.id : null;
+}
+
+function getEntryKey(entryType: EntryType, entryId: string): string {
+	return `${entryType}:${entryId}`;
+}
+
+function getEntryAccessKey(entryId: string): string {
+	return `entry_access:${entryId}`;
+}
+
+function getEntryLastAccessedKey(entryId: string): string {
+	return `entry_last_accessed:${entryId}`;
+}
+
+function getReconsolidationErrorKey(now: Date = new Date()): string {
+	return `reconsolidation:errors:${now.toISOString().slice(0, 10)}`;
+}
+
+function latestIsoTimestamp(...values: Array<string | null | undefined>): string | null {
+	let latestValue: string | null = null;
+	let latestTime = Number.NEGATIVE_INFINITY;
+
+	for (const value of values) {
+		if (!value) continue;
+		const timestamp = new Date(value).getTime();
+		if (Number.isNaN(timestamp)) continue;
+		if (timestamp > latestTime) {
+			latestTime = timestamp;
+			latestValue = value;
+		}
+	}
+
+	return latestValue;
+}
+
+function appendConsolidationNote(metadata: Record<string, unknown>, note: string): void {
+	const existingNotes = toStringArray(metadata.consolidation_notes);
+	if (existingNotes[existingNotes.length - 1] === note) {
+		metadata.consolidation_notes = existingNotes;
+		return;
+	}
+
+	existingNotes.push(note);
+	metadata.consolidation_notes = existingNotes.slice(-20);
+}
+
+function applyAccessSignals(
+	entry: Record<string, unknown>,
+	accessCountRaw: unknown,
+	lastAccessedRaw: unknown,
+): Record<string, unknown> {
+	const metadata = getEntryMetadata(entry);
+	const storedAccessCount = toOptionalInteger(metadata.access_count) ?? 0;
+	const sideAccessCount = toOptionalInteger(accessCountRaw);
+	const effectiveAccessCount =
+		sideAccessCount === null ? storedAccessCount : Math.max(storedAccessCount, sideAccessCount);
+	const storedLastAccessed =
+		typeof metadata.last_accessed === "string" ? metadata.last_accessed : null;
+	const sideLastAccessed =
+		typeof lastAccessedRaw === "string" && lastAccessedRaw.length > 0 ? lastAccessedRaw : null;
+
+	metadata.access_count = effectiveAccessCount;
+	metadata.last_accessed = latestIsoTimestamp(storedLastAccessed, sideLastAccessed);
+	metadata.salience_score = computeSalience(entry);
+	return entry;
+}
+
 // GitHub API helper
 async function githubRequest(
 	endpoint: string,
@@ -240,6 +314,7 @@ async function buildHealthPayload(env: Env): Promise<Record<string, unknown>> {
 	const dreamSummary = parseStoredObject(await redis.get("dream:last_run"));
 	const backfillComplete = await redis.get("migration:backfill_complete");
 	const pendingClassificationCount = await redis.scard("classification:pending") as number;
+	const reconsolidationErrorCount = await redis.llen(getReconsolidationErrorKey()) as number;
 	const topics = Array.isArray(rawIndex.topics) ? rawIndex.topics : [];
 	const projects = Array.isArray(rawIndex.projects) ? rawIndex.projects : [];
 
@@ -249,6 +324,7 @@ async function buildHealthPayload(env: Env): Promise<Record<string, unknown>> {
 		schema_version: MEMORY_SCHEMA_VERSION,
 		migration_backfill_complete: backfillComplete,
 		pending_classification_count: pendingClassificationCount || 0,
+		reconsolidation_error_count_today: reconsolidationErrorCount || 0,
 		last_dream_run: typeof dreamSummary?.run_at === "string" ? dreamSummary.run_at : null,
 		thin_index: {
 			generated_at: typeof rawIndex.generated_at === "string" ? rawIndex.generated_at : null,
@@ -279,6 +355,116 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, { userId: string }> {
 
 	private getVector(env: Env): Index {
 		return createVectorClient(env);
+	}
+
+	private async loadEntry(
+		redis: Redis,
+		entryType: EntryType,
+		entryId: string,
+	): Promise<Record<string, unknown> | null> {
+		const entry = normalizeEntry(await redis.get(getEntryKey(entryType, entryId)), entryType);
+		return this.hydrateEntryAccessSignals(redis, entry);
+	}
+
+	private async hydrateEntryAccessSignals(
+		redis: Redis,
+		entry: Record<string, unknown> | null,
+	): Promise<Record<string, unknown> | null> {
+		const entryId = getEntryId(entry);
+		if (!entry || !entryId) return entry;
+
+		const [accessCountRaw, lastAccessedRaw] = await Promise.all([
+			redis.get(getEntryAccessKey(entryId)),
+			redis.get(getEntryLastAccessedKey(entryId)),
+		]);
+		return applyAccessSignals(entry, accessCountRaw, lastAccessedRaw);
+	}
+
+	private scheduleReconsolidation(entryType: EntryType, entryId: string): void {
+		this.ctx.waitUntil((async () => {
+			try {
+				await this.reconsolidateEntry(entryType, entryId);
+			} catch (error) {
+				await this.logReconsolidationError(entryType, entryId, error);
+			}
+		})());
+	}
+
+	private async logReconsolidationError(
+		entryType: EntryType,
+		entryId: string,
+		error: unknown,
+	): Promise<void> {
+		try {
+			const redis = this.getRedis(this.env);
+			const timestamp = new Date();
+			const message = error instanceof Error ? error.message : String(error);
+			const payload = JSON.stringify({
+				timestamp: timestamp.toISOString(),
+				entry_id: entryId,
+				entry_type: entryType,
+				error: message,
+			});
+
+			await redis.lpush(getReconsolidationErrorKey(timestamp), payload);
+			await redis.ltrim(
+				getReconsolidationErrorKey(timestamp),
+				0,
+				MAX_RECONSOLIDATION_ERROR_LOGS - 1,
+			);
+		} catch {
+			// Swallow logging failures so reconsolidation never cascades into user-visible errors.
+		}
+	}
+
+	private async reconsolidateEntry(entryType: EntryType, entryId: string): Promise<void> {
+		const redis = this.getRedis(this.env);
+		const entryKey = getEntryKey(entryType, entryId);
+		const accessCountKey = getEntryAccessKey(entryId);
+		const lastAccessedKey = getEntryLastAccessedKey(entryId);
+		const now = new Date().toISOString();
+
+		const currentEntry = normalizeEntry(await redis.get(entryKey), entryType);
+		if (!currentEntry) return;
+
+		const currentMetadata = getEntryMetadata(currentEntry);
+		const baselineAccessCount = toOptionalInteger(currentMetadata.access_count) ?? 0;
+
+		await redis.setnx(accessCountKey, baselineAccessCount);
+		await redis.incr(accessCountKey);
+		await redis.set(lastAccessedKey, now);
+
+		const [latestRawEntry, effectiveAccessCount, effectiveLastAccessed] = await Promise.all([
+			redis.get(entryKey),
+			redis.get(accessCountKey),
+			redis.get(lastAccessedKey),
+		]);
+
+		const latestEntry = normalizeEntry(latestRawEntry, entryType) ?? currentEntry;
+		const updatedEntry = applyAccessSignals(
+			latestEntry,
+			effectiveAccessCount,
+			effectiveLastAccessed,
+		);
+		const updatedMetadata = getEntryMetadata(updatedEntry);
+		const accessCount = toOptionalInteger(updatedMetadata.access_count) ?? baselineAccessCount;
+
+		if (
+			updatedMetadata.context_type === "task_query" &&
+			accessCount >= RECONSOLIDATION_PROMOTION_THRESHOLD
+		) {
+			updatedMetadata.context_type = "recurring_pattern";
+			updatedMetadata.injection_tier = 2;
+			appendConsolidationNote(
+				updatedMetadata,
+				`${now}: Upgraded task_query -> recurring_pattern (access_count reached ${accessCount})`,
+			);
+		}
+
+		updatedMetadata.last_consolidated = now;
+		updatedMetadata.salience_score = computeSalience(updatedEntry);
+
+		await redis.set(entryKey, JSON.stringify(updatedEntry));
 	}
 
 	private async getEmbedding(env: Env, text: string): Promise<number[]> {
@@ -434,11 +620,9 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, { userId: string }> {
 							if (vectorMetadata.archived === true) {
 								continue;
 							}
-							const entryType = vectorMetadata.type === "project" ? "project" : "knowledge";
-							const candidate = normalizeEntry(
-								await redis.get(`${entryType}:${result.id}`),
-								entryType,
-							);
+							const entryType: EntryType =
+								vectorMetadata.type === "project" ? "project" : "knowledge";
+							const candidate = await this.loadEntry(redis, entryType, String(result.id));
 							if (!candidate) {
 								continue;
 							}
@@ -453,6 +637,12 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, { userId: string }> {
 
 					if (!entry) {
 						return { content: [{ type: "text", text: `No active entry found for: ${topic}` }] };
+					}
+
+					const entryId = getEntryId(entry);
+					const entryType: EntryType = entry.type === "project" ? "project" : "knowledge";
+					if (entryId) {
+						this.scheduleReconsolidation(entryType, entryId);
 					}
 
 					return { content: [{ type: "text", text: JSON.stringify(entry) }] };
@@ -470,8 +660,11 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, { userId: string }> {
 			{ id: z.string().describe("Entry ID (ke_xxx for knowledge, pe_xxx for project)") },
 			async ({ id }) => {
 				const redis = this.getRedis(this.env);
-				const type = id.startsWith("pe_") ? "project" : "knowledge";
-				const entry = normalizeEntry(await redis.get(`${type}:${id}`), type);
+				const type: EntryType = id.startsWith("pe_") ? "project" : "knowledge";
+				const entry = await this.loadEntry(redis, type, id);
+				if (entry) {
+					this.scheduleReconsolidation(type, id);
+				}
 				return { content: [{ type: "text", text: JSON.stringify(entry || { error: "Not found" }) }] };
 			}
 		);
@@ -502,8 +695,9 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, { userId: string }> {
 
 					const rankedResults = await Promise.all(results.map(async (result) => {
 						const vectorMetadata = parseStoredObject(result.metadata) ?? {};
-						const entryType = vectorMetadata.type === "project" ? "project" : "knowledge";
-						const entry = normalizeEntry(await redis.get(`${entryType}:${result.id}`), entryType);
+						const entryType: EntryType =
+							vectorMetadata.type === "project" ? "project" : "knowledge";
+						const entry = await this.loadEntry(redis, entryType, String(result.id));
 						if (!entry) return null;
 
 						const entryMetadata = getEntryMetadata(entry);
@@ -535,7 +729,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, { userId: string }> {
 						});
 
 						return {
-							id: result.id,
+							id: String(result.id),
 							type: entryType,
 							label: getEntryLabel(entry),
 							summary: getEntrySummary(entry),
@@ -545,6 +739,8 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, { userId: string }> {
 							stored_injection_tier: resolveStoredInjectionTier(entryMetadata),
 							salience_score: salienceScore,
 							mention_count: typeof entryMetadata.mention_count === "number" ? entryMetadata.mention_count : null,
+							access_count: typeof entryMetadata.access_count === "number" ? entryMetadata.access_count : 0,
+							last_accessed: typeof entryMetadata.last_accessed === "string" ? entryMetadata.last_accessed : null,
 							similarity_score: result.score,
 							recency_score: recencyScore,
 							source_weight: sourceWeight,
@@ -568,6 +764,10 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, { userId: string }> {
 						return b.similarity_score - a.similarity_score;
 					});
 					const topResults = filteredResults.slice(0, requestedLimit);
+					for (const result of topResults.slice(0, MAX_RECONSOLIDATION_SEARCH_RESULTS)) {
+						const entryType: EntryType = result.type === "project" ? "project" : "knowledge";
+						this.scheduleReconsolidation(entryType, result.id);
+					}
 
 					return {
 						content: [{
@@ -843,8 +1043,10 @@ const defaultHandler = {
 
 // Export OAuth-wrapped handler for iOS Claude compatibility
 export default new OAuthProvider({
-	apiRoute: ["/sse", "/mcp"],
-	apiHandler: KnowledgeMCP.mount("/sse") as any,
+	apiHandlers: {
+		"/mcp": KnowledgeMCP.serve("/mcp", { binding: "MCP_OBJECT" }) as any,
+		"/sse": KnowledgeMCP.serveSSE("/sse", { binding: "MCP_OBJECT" }) as any,
+	},
 	defaultHandler: defaultHandler as any,
 	authorizeEndpoint: "/authorize",
 	tokenEndpoint: "/token",

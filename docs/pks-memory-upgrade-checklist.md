@@ -11,7 +11,7 @@ Source PRD: [PKS-Upgrade-PRD.md](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Wo
 - [x] Phase 1 complete
 - [x] Phase 2 complete
 - [x] Phase 3 complete
-- [ ] Phase 4 complete
+- [x] Phase 4 complete
 - [ ] Phase 5 complete
 - [ ] Phase 6 complete
 
@@ -85,11 +85,18 @@ Source PRD: [PKS-Upgrade-PRD.md](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Wo
 
 ## Phase 4: Reconsolidation
 
-- [ ] Implement atomic access counting with `INCR entry_access:{id}`
-- [ ] Limit `search`-triggered reconsolidation to the top 5 returned results
-- [ ] Add `reconsolidation:errors:{date}` logging
-- [ ] Define fold-back semantics for access counters during Dream
-- [ ] Add acceptance tests for repeated retrieval promotion behavior
+- [x] Implement atomic access counting with `INCR entry_access:{id}`
+- [x] Limit `search`-triggered reconsolidation to the top 5 returned results
+- [x] Add `reconsolidation:errors:{date}` logging
+- [x] Define fold-back semantics for access counters during Dream
+- [x] Add acceptance tests for repeated retrieval promotion behavior
+
+Phase 4 notes:
+- `entry_access:{id}` and `entry_last_accessed:{id}` are now the authoritative live counters.
+- Retrieval paths overlay those side keys on read, so stale entry blobs cannot regress visible access counts.
+- Background reconsolidation folds the current side-key values back into the canonical Redis entry on each retrieval.
+- Dream must treat the side keys as source of truth before any archive/prune decision, then persist the folded values into the run audit before any reset/rotation.
+- Manual live acceptance check on `2026-03-27`: repeated `get_deep` calls promoted `ke_0c2508065679` from `task_query` to `recurring_pattern` and moved it to injection tier `2`.
 
 ## Phase 5: Dream Job
 
@@ -125,7 +132,7 @@ Source PRD: [PKS-Upgrade-PRD.md](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Wo
 - [x] `index:current` matches active Redis state within expected bounds
 - [x] Redis and vector metadata match on sampled entries
 - [ ] `search("investing")` ranks Tier 1 and Tier 2 above Tier 3
-- [ ] Repeated retrieval increments access counters without races
+- [x] Repeated retrieval increments access counters without races
 - [ ] Dream dry run produces reversible archive candidates only
 - [ ] New write-capable MCP tools reject unauthorized calls
 
