@@ -17,7 +17,8 @@ from _memory_migration import append_report, utc_now_iso
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BASE_URL = "https://mcp.dancing-ganesh.com"
-DEFAULT_CRON_HOUR_UTC = 3
+DEFAULT_CRON_HOUR_UTC = 7
+DEFAULT_CRON_MINUTE_UTC = 10
 DEFAULT_MAX_START_DELAY_MINUTES = 45
 EXPECTED_ARCHIVE_LIMIT = 5
 EXPECTED_PROMOTION_LIMIT = 10
@@ -37,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--cron-hour-utc", type=int, default=DEFAULT_CRON_HOUR_UTC)
+    parser.add_argument("--cron-minute-utc", type=int, default=DEFAULT_CRON_MINUTE_UTC)
     parser.add_argument("--max-start-delay-minutes", type=int, default=DEFAULT_MAX_START_DELAY_MINUTES)
     parser.add_argument(
         "--now-utc",
@@ -52,8 +54,8 @@ def parse_iso_datetime(value: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
-def most_recent_scheduled_boundary(now_utc: datetime, cron_hour_utc: int) -> datetime:
-    boundary = now_utc.replace(hour=cron_hour_utc, minute=0, second=0, microsecond=0)
+def most_recent_scheduled_boundary(now_utc: datetime, cron_hour_utc: int, cron_minute_utc: int) -> datetime:
+    boundary = now_utc.replace(hour=cron_hour_utc, minute=cron_minute_utc, second=0, microsecond=0)
     if now_utc < boundary:
         boundary -= timedelta(days=1)
     return boundary
@@ -203,10 +205,11 @@ def validate_dream_run(
     dream_summary: dict[str, Any],
     now_utc: datetime,
     cron_hour_utc: int,
+    cron_minute_utc: int,
     max_start_delay_minutes: int,
 ) -> ValidationResult:
     issues: list[str] = []
-    expected_boundary = most_recent_scheduled_boundary(now_utc, cron_hour_utc)
+    expected_boundary = most_recent_scheduled_boundary(now_utc, cron_hour_utc, cron_minute_utc)
     expected_latest_start = expected_boundary + timedelta(minutes=max_start_delay_minutes)
 
     run_at_raw = dream_summary.get("run_at")
@@ -288,6 +291,7 @@ def main() -> int:
         dream_summary=dream_summary,
         now_utc=now_utc,
         cron_hour_utc=args.cron_hour_utc,
+        cron_minute_utc=args.cron_minute_utc,
         max_start_delay_minutes=args.max_start_delay_minutes,
     )
 

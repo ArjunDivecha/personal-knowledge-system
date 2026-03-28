@@ -17,17 +17,17 @@ from check_overnight_dream_run import most_recent_scheduled_boundary, validate_d
 class CheckOvernightDreamRunTests(unittest.TestCase):
     def test_most_recent_scheduled_boundary_after_run(self) -> None:
         now_utc = datetime(2026, 3, 28, 15, 0, tzinfo=UTC)
-        boundary = most_recent_scheduled_boundary(now_utc, 3)
-        self.assertEqual(boundary, datetime(2026, 3, 28, 3, 0, tzinfo=UTC))
+        boundary = most_recent_scheduled_boundary(now_utc, 7, 10)
+        self.assertEqual(boundary, datetime(2026, 3, 28, 7, 10, tzinfo=UTC))
 
     def test_most_recent_scheduled_boundary_before_run(self) -> None:
         now_utc = datetime(2026, 3, 28, 1, 0, tzinfo=UTC)
-        boundary = most_recent_scheduled_boundary(now_utc, 3)
-        self.assertEqual(boundary, datetime(2026, 3, 27, 3, 0, tzinfo=UTC))
+        boundary = most_recent_scheduled_boundary(now_utc, 7, 10)
+        self.assertEqual(boundary, datetime(2026, 3, 27, 7, 10, tzinfo=UTC))
 
     def test_validate_dream_run_passes_for_bounded_live_run(self) -> None:
         now_utc = datetime(2026, 3, 28, 15, 0, tzinfo=UTC)
-        run_at = "2026-03-28T03:00:41+00:00"
+        run_at = "2026-03-28T07:10:41+00:00"
         health = {
             "last_dream_run": run_at,
             "last_dream_dry_run": False,
@@ -49,7 +49,8 @@ class CheckOvernightDreamRunTests(unittest.TestCase):
             health=health,
             dream_summary=dream_summary,
             now_utc=now_utc,
-            cron_hour_utc=3,
+            cron_hour_utc=7,
+            cron_minute_utc=10,
             max_start_delay_minutes=45,
         )
 
@@ -58,7 +59,7 @@ class CheckOvernightDreamRunTests(unittest.TestCase):
 
     def test_validate_dream_run_fails_for_old_dry_run(self) -> None:
         now_utc = datetime(2026, 3, 28, 15, 0, tzinfo=UTC)
-        run_at = "2026-03-27T03:00:41+00:00"
+        run_at = "2026-03-27T07:10:41+00:00"
         health = {
             "last_dream_run": run_at,
             "last_dream_dry_run": True,
@@ -80,7 +81,8 @@ class CheckOvernightDreamRunTests(unittest.TestCase):
             health=health,
             dream_summary=dream_summary,
             now_utc=now_utc,
-            cron_hour_utc=3,
+            cron_hour_utc=7,
+            cron_minute_utc=10,
             max_start_delay_minutes=45,
         )
 

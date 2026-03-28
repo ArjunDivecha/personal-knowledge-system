@@ -40,8 +40,8 @@ beforeEach(() => {
 describe("Scheduled Dream runner", () => {
 	it("triggers the nightly bounded live Dream cycle", async () => {
 		const controller = createScheduledController({
-			cron: "0 3 * * *",
-			scheduledTime: Date.parse("2026-03-28T03:00:00.000Z"),
+			cron: "10 7 * * *",
+			scheduledTime: Date.parse("2026-03-28T07:10:00.000Z"),
 		});
 		const ctx = createExecutionContext();
 
@@ -55,7 +55,7 @@ describe("Scheduled Dream runner", () => {
 			expect.objectContaining({
 				dryRun: false,
 				trigger: "scheduled",
-				cron: "0 3 * * *",
+				cron: "10 7 * * *",
 				archiveLimit: 5,
 				promotionLimit: 10,
 				note: "Nightly bounded Dream run with archiveLimit=5 and promotionLimit=10.",

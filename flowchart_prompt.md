@@ -142,7 +142,8 @@ Inside or attached to this box, include:
 - **Custom domain**
   - `mcp.dancing-ganesh.com`
 - **Bounded scheduled Dream trigger**
-  - cron: `0 3 * * *`
+  - cron: `10 7 * * *` UTC
+  - equivalent to `00:10 PDT`
 - **Tier-aware retrieval logic**
   - semantic similarity
   - recency
