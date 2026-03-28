@@ -39,20 +39,22 @@ def run_command(cmd: list[str], env: dict[str, str] | None = None) -> dict[str, 
 
 def build_staging_seed_env() -> dict[str, str]:
     env = dict(os.environ)
-    required_keys = (
+    env["STAGING_UPSTASH_REDIS_REST_URL"] = get_env_value(
         "STAGING_UPSTASH_REDIS_REST_URL",
+        "UPSTASH_REDIS_REST_URL",
+    ) or ""
+    env["STAGING_UPSTASH_REDIS_REST_TOKEN"] = get_env_value(
         "STAGING_UPSTASH_REDIS_REST_TOKEN",
+        "UPSTASH_REDIS_REST_TOKEN",
+    ) or ""
+    env["STAGING_UPSTASH_VECTOR_REST_URL"] = get_env_value(
         "STAGING_UPSTASH_VECTOR_REST_URL",
+        "UPSTASH_VECTOR_REST_URL",
+    ) or ""
+    env["STAGING_UPSTASH_VECTOR_REST_TOKEN"] = get_env_value(
         "STAGING_UPSTASH_VECTOR_REST_TOKEN",
-    )
-    missing_keys = [key for key in required_keys if not os.getenv(key)]
-    if missing_keys:
-        raise RuntimeError(
-            "Missing required staging environment variables: "
-            + ", ".join(missing_keys)
-        )
-    for key in required_keys:
-        env[key] = os.getenv(key, "")
+        "UPSTASH_VECTOR_REST_TOKEN",
+    ) or ""
     openai_key = get_env_value("STAGING_OPENAI_API_KEY", "OPENAI_API_KEY")
     if openai_key:
         env["STAGING_OPENAI_API_KEY"] = openai_key

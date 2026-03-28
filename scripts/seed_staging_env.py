@@ -69,15 +69,15 @@ def get_required_env(key: str, *fallback_keys: str, allow_empty: bool = False) -
 
 def connect_redis() -> Redis:
     return Redis(
-        url=get_required_env("STAGING_UPSTASH_REDIS_REST_URL"),
-        token=get_required_env("STAGING_UPSTASH_REDIS_REST_TOKEN"),
+        url=get_required_env("STAGING_UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_URL"),
+        token=get_required_env("STAGING_UPSTASH_REDIS_REST_TOKEN", "UPSTASH_REDIS_REST_TOKEN"),
     )
 
 
 def connect_vector() -> Index:
     return Index(
-        url=get_required_env("STAGING_UPSTASH_VECTOR_REST_URL"),
-        token=get_required_env("STAGING_UPSTASH_VECTOR_REST_TOKEN"),
+        url=get_required_env("STAGING_UPSTASH_VECTOR_REST_URL", "UPSTASH_VECTOR_REST_URL"),
+        token=get_required_env("STAGING_UPSTASH_VECTOR_REST_TOKEN", "UPSTASH_VECTOR_REST_TOKEN"),
     )
 
 
