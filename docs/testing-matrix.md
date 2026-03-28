@@ -217,7 +217,9 @@ Key commands:
 
 - `make worker-typecheck`
 - `make worker-test`
+- `make test-python-checker`
 - `make verify-memory-full`
+- `make check-overnight-dream`
 - `make dream-live-canary`
 - `make seed-staging-dry-run`
 - `make staging-smoke-dry-run`

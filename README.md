@@ -471,7 +471,9 @@ The root [Makefile](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/
 
 - `make worker-typecheck`
 - `make worker-test`
+- `make test-python-checker`
 - `make verify-memory-full`
+- `make check-overnight-dream`
 - `make seed-staging-dry-run`
 - `make staging-smoke-dry-run`
 - `make staging-smoke`
