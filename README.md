@@ -467,9 +467,22 @@ The root [Makefile](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/
 - `make verify-memory-full`
 - `make seed-staging-dry-run`
 - `make staging-smoke-dry-run`
+- `make staging-smoke`
+- `make worker-secrets-staging`
+- `make deploy-staging`
 - `make dream-live-canary`
 
 The long-term rule is simple: production is not the default test bed.
+
+The staging smoke path is now production-shaped. It covers:
+
+- fixture seeding into isolated staging Redis and Vector
+- staging Worker `/health`
+- unauthorized operator rejection
+- Dream dry-run on staging
+- OAuth discovery, client registration, auth-code exchange, and bearer-token issuance
+- MCP `initialize`, `tools/list`, `get_index`, `search`, `get_context`, and `get_dream_summary`
+- final Redis vs Vector vs thin-index consistency verification
 
 ## Current Upgrade Status
 

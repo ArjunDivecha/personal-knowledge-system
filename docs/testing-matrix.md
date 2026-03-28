@@ -211,6 +211,27 @@ Key commands:
 - `make dream-live-canary`
 - `make seed-staging-dry-run`
 - `make staging-smoke-dry-run`
+- `make staging-smoke`
+- `make worker-secrets-staging`
+- `make deploy-staging`
+
+Staging Worker expectations:
+
+- deploy a separate Worker named `arjun-knowledge-mcp-staging`
+- keep staging on `workers.dev`, not the production custom domain
+- use a separate OAuth KV namespace
+- use separate staging Redis and Vector credentials
+- do not enable cron on staging by default
+
+Current staging smoke coverage:
+
+- reset and seed staging Redis/Vector from a fixture bundle
+- hit staging `/health`
+- verify unauthorized operator requests return `401`
+- run a staging Dream dry run through the operator endpoint
+- complete OAuth discovery, registration, authorization, and token exchange
+- run MCP `initialize`, `tools/list`, `get_index`, `search`, `get_context`, and `get_dream_summary`
+- finish with `verify_memory_consistency.py --full --strict` against staging data
 
 ## Near-Term Build Order
 

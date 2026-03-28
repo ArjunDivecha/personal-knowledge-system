@@ -323,6 +323,23 @@ function getEntrySummary(entry: Record<string, unknown>): string {
 	return "";
 }
 
+function buildReconsolidatedVectorMetadata(entry: Record<string, unknown>): Record<string, unknown> {
+	const metadata = getEntryMetadata(entry);
+	return {
+		archived: Boolean(metadata.archived),
+		classification_status:
+			typeof metadata.classification_status === "string" && metadata.classification_status.length > 0
+				? metadata.classification_status
+				: "pending",
+		context_type: typeof metadata.context_type === "string" ? metadata.context_type : null,
+		injection_tier: resolveStoredInjectionTier(metadata),
+		salience_score: toOptionalNumber(metadata.salience_score),
+		mention_count: toOptionalInteger(metadata.mention_count),
+		last_consolidated:
+			typeof metadata.last_consolidated === "string" ? metadata.last_consolidated : null,
+	};
+}
+
 async function buildHealthPayload(env: Env): Promise<Record<string, unknown>> {
 	const redis = createRedisClient(env);
 	const rawIndex = parseStoredObject(await redis.get("index:current")) ?? {};
@@ -442,6 +459,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, { userId: string }> {
 
 	private async reconsolidateEntry(entryType: EntryType, entryId: string): Promise<void> {
 		const redis = this.getRedis(this.env);
+		const vector = this.getVector(this.env);
 		const entryKey = getEntryKey(entryType, entryId);
 		const accessCountKey = getEntryAccessKey(entryId);
 		const lastAccessedKey = getEntryLastAccessedKey(entryId);
@@ -488,6 +506,11 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, { userId: string }> {
 		updatedMetadata.salience_score = computeSalience(updatedEntry);
 
 		await redis.set(entryKey, JSON.stringify(updatedEntry));
+		await vector.update({
+			id: entryId,
+			metadata: buildReconsolidatedVectorMetadata(updatedEntry),
+			metadataUpdateMode: "PATCH",
+		});
 	}
 
 	private async getEmbedding(env: Env, text: string): Promise<number[]> {

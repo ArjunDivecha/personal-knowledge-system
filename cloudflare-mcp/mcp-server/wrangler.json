@@ -1,49 +1,73 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "arjun-knowledge-mcp",
-  "main": "src/index.ts",
-  "compatibility_date": "2025-03-10",
-  "compatibility_flags": [
-    "nodejs_compat"
-  ],
-  "triggers": {
-    "crons": [
-      "0 3 * * *"
-    ]
-  },
-  "limits": {
-    "cpu_ms": 30000
-  },
-  "migrations": [
-    {
-      "new_sqlite_classes": [
-        "KnowledgeMCP"
-      ],
-      "tag": "v1"
-    }
-  ],
-  "durable_objects": {
-    "bindings": [
-      {
-        "class_name": "KnowledgeMCP",
-        "name": "MCP_OBJECT"
-      }
-    ]
-  },
-  "kv_namespaces": [
-    {
-      "binding": "OAUTH_KV",
-      "id": "09b2d0da76a044489a9c334091d414f6"
-    }
-  ],
-  "observability": {
-    "enabled": true
-  },
-  "workers_dev": true,
-  "routes": [
-    {
-      "pattern": "mcp.dancing-ganesh.com",
-      "custom_domain": true
-    }
-  ]
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "arjun-knowledge-mcp",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-03-10",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"triggers": {
+		"crons": [
+			"0 3 * * *"
+		]
+	},
+	"limits": {
+		"cpu_ms": 30000
+	},
+	"migrations": [
+		{
+			"new_sqlite_classes": [
+				"KnowledgeMCP"
+			],
+			"tag": "v1"
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"class_name": "KnowledgeMCP",
+				"name": "MCP_OBJECT"
+			}
+		]
+	},
+	"kv_namespaces": [
+		{
+			"binding": "OAUTH_KV",
+			"id": "09b2d0da76a044489a9c334091d414f6"
+		}
+	],
+	"observability": {
+		"enabled": true
+	},
+	"workers_dev": true,
+	"routes": [
+		{
+			"pattern": "mcp.dancing-ganesh.com",
+			"custom_domain": true
+		}
+	],
+	"env": {
+		"staging": {
+			"name": "arjun-knowledge-mcp-staging",
+			"workers_dev": true,
+			"routes": [],
+			"triggers": {
+				"crons": []
+			},
+			"durable_objects": {
+				"bindings": [
+					{
+						"class_name": "KnowledgeMCP",
+						"name": "MCP_OBJECT"
+					}
+				]
+			},
+			"kv_namespaces": [
+				{
+					"binding": "OAUTH_KV",
+					"id": "b408f217d22348b195fa801bcda46aba"
+				}
+			]
+		}
+	}
 }

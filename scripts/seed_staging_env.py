@@ -21,6 +21,7 @@ if str(DISTILLATION_ROOT) not in sys.path:
 from config import EMBEDDING_DIMENSIONS, EMBEDDING_MODEL  # noqa: E402
 from models.entries import KnowledgeEntry, ProjectEntry  # noqa: E402
 from pipeline.index import generate_thin_index  # noqa: E402
+from utils.salience import compute_salience, resolve_stored_tier  # noqa: E402
 
 from _memory_migration import (  # noqa: E402
     MIGRATION_FLAG_KEY,
@@ -28,8 +29,15 @@ from _memory_migration import (  # noqa: E402
     build_embedding_text,
     build_vector_metadata,
     normalize_entry_for_phase2,
-    utc_now_iso,
+	utc_now_iso,
 )
+
+
+def refresh_policy_metadata(entry: KnowledgeEntry | ProjectEntry) -> KnowledgeEntry | ProjectEntry:
+    if entry.metadata:
+        entry.metadata.injection_tier = resolve_stored_tier(entry)
+        entry.metadata.salience_score = compute_salience(entry)
+    return entry
 
 
 def load_bundle(path: Path) -> tuple[list[KnowledgeEntry], list[ProjectEntry], dict[str, Any]]:
@@ -37,11 +45,11 @@ def load_bundle(path: Path) -> tuple[list[KnowledgeEntry], list[ProjectEntry], d
     metadata = dict(payload.get("metadata") or {})
 
     knowledge_entries = [
-        normalize_entry_for_phase2(KnowledgeEntry.from_dict(item.get("data", item)))
+        refresh_policy_metadata(normalize_entry_for_phase2(KnowledgeEntry.from_dict(item.get("data", item))))
         for item in payload.get("knowledge_entries", [])
     ]
     project_entries = [
-        normalize_entry_for_phase2(ProjectEntry.from_dict(item.get("data", item)))
+        refresh_policy_metadata(normalize_entry_for_phase2(ProjectEntry.from_dict(item.get("data", item))))
         for item in payload.get("project_entries", [])
     ]
     return knowledge_entries, project_entries, metadata

@@ -4,9 +4,12 @@
 	"private": true,
 	"scripts": {
 		"deploy": "wrangler deploy",
+		"deploy:staging": "wrangler deploy --env staging",
 		"dev": "wrangler dev",
+		"dev:staging": "wrangler dev --env staging",
 		"format": "biome format --write",
 		"lint:fix": "biome lint --fix",
+		"secrets:staging": "wrangler secret bulk .dev.vars.staging --env staging",
 		"start": "wrangler dev",
 		"cf-typegen": "wrangler types",
 		"test:dream-live": "node --experimental-strip-types scripts/test-dream-live.ts",
