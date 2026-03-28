@@ -133,7 +133,7 @@ This is the software analog of strategic forgetting: preserve what matters, but 
 
 The most ambitious part of the design is the Dream job.
 
-Dream is partially live now. The scheduler, audit trail, candidate discovery loop, reversible archive/restore mechanics, and write-capable operator tools are implemented. The nightly Worker is now configured for full live runs of the currently implemented Dream engine. Replay-heavy consolidation is still planned. The intended structure is:
+Dream is partially live now. The scheduler, audit trail, candidate discovery loop, reversible archive/restore mechanics, deterministic duplicate merge, contradiction handling, and write-capable operator tools are implemented. The nightly Worker is now configured for full live runs of the currently implemented Dream engine. The remaining gap is broader, heavier replay logic rather than the basic replay loop itself. The intended structure is:
 
 1. Survey
    Load active entries, compute salience, and bucket them into stable, active, weak, and decay candidates.
@@ -368,13 +368,13 @@ Operationally, the following are live:
 - OAuth-enabled Cloudflare MCP server
 - background reconsolidation on retrieval
 - write-capable MCP tools for `restore_archived` and `set_context_type`
-- nightly bounded-live Dream scheduler and audit records
+- nightly full-live Dream scheduler and audit records
 - reversible Dream archive snapshot and restore mechanics
+- deterministic duplicate merge and contradiction handling in Dream replay
 - `/health` and `/status` rollout endpoints
 
 Not live yet:
 
-- replay-heavy Dream consolidation such as duplicate merges and contradiction handling
 - external-runner fallback for heavier Dream work
 
 ## How The Repo Is Organized
@@ -517,12 +517,12 @@ Completed:
 - Phase 2 live backfill and normalization
 - Phase 3 tier-aware retrieval and rollout status endpoint
 - Phase 4 reconsolidation on retrieval
-- Phase 5 bounded Dream control plane, archive/restore path, and staging validation
+- Phase 5 Dream control plane, archive/restore path, replay heuristics, and staging validation
 - Phase 6 operator tool surface and write-scope enforcement
 
 Next:
 
-- replay-heavy Dream logic such as duplicate merge and contradiction handling
+- richer Dream replay logic beyond the current deterministic duplicate/contradiction heuristics
 - ingestion hardening and source-fusion improvements
 - broader fixture and ranking coverage in the automated test stack
 

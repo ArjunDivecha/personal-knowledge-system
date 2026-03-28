@@ -39,6 +39,18 @@ interface LoadedEntry {
 	salienceScore: number;
 }
 
+interface DuplicateMergePlan {
+	fingerprint: string;
+	canonical: LoadedEntry;
+	duplicates: LoadedEntry[];
+}
+
+interface ContradictionPlan {
+	entryIds: string[];
+	label: string;
+	reasons: string[];
+}
+
 interface ArchivedSnapshot {
 	schema_version: 1;
 	entry_id: string;
@@ -62,6 +74,18 @@ const INDEX_REBUILD_LOCK_TTL_SECONDS = 5 * 60;
 const THIN_INDEX_STAGING_PREFIX = "index:staging:";
 const THIN_INDEX_TOPIC_LIMIT = 100;
 const THIN_INDEX_PROJECT_LIMIT = 50;
+const DUPLICATE_FINGERPRINT_MIN_LENGTH = 6;
+const CONTRADICTION_MARKER_PAIRS: Array<[string, string]> = [
+	["outperform", "underperform"],
+	["bullish", "bearish"],
+	["rising", "falling"],
+	["increase", "decrease"],
+	["improve", "worsen"],
+	["positive", "negative"],
+	["buy", "sell"],
+	["expand", "contract"],
+	["accelerating", "slowing"],
+];
 
 function createRedisClient(env: Env): Redis {
 	return new Redis({
@@ -226,7 +250,7 @@ function appendConsolidationNote(metadata: Record<string, unknown>, note: string
 }
 
 function setVectorMetadataBase(entry: LoadedEntry): Record<string, unknown> {
-	return {
+	const base = {
 		type: entry.type,
 		archived: Boolean(entry.metadata.archived),
 		context_type: entry.metadata.context_type,
@@ -234,6 +258,20 @@ function setVectorMetadataBase(entry: LoadedEntry): Record<string, unknown> {
 		salience_score: entry.metadata.salience_score,
 		mention_count: entry.metadata.mention_count,
 		last_consolidated: entry.metadata.last_consolidated,
+		updated_at: entry.updatedAt,
+	};
+	if (entry.type === "knowledge") {
+		return {
+			...base,
+			domain: typeof entry.entry.domain === "string" ? entry.entry.domain : entry.label,
+			state: typeof entry.entry.state === "string" ? entry.entry.state : "active",
+			confidence: typeof entry.entry.confidence === "string" ? entry.entry.confidence : "medium",
+		};
+	}
+	return {
+		...base,
+		name: typeof entry.entry.name === "string" ? entry.entry.name : entry.label,
+		status: typeof entry.entry.status === "string" ? entry.entry.status : "active",
 	};
 }
 
@@ -243,6 +281,317 @@ function truncate(value: unknown, maxLength: number): string {
 		return text;
 	}
 	return `${text.slice(0, maxLength - 3)}...`;
+}
+
+function normalizeComparableText(value: unknown): string {
+	return typeof value === "string"
+		? value
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, " ")
+			.replace(/\s+/g, " ")
+			.trim()
+		: "";
+}
+
+function tokenizeComparableText(value: unknown): string[] {
+	const normalized = normalizeComparableText(value);
+	return normalized.length > 0 ? normalized.split(" ") : [];
+}
+
+function computeTokenSimilarity(left: unknown, right: unknown): number {
+	const leftTokens = new Set(tokenizeComparableText(left));
+	const rightTokens = new Set(tokenizeComparableText(right));
+	if (leftTokens.size === 0 || rightTokens.size === 0) {
+		return 0;
+	}
+
+	let intersection = 0;
+	for (const token of leftTokens) {
+		if (rightTokens.has(token)) {
+			intersection += 1;
+		}
+	}
+
+	const union = new Set([...leftTokens, ...rightTokens]).size;
+	return union === 0 ? 0 : intersection / union;
+}
+
+function getNarrativeText(entry: LoadedEntry): string {
+	if (entry.type === "knowledge") {
+		return typeof entry.entry.current_view === "string" ? entry.entry.current_view : "";
+	}
+
+	return [
+		typeof entry.entry.goal === "string" ? entry.entry.goal : "",
+		typeof entry.entry.current_phase === "string" ? entry.entry.current_phase : "",
+		typeof entry.entry.blocked_on === "string" ? entry.entry.blocked_on : "",
+	].filter(Boolean).join(" ");
+}
+
+function getDuplicateFingerprint(entry: LoadedEntry): string | null {
+	const fingerprint = normalizeComparableText(entry.label);
+	if (fingerprint.length < DUPLICATE_FINGERPRINT_MIN_LENGTH) {
+		return null;
+	}
+	return `${entry.type}:${fingerprint}`;
+}
+
+function containsMarker(text: string, marker: string): boolean {
+	return normalizeComparableText(text).includes(marker);
+}
+
+function findOpposingMarkerReason(left: string, right: string): string | null {
+	for (const [positive, negative] of CONTRADICTION_MARKER_PAIRS) {
+		const leftPositive = containsMarker(left, positive);
+		const leftNegative = containsMarker(left, negative);
+		const rightPositive = containsMarker(right, positive);
+		const rightNegative = containsMarker(right, negative);
+		if ((leftPositive && rightNegative) || (leftNegative && rightPositive)) {
+			return `opposing markers (${positive} vs ${negative})`;
+		}
+	}
+	return null;
+}
+
+function getEntryConfidence(entry: LoadedEntry): string {
+	return entry.type === "knowledge" && typeof entry.entry.confidence === "string"
+		? entry.entry.confidence
+		: "medium";
+}
+
+function compareCanonicalPriority(left: LoadedEntry, right: LoadedEntry): number {
+	if (left.injectionTier !== right.injectionTier) {
+		return left.injectionTier - right.injectionTier;
+	}
+	if (left.mentionCount !== right.mentionCount) {
+		return right.mentionCount - left.mentionCount;
+	}
+	if (left.accessCount !== right.accessCount) {
+		return right.accessCount - left.accessCount;
+	}
+	if (left.salienceScore !== right.salienceScore) {
+		return right.salienceScore - left.salienceScore;
+	}
+	const updatedDiff = sortTimestamp(right.updatedAt) - sortTimestamp(left.updatedAt);
+	if (updatedDiff !== 0) {
+		return updatedDiff;
+	}
+	return left.id.localeCompare(right.id);
+}
+
+function entriesAreCompatibleDuplicates(left: LoadedEntry, right: LoadedEntry): boolean {
+	if (left.type !== right.type) return false;
+	if (getDuplicateFingerprint(left) !== getDuplicateFingerprint(right)) return false;
+	if (left.type === "project") return true;
+
+	const leftNarrative = getNarrativeText(left);
+	const rightNarrative = getNarrativeText(right);
+	if (!leftNarrative || !rightNarrative) {
+		return true;
+	}
+
+	const opposingMarkerReason = findOpposingMarkerReason(leftNarrative, rightNarrative);
+	if (opposingMarkerReason) {
+		return false;
+	}
+
+	const similarity = computeTokenSimilarity(leftNarrative, rightNarrative);
+	return similarity >= 0.3 ||
+		normalizeComparableText(leftNarrative).includes(normalizeComparableText(rightNarrative)) ||
+		normalizeComparableText(rightNarrative).includes(normalizeComparableText(leftNarrative));
+}
+
+function detectPairContradictionReason(left: LoadedEntry, right: LoadedEntry): string | null {
+	if (left.type !== "knowledge" || right.type !== "knowledge") return null;
+	if (getDuplicateFingerprint(left) !== getDuplicateFingerprint(right)) return null;
+
+	const leftNarrative = getNarrativeText(left);
+	const rightNarrative = getNarrativeText(right);
+	if (!leftNarrative || !rightNarrative) return null;
+
+	const opposingMarkerReason = findOpposingMarkerReason(leftNarrative, rightNarrative);
+	if (opposingMarkerReason) {
+		return opposingMarkerReason;
+	}
+
+	if (getEntryConfidence(left) === "low" || getEntryConfidence(right) === "low") {
+		return null;
+	}
+
+	const similarity = computeTokenSimilarity(leftNarrative, rightNarrative);
+	return similarity <= 0.12
+		? `same topic has materially different views (similarity=${similarity.toFixed(2)})`
+		: null;
+}
+
+function detectInternalContradictionReason(entry: LoadedEntry): string | null {
+	if (entry.type !== "knowledge") return null;
+	if (typeof entry.entry.state === "string" && entry.entry.state === "contested") return null;
+
+	const positions = Array.isArray(entry.entry.positions)
+		? entry.entry.positions.filter(
+			(position): position is Record<string, unknown> =>
+				Boolean(position) && typeof position === "object" && !Array.isArray(position),
+		)
+		: [];
+	const views = positions
+		.map((position) => (typeof position.view === "string" ? position.view : ""))
+		.filter((view) => view.length > 0);
+	if (views.length < 2) {
+		return null;
+	}
+
+	for (let leftIndex = 0; leftIndex < views.length; leftIndex += 1) {
+		for (let rightIndex = leftIndex + 1; rightIndex < views.length; rightIndex += 1) {
+			const opposingMarkerReason = findOpposingMarkerReason(views[leftIndex], views[rightIndex]);
+			if (opposingMarkerReason) {
+				return `internal positions contain ${opposingMarkerReason}`;
+			}
+
+			const similarity = computeTokenSimilarity(views[leftIndex], views[rightIndex]);
+			if (similarity <= 0.08) {
+				return `internal positions materially diverge (similarity=${similarity.toFixed(2)})`;
+			}
+		}
+	}
+
+	return null;
+}
+
+function buildReplayPlans(entries: LoadedEntry[]): {
+	duplicatePlans: DuplicateMergePlan[];
+	contradictionPlans: ContradictionPlan[];
+} {
+	const groups = new Map<string, LoadedEntry[]>();
+	for (const entry of entries) {
+		const fingerprint = getDuplicateFingerprint(entry);
+		if (!fingerprint) continue;
+		const existing = groups.get(fingerprint) ?? [];
+		existing.push(entry);
+		groups.set(fingerprint, existing);
+	}
+
+	const contradictionPlans: ContradictionPlan[] = [];
+	const duplicatePlans: DuplicateMergePlan[] = [];
+
+	for (const group of groups.values()) {
+		if (group.length < 2) continue;
+
+		const contradictionReasons = new Set<string>();
+		for (let leftIndex = 0; leftIndex < group.length; leftIndex += 1) {
+			for (let rightIndex = leftIndex + 1; rightIndex < group.length; rightIndex += 1) {
+				const reason = detectPairContradictionReason(group[leftIndex], group[rightIndex]);
+				if (reason) {
+					contradictionReasons.add(reason);
+				}
+			}
+		}
+
+		if (contradictionReasons.size > 0) {
+			contradictionPlans.push({
+				entryIds: group.map((entry) => entry.id),
+				label: group[0].label,
+				reasons: [...contradictionReasons],
+			});
+			continue;
+		}
+
+		if (group.every((entry, index) =>
+			group.slice(index + 1).every((other) => entriesAreCompatibleDuplicates(entry, other))
+		)) {
+			const ordered = [...group].sort(compareCanonicalPriority);
+			duplicatePlans.push({
+				fingerprint: getDuplicateFingerprint(ordered[0]) ?? ordered[0].id,
+				canonical: ordered[0],
+				duplicates: ordered.slice(1),
+			});
+		}
+	}
+
+	for (const entry of entries) {
+		const reason = detectInternalContradictionReason(entry);
+		if (!reason) continue;
+		contradictionPlans.push({
+			entryIds: [entry.id],
+			label: entry.label,
+			reasons: [reason],
+		});
+	}
+
+	return { duplicatePlans, contradictionPlans };
+}
+
+function mergeStringArraysUnique(...values: unknown[]): string[] {
+	return [...new Set(values.flatMap((value) => toStringArray(value)))];
+}
+
+function mergeObjectArraysUnique(...values: unknown[]): Array<Record<string, unknown>> {
+	const merged = new Map<string, Record<string, unknown>>();
+	for (const value of values) {
+		if (!Array.isArray(value)) continue;
+		for (const item of value) {
+			if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+			merged.set(JSON.stringify(item), item as Record<string, unknown>);
+		}
+	}
+	return [...merged.values()];
+}
+
+function earliestIsoTimestamp(...values: Array<string | null | undefined>): string | null {
+	let earliestValue: string | null = null;
+	let earliestTime = Number.POSITIVE_INFINITY;
+
+	for (const value of values) {
+		if (!value) continue;
+		const timestamp = new Date(value).getTime();
+		if (Number.isNaN(timestamp)) continue;
+		if (timestamp < earliestTime) {
+			earliestTime = timestamp;
+			earliestValue = value;
+		}
+	}
+
+	return earliestValue;
+}
+
+function mergeSourceWeights(...values: unknown[]): Record<string, number> {
+	const merged: Record<string, number> = {};
+	for (const value of values) {
+		if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+		for (const [key, rawWeight] of Object.entries(value as Record<string, unknown>)) {
+			const weight = toOptionalNumber(rawWeight);
+			if (weight === null) continue;
+			merged[key] = (merged[key] ?? 0) + weight;
+		}
+	}
+	return merged;
+}
+
+function ensureRelatedKnowledgeLink(
+	entry: Record<string, unknown>,
+	relatedId: string,
+	relationship: string,
+): void {
+	const existingRelatedKnowledge = Array.isArray(entry.related_knowledge)
+		? entry.related_knowledge
+		: [];
+
+	const relatedKnowledge = existingRelatedKnowledge
+		.filter((item): item is Record<string, unknown> =>
+			Boolean(item) && typeof item === "object" && !Array.isArray(item),
+		);
+	const exists = relatedKnowledge.some(
+		(item) =>
+			item.knowledge_id === relatedId &&
+			item.relationship === relationship,
+	);
+	if (!exists) {
+		relatedKnowledge.push({
+			knowledge_id: relatedId,
+			relationship,
+		});
+	}
+	entry.related_knowledge = relatedKnowledge;
 }
 
 function sortTimestamp(value: string | null): number {
@@ -644,6 +993,248 @@ async function persistEntry(
 	});
 }
 
+async function syncEntryAccessSignals(redis: Redis, entry: LoadedEntry): Promise<void> {
+	const accessCount = Math.max(0, toOptionalInteger(entry.metadata.access_count) ?? entry.accessCount);
+	await redis.set(getEntryAccessKey(entry.id), String(accessCount));
+
+	const lastAccessed =
+		typeof entry.metadata.last_accessed === "string" && entry.metadata.last_accessed.length > 0
+			? entry.metadata.last_accessed
+			: null;
+	if (lastAccessed) {
+		await redis.set(getEntryLastAccessedKey(entry.id), lastAccessed);
+	} else {
+		await redis.del(getEntryLastAccessedKey(entry.id));
+	}
+}
+
+function mergeCanonicalEntry(
+	canonical: LoadedEntry,
+	duplicates: LoadedEntry[],
+	runId: string,
+	timestamp: string,
+): LoadedEntry {
+	const canonicalMetadata = canonical.metadata;
+
+	for (const duplicate of duplicates) {
+		const duplicateMetadata = duplicate.metadata;
+		const duplicateEntry = duplicate.entry;
+
+		canonicalMetadata.source_conversations = mergeStringArraysUnique(
+			canonicalMetadata.source_conversations,
+			duplicateMetadata.source_conversations,
+		);
+		canonicalMetadata.source_messages = mergeStringArraysUnique(
+			canonicalMetadata.source_messages,
+			duplicateMetadata.source_messages,
+		);
+		canonicalMetadata.source_weights = mergeSourceWeights(
+			canonicalMetadata.source_weights,
+			duplicateMetadata.source_weights,
+		);
+		canonicalMetadata.first_seen = earliestIsoTimestamp(
+			typeof canonicalMetadata.first_seen === "string" ? canonicalMetadata.first_seen : null,
+			typeof duplicateMetadata.first_seen === "string" ? duplicateMetadata.first_seen : null,
+			typeof canonicalMetadata.created_at === "string" ? canonicalMetadata.created_at : null,
+			typeof duplicateMetadata.created_at === "string" ? duplicateMetadata.created_at : null,
+		);
+		canonicalMetadata.last_seen = latestIsoTimestamp(
+			typeof canonicalMetadata.last_seen === "string" ? canonicalMetadata.last_seen : null,
+			typeof duplicateMetadata.last_seen === "string" ? duplicateMetadata.last_seen : null,
+			typeof canonicalMetadata.updated_at === "string" ? canonicalMetadata.updated_at : null,
+			typeof duplicateMetadata.updated_at === "string" ? duplicateMetadata.updated_at : null,
+			canonical.updatedAt,
+			duplicate.updatedAt,
+		);
+		canonicalMetadata.created_at = earliestIsoTimestamp(
+			typeof canonicalMetadata.created_at === "string" ? canonicalMetadata.created_at : null,
+			typeof duplicateMetadata.created_at === "string" ? duplicateMetadata.created_at : null,
+		) ?? (typeof canonicalMetadata.created_at === "string" ? canonicalMetadata.created_at : timestamp);
+		canonicalMetadata.updated_at = latestIsoTimestamp(
+			typeof canonicalMetadata.updated_at === "string" ? canonicalMetadata.updated_at : null,
+			typeof duplicateMetadata.updated_at === "string" ? duplicateMetadata.updated_at : null,
+			canonical.updatedAt,
+			duplicate.updatedAt,
+			timestamp,
+		) ?? timestamp;
+		canonicalMetadata.access_count =
+			(toOptionalInteger(canonicalMetadata.access_count) ?? canonical.accessCount) +
+			(toOptionalInteger(duplicateMetadata.access_count) ?? duplicate.accessCount);
+		canonicalMetadata.last_accessed = latestIsoTimestamp(
+			typeof canonicalMetadata.last_accessed === "string" ? canonicalMetadata.last_accessed : null,
+			typeof duplicateMetadata.last_accessed === "string" ? duplicateMetadata.last_accessed : null,
+		);
+		canonicalMetadata.mention_count =
+			toStringArray(canonicalMetadata.source_conversations).length > 0
+				? toStringArray(canonicalMetadata.source_conversations).length
+				: (toOptionalInteger(canonicalMetadata.mention_count) ?? canonical.mentionCount) +
+					(toOptionalInteger(duplicateMetadata.mention_count) ?? duplicate.mentionCount);
+
+		if (canonical.type === "knowledge") {
+			canonical.entry.key_insights = mergeObjectArraysUnique(
+				canonical.entry.key_insights,
+				duplicateEntry.key_insights,
+			);
+			canonical.entry.knows_how_to = mergeObjectArraysUnique(
+				canonical.entry.knows_how_to,
+				duplicateEntry.knows_how_to,
+			);
+			canonical.entry.open_questions = mergeObjectArraysUnique(
+				canonical.entry.open_questions,
+				duplicateEntry.open_questions,
+			);
+			canonical.entry.positions = mergeObjectArraysUnique(
+				canonical.entry.positions,
+				duplicateEntry.positions,
+			);
+			canonical.entry.evolution = mergeObjectArraysUnique(
+				canonical.entry.evolution,
+				duplicateEntry.evolution,
+			);
+		} else {
+			canonical.entry.decisions_made = mergeObjectArraysUnique(
+				canonical.entry.decisions_made,
+				duplicateEntry.decisions_made,
+			);
+			canonical.entry.tech_stack = mergeStringArraysUnique(
+				canonical.entry.tech_stack,
+				duplicateEntry.tech_stack,
+			);
+			canonical.entry.phase_history = mergeObjectArraysUnique(
+				canonical.entry.phase_history,
+				duplicateEntry.phase_history,
+			);
+			if ((!canonical.entry.goal || String(canonical.entry.goal).length === 0) &&
+				typeof duplicateEntry.goal === "string" && duplicateEntry.goal.length > 0) {
+				canonical.entry.goal = duplicateEntry.goal;
+			}
+			if ((!canonical.entry.current_phase || String(canonical.entry.current_phase).length === 0) &&
+				typeof duplicateEntry.current_phase === "string" && duplicateEntry.current_phase.length > 0) {
+				canonical.entry.current_phase = duplicateEntry.current_phase;
+			}
+			if ((!canonical.entry.blocked_on || String(canonical.entry.blocked_on).length === 0) &&
+				typeof duplicateEntry.blocked_on === "string" && duplicateEntry.blocked_on.length > 0) {
+				canonical.entry.blocked_on = duplicateEntry.blocked_on;
+			}
+		}
+
+		canonical.entry.related_repos = mergeObjectArraysUnique(
+			canonical.entry.related_repos,
+			duplicateEntry.related_repos,
+		);
+		canonical.entry.related_knowledge = mergeObjectArraysUnique(
+			canonical.entry.related_knowledge,
+			duplicateEntry.related_knowledge,
+		);
+	}
+
+	canonicalMetadata.last_consolidated = timestamp;
+	appendConsolidationNote(
+		canonicalMetadata,
+		formatConsolidationNote({
+			timestamp,
+			source: "dream",
+			action: "merge_duplicate_entries",
+			detail: `merged ${duplicates.map((entry) => entry.id).join(",")} into ${canonical.id} (run ${runId})`,
+		}),
+	);
+	canonical.entry.metadata = canonicalMetadata;
+	canonical.contextType =
+		typeof canonicalMetadata.context_type === "string" ? canonicalMetadata.context_type : canonical.contextType;
+	canonical.injectionTier = resolveStoredInjectionTier(canonicalMetadata);
+	canonical.updatedAt = getEntryUpdatedAt(canonical.entry, canonicalMetadata);
+	canonical.mentionCount = Math.max(1, toOptionalInteger(canonicalMetadata.mention_count) ?? canonical.mentionCount);
+	canonical.accessCount = Math.max(0, toOptionalInteger(canonicalMetadata.access_count) ?? canonical.accessCount);
+	canonical.sourceConversationCount = toStringArray(canonicalMetadata.source_conversations).length;
+	canonical.salienceScore = computeSalience(canonical.entry);
+	canonical.metadata.salience_score = canonical.salienceScore;
+
+	return canonical;
+}
+
+async function applyDuplicateMergePlan(
+	redis: Redis,
+	vector: Index,
+	plan: DuplicateMergePlan,
+	runId: string,
+	timestamp: string,
+): Promise<Record<string, unknown>> {
+	const canonical = mergeCanonicalEntry(plan.canonical, plan.duplicates, runId, timestamp);
+	await persistEntry(redis, vector, canonical);
+	await syncEntryAccessSignals(redis, canonical);
+
+	const archivedDuplicates: Array<Record<string, unknown>> = [];
+	for (const duplicate of plan.duplicates) {
+		archivedDuplicates.push(
+			await archiveEntry(
+				redis,
+				vector,
+				duplicate,
+				runId,
+				timestamp,
+				`merged duplicate into ${canonical.id}`,
+			),
+		);
+		await redis.del(getEntryAccessKey(duplicate.id), getEntryLastAccessedKey(duplicate.id));
+	}
+
+	return {
+		canonical_id: canonical.id,
+		type: canonical.type,
+		label: canonical.label,
+		merged_entry_ids: plan.duplicates.map((entry) => entry.id),
+		context_type: canonical.contextType,
+		injection_tier: canonical.injectionTier,
+		mention_count: canonical.mentionCount,
+		access_count: canonical.accessCount,
+		archived_duplicates: archivedDuplicates,
+	};
+}
+
+async function markEntryContested(
+	redis: Redis,
+	vector: Index,
+	entry: LoadedEntry,
+	reasons: string[],
+	conflictingWith: string[],
+	runId: string,
+	timestamp: string,
+): Promise<Record<string, unknown>> {
+	if (entry.type !== "knowledge") {
+		throw new Error(`Contradiction handling only supports knowledge entries: ${entry.id}`);
+	}
+
+	const metadata = entry.metadata;
+	entry.entry.state = "contested";
+	for (const relatedId of conflictingWith) {
+		ensureRelatedKnowledgeLink(entry.entry, relatedId, "contradicts");
+	}
+	metadata.last_consolidated = timestamp;
+	appendConsolidationNote(
+		metadata,
+		formatConsolidationNote({
+			timestamp,
+			source: "dream",
+			action: "mark_contested",
+			detail: `${reasons.join("; ")} (run ${runId})`,
+		}),
+	);
+	entry.entry.metadata = metadata;
+	entry.updatedAt = getEntryUpdatedAt(entry.entry, metadata);
+	entry.salienceScore = computeSalience(entry.entry);
+	entry.metadata.salience_score = entry.salienceScore;
+	await persistEntry(redis, vector, entry);
+
+	return {
+		id: entry.id,
+		type: entry.type,
+		label: entry.label,
+		state: entry.entry.state,
+		conflicting_with: conflictingWith,
+		reasons,
+	};
+}
+
 async function promoteEntry(
 	redis: Redis,
 	vector: Index,
@@ -982,17 +1573,79 @@ export async function runDreamCycle(
 	}
 
 	try {
-		const [knowledgeBatch, projectBatch] = await Promise.all([
+		let [knowledgeBatch, projectBatch] = await Promise.all([
 			loadEntryBatchByType(redis, "knowledge"),
 			loadEntryBatchByType(redis, "project"),
 		]);
-		const knowledgeEntries = knowledgeBatch.entries;
-		const projectEntries = projectBatch.entries;
-		const allEntries = [...knowledgeEntries, ...projectEntries];
+		let knowledgeEntries = knowledgeBatch.entries;
+		let projectEntries = projectBatch.entries;
+		let allEntries = [...knowledgeEntries, ...projectEntries];
 		const candidateIdFilter =
 			options.candidateIds && options.candidateIds.length > 0
 				? new Set(options.candidateIds)
 				: null;
+
+		const replayEntries = candidateIdFilter
+			? allEntries.filter((entry) => candidateIdFilter.has(entry.id))
+			: allEntries;
+		const { duplicatePlans, contradictionPlans } = buildReplayPlans(replayEntries);
+		const mergedEntries: Array<Record<string, unknown>> = [];
+		const contradictionEntries: Array<Record<string, unknown>> = [];
+
+		if (!options.dryRun) {
+			for (const plan of duplicatePlans) {
+				mergedEntries.push(await applyDuplicateMergePlan(redis, vector, plan, runId, startedAt));
+			}
+
+			if (contradictionPlans.length > 0) {
+				const contradictionById = new Map<string, { entry: LoadedEntry; reasons: Set<string>; conflictingWith: Set<string> }>();
+				for (const plan of contradictionPlans) {
+					for (const entryId of plan.entryIds) {
+						const entry = replayEntries.find((candidate) => candidate.id === entryId);
+						if (!entry) continue;
+						const existing = contradictionById.get(entryId) ?? {
+							entry,
+							reasons: new Set<string>(),
+							conflictingWith: new Set<string>(),
+						};
+						for (const reason of plan.reasons) {
+							existing.reasons.add(reason);
+						}
+						for (const relatedId of plan.entryIds) {
+							if (relatedId !== entryId) {
+								existing.conflictingWith.add(relatedId);
+							}
+						}
+						contradictionById.set(entryId, existing);
+					}
+				}
+
+				for (const { entry, reasons, conflictingWith } of contradictionById.values()) {
+					contradictionEntries.push(
+						await markEntryContested(
+							redis,
+							vector,
+							entry,
+							[...reasons].sort(),
+							[...conflictingWith].sort(),
+							runId,
+							startedAt,
+						),
+					);
+				}
+			}
+
+			if (mergedEntries.length > 0 || contradictionEntries.length > 0) {
+				[knowledgeBatch, projectBatch] = await Promise.all([
+					loadEntryBatchByType(redis, "knowledge"),
+					loadEntryBatchByType(redis, "project"),
+				]);
+				knowledgeEntries = knowledgeBatch.entries;
+				projectEntries = projectBatch.entries;
+				allEntries = [...knowledgeEntries, ...projectEntries];
+			}
+		}
+
 		const promotionCandidates = allEntries.filter((entry) => {
 			if (candidateIdFilter && !candidateIdFilter.has(entry.id)) return false;
 			return isPromotionCandidate(entry);
@@ -1036,7 +1689,14 @@ export async function runDreamCycle(
 					await archiveEntry(redis, vector, entry, runId, startedAt, archiveReason),
 				);
 			}
-			await rebuildThinIndexSafely(redis, runId);
+			if (
+				mergedEntries.length > 0 ||
+				contradictionEntries.length > 0 ||
+				promotedEntries.length > 0 ||
+				archivedEntries.length > 0
+			) {
+				await rebuildThinIndexSafely(redis, runId);
+			}
 		}
 
 		const completedAt = new Date().toISOString();
@@ -1053,17 +1713,22 @@ export async function runDreamCycle(
 				},
 				replay: {
 					status: options.dryRun ? "dry_run" : "completed",
+					duplicate_candidate_count: duplicatePlans.length,
+					duplicate_merge_count: mergedEntries.length,
+					merged_entries: mergedEntries,
+					contradiction_count: contradictionPlans.length,
+					contradiction_entries: contradictionEntries,
 					promotion_candidate_count: promotionCandidates.length,
 					promoted_count: promotedEntries.length,
 					promoted_entries: promotedEntries,
 					deferred_items: [
-						"duplicate merge detection",
-						"contradiction detection",
 						"temporal reference cleanup",
 					],
 				},
 				consolidate: {
 					status: options.dryRun ? "dry_run" : "completed",
+					merged_count: mergedEntries.length,
+					contradiction_count: contradictionEntries.length,
 					promoted_count: promotedEntries.length,
 				},
 				prune: {
@@ -1083,11 +1748,28 @@ export async function runDreamCycle(
 				decay_candidates: bucketCounts.decay_candidate,
 				archive_candidates: archiveCandidates.length,
 				archived: archivedEntries.length,
+				duplicate_merge_candidates: duplicatePlans.length,
+				merged_duplicates: mergedEntries.length,
+				contradictions_detected: contradictionPlans.length,
+				entries_marked_contested: contradictionEntries.length,
 				promotion_candidates: promotionCandidates.length,
 				promoted: promotedEntries.length,
 				promotion_limit: options.promotionLimit ?? null,
 				archive_limit: options.archiveLimit ?? null,
 			},
+			duplicate_plans: duplicatePlans.map((plan) => ({
+				canonical_id: plan.canonical.id,
+				type: plan.canonical.type,
+				label: plan.canonical.label,
+				duplicate_ids: plan.duplicates.map((entry) => entry.id),
+			})),
+			contradiction_plans: contradictionPlans.map((plan) => ({
+				entry_ids: plan.entryIds,
+				label: plan.label,
+				reasons: plan.reasons,
+			})),
+			merged_entries: mergedEntries,
+			contradiction_entries: contradictionEntries,
 			archive_candidates: archiveCandidates.map((entry) => ({
 				id: entry.id,
 				type: entry.type,
@@ -1103,8 +1785,8 @@ export async function runDreamCycle(
 			promoted_entries: promotedEntries,
 			archive_candidates_sample: summarizeArchiveCandidates(archiveCandidates),
 			next_action: options.dryRun
-				? "Review archive candidates and enable live archive writes only after validating the dry-run output."
-				: "Review archived entries and confirm restore semantics before enabling live nightly archival.",
+				? "Review duplicate merges, contradiction flags, and archive candidates before enabling live Dream writes."
+				: "Review merged duplicates, contested entries, and archived entries to confirm Dream behavior.",
 		};
 
 		await writeRunRecord(redis, runRecord, setAsLatest);

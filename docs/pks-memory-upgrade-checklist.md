@@ -115,6 +115,7 @@ Phase 4 notes:
 
 Phase 5 notes:
 - The nightly scheduled Dream path is now configured for full live runs of the currently implemented Dream engine, with no scheduled archive or promotion caps.
+- Dream replay now includes deterministic duplicate merge and contradiction handling before promotion/archive decisions.
 - The latest public `dream:last_run` record can still show `dry_run: true` until the next scheduled execution after deployment.
 - Live cron registration is active for `10 7 * * *` UTC, which is `00:10 PDT`.
 - Reversible archival writes and restore semantics are implemented behind the Dream engine and were verified on `2026-03-27` with a controlled single-entry archive/restore test.
