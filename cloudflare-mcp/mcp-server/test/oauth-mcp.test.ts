@@ -63,6 +63,17 @@ async function authorizeClient(baseUrl: string): Promise<{
 	clientId: string;
 	clientSecret: string;
 }> {
+	return authorizeClientWithScope(baseUrl, "mcp:read mcp:write");
+}
+
+async function authorizeClientWithScope(
+	baseUrl: string,
+	scope: string,
+): Promise<{
+	accessToken: string;
+	clientId: string;
+	clientSecret: string;
+}> {
 	const metadataResponse = await dispatch(
 		new IncomingRequest(`${baseUrl}/.well-known/oauth-authorization-server`),
 	);
@@ -78,7 +89,7 @@ async function authorizeClient(baseUrl: string): Promise<{
 				grant_types: ["authorization_code", "refresh_token"],
 				response_types: ["code"],
 				token_endpoint_auth_method: "client_secret_post",
-				scope: "mcp:read mcp:write",
+				scope,
 			}),
 		}),
 	);
@@ -89,7 +100,7 @@ async function authorizeClient(baseUrl: string): Promise<{
 	authorizeUrl.searchParams.set("response_type", "code");
 	authorizeUrl.searchParams.set("client_id", client.client_id);
 	authorizeUrl.searchParams.set("redirect_uri", "http://127.0.0.1:9881/callback");
-	authorizeUrl.searchParams.set("scope", "mcp:read mcp:write");
+	authorizeUrl.searchParams.set("scope", scope);
 	authorizeUrl.searchParams.set("state", "worker-runtime-test");
 
 	const authorizeResponse = await dispatch(new IncomingRequest(authorizeUrl.toString()));
@@ -234,7 +245,14 @@ describe("OAuth and MCP integration", () => {
 		const tools = ((toolsEnvelope.result as Record<string, unknown>).tools as Array<Record<string, unknown>>)
 			.map((tool) => tool.name);
 		expect(tools).toEqual(
-			expect.arrayContaining(["get_index", "get_context", "search", "get_dream_summary"]),
+			expect.arrayContaining([
+				"get_index",
+				"get_context",
+				"search",
+				"get_dream_summary",
+				"restore_archived",
+				"set_context_type",
+			]),
 		);
 
 		const getIndexResponse = await dispatch(
@@ -291,5 +309,65 @@ describe("OAuth and MCP integration", () => {
 		const dreamSummary = JSON.parse(dreamText) as Record<string, unknown>;
 		expect(dreamSummary.status).toBe("completed");
 		expect((dreamSummary.counts as Record<string, unknown>).archive_candidates).toBe(78);
+	});
+
+	it("rejects write-capable MCP tools without mcp:write scope", async () => {
+		const baseUrl = "https://example.com";
+		const { accessToken } = await authorizeClientWithScope(baseUrl, "mcp:read");
+
+		const initializeResponse = await dispatch(
+			new IncomingRequest(`${baseUrl}/mcp`, {
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${accessToken}`,
+					accept: "application/json, text/event-stream",
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({
+					jsonrpc: "2.0",
+					id: 1,
+					method: "initialize",
+					params: {
+						protocolVersion: "2024-11-05",
+						capabilities: {},
+						clientInfo: { name: "worker-runtime-test", version: "1.0" },
+					},
+				}),
+			}),
+		);
+		expect(initializeResponse.status).toBe(200);
+		const sessionId = initializeResponse.headers.get("mcp-session-id");
+		expect(sessionId).toBeTruthy();
+
+		const writeResponse = await dispatch(
+			new IncomingRequest(`${baseUrl}/mcp`, {
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${accessToken}`,
+					accept: "application/json, text/event-stream",
+					"content-type": "application/json",
+					"mcp-session-id": sessionId!,
+				},
+				body: JSON.stringify({
+					jsonrpc: "2.0",
+					id: 2,
+					method: "tools/call",
+					params: {
+						name: "set_context_type",
+						arguments: {
+							id: "ke_quant",
+							context_type: "recurring_pattern",
+							reason: "worker runtime test",
+						},
+					},
+				}),
+			}),
+		);
+		expect(writeResponse.status).toBe(200);
+		const writeEnvelope = await readRpcEnvelope(writeResponse);
+		const writeResult = writeEnvelope.result as Record<string, unknown>;
+		const writeText = ((writeResult.content as Array<Record<string, unknown>>)[0].text as string);
+		const payload = JSON.parse(writeText) as Record<string, unknown>;
+		expect(String(payload.error || "")).toContain("mcp:write");
 	});
 });

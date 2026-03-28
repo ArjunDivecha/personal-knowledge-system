@@ -30,7 +30,7 @@ The repo already has useful probes, but they are not yet a unified testing stack
 - production-shaped Dream canary:
   - [test-dream-live.ts](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/knowledge-system/cloudflare-mcp/mcp-server/scripts/test-dream-live.ts)
 
-That is now complemented by local Worker-runtime tests and a CI workflow, but the broader stack is still mid-build rather than finished.
+That is now complemented by local Worker-runtime tests, CI, and a staging write-path harness. The testing stack is no longer just probes; it now covers the main deployed control paths as well.
 
 ## Environments
 
@@ -140,6 +140,7 @@ Current implementation:
 - local Worker-runtime tests live in [cloudflare-mcp/mcp-server/test/](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/knowledge-system/cloudflare-mcp/mcp-server/test)
 - they run inside `workerd` using Cloudflare's Workers Vitest integration
 - they are enforced in CI via [.github/workflows/worker-runtime-tests.yml](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/knowledge-system/.github/workflows/worker-runtime-tests.yml)
+- they now also verify that write-capable MCP tools reject callers without `mcp:write`
 
 ### Layer D: Storage Consistency
 
@@ -162,6 +163,7 @@ Validates:
 - bounded live archive
 - snapshot creation
 - restore behavior
+- MCP context override after restore
 - post-restore non-prunability
 - `dream:last_run` stability when `setAsLatest=false`
 
@@ -178,6 +180,7 @@ Before calling the system healthy, the following should be green:
 - `/health` is green in staging
 - deterministic fixture queries return expected tiers/order
 - MCP `initialize`, `tools/list`, `get_index`, `search`, and `get_context` all pass in staging
+- MCP `restore_archived` and `set_context_type` pass in staging with `mcp:write`
 - unauthorized operator calls return `401`
 - Dream dry run returns expected archive candidates for the seeded fixture set
 - bounded live Dream archive/restore canary passes

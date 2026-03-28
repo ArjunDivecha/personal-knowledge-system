@@ -55,24 +55,29 @@ def load_bundle(path: Path) -> tuple[list[KnowledgeEntry], list[ProjectEntry], d
     return knowledge_entries, project_entries, metadata
 
 
-def get_required_env(key: str, *, allow_empty: bool = False) -> str:
-    value = os.getenv(key, "")
+def get_required_env(key: str, *fallback_keys: str, allow_empty: bool = False) -> str:
+    value = ""
+    for candidate in (key, *fallback_keys):
+        value = os.getenv(candidate, "")
+        if value:
+            break
     if not value and not allow_empty:
-        raise RuntimeError(f"Missing required environment variable: {key}")
+        expected = ", ".join((key, *fallback_keys))
+        raise RuntimeError(f"Missing required environment variable: {expected}")
     return value
 
 
 def connect_redis() -> Redis:
     return Redis(
-        url=get_required_env("STAGING_UPSTASH_REDIS_REST_URL"),
-        token=get_required_env("STAGING_UPSTASH_REDIS_REST_TOKEN"),
+        url=get_required_env("STAGING_UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_URL"),
+        token=get_required_env("STAGING_UPSTASH_REDIS_REST_TOKEN", "UPSTASH_REDIS_REST_TOKEN"),
     )
 
 
 def connect_vector() -> Index:
     return Index(
-        url=get_required_env("STAGING_UPSTASH_VECTOR_REST_URL"),
-        token=get_required_env("STAGING_UPSTASH_VECTOR_REST_TOKEN"),
+        url=get_required_env("STAGING_UPSTASH_VECTOR_REST_URL", "UPSTASH_VECTOR_REST_URL"),
+        token=get_required_env("STAGING_UPSTASH_VECTOR_REST_TOKEN", "UPSTASH_VECTOR_REST_TOKEN"),
     )
 
 

@@ -1,5 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { McpAgent } from "agents/mcp";
+import { getMcpAuthContext, McpAgent } from "agents/mcp";
 import { z } from "zod";
 import { Redis } from "@upstash/redis/cloudflare";
 import { Index } from "@upstash/vector";
@@ -9,10 +9,12 @@ import {
 	computeSalience,
 	computeSearchScore,
 	deriveSearchTier,
+	MEMORY_POLICY,
 	getSourceWeightFromMetadata,
 	resolveStoredInjectionTier,
 } from "./salience";
-import { restoreArchivedEntry, runDreamCycle } from "./dream";
+import { restoreArchivedEntry, runDreamCycle, setEntryContextType } from "./dream";
+import { formatConsolidationNote } from "./consolidation";
 
 // GitHub accounts to query
 const GITHUB_ACCOUNTS = ['arjun-via', 'ArjunDivecha'];
@@ -21,8 +23,27 @@ const MAX_RECONSOLIDATION_SEARCH_RESULTS = 5;
 const MAX_RECONSOLIDATION_ERROR_LOGS = 100;
 const RECONSOLIDATION_PROMOTION_THRESHOLD = 3;
 const MAX_OPERATOR_DREAM_ARCHIVE_LIMIT = 10;
+const RATE_LIMIT_WINDOW_SECONDS = 60 * 60;
+const WRITE_TOOL_RATE_LIMIT = 24;
+const OPERATOR_WRITE_RATE_LIMIT = 12;
+const NIGHTLY_DREAM_ARCHIVE_LIMIT = 5;
+const NIGHTLY_DREAM_PROMOTION_LIMIT = 10;
+const CONTEXT_TYPES = [
+	"professional_identity",
+	"stated_preference",
+	"explicit_save",
+	"active_project",
+	"recurring_pattern",
+	"task_query",
+	"passing_reference",
+] as const;
 
 type EntryType = "knowledge" | "project";
+type AuthProps = {
+	userId?: string;
+	scope?: string;
+	scopes?: string[];
+};
 
 function createRedisClient(env: Env): Redis {
 	return new Redis({
@@ -175,6 +196,46 @@ function getEntryLastAccessedKey(entryId: string): string {
 
 function getReconsolidationErrorKey(now: Date = new Date()): string {
 	return `reconsolidation:errors:${now.toISOString().slice(0, 10)}`;
+}
+
+function getRateLimitBucket(now: number, windowSeconds: number): number {
+	return Math.floor(now / 1000 / windowSeconds);
+}
+
+function getRateLimitKey(actor: string, action: string, bucket: number): string {
+	return `rate_limit:${actor}:${action}:${bucket}`;
+}
+
+function normalizeScopes(raw: unknown): string[] {
+	if (Array.isArray(raw)) {
+		return raw.filter((item): item is string => typeof item === "string" && item.length > 0);
+	}
+	if (typeof raw === "string") {
+		return raw
+			.split(/\s+/)
+			.map((scope) => scope.trim())
+			.filter((scope) => scope.length > 0);
+	}
+	return [];
+}
+
+async function applyFixedWindowRateLimit(
+	redis: Redis,
+	actor: string,
+	action: string,
+	limit: number,
+	windowSeconds: number = RATE_LIMIT_WINDOW_SECONDS,
+	now: number = Date.now(),
+): Promise<{ allowed: boolean; count: number; limit: number; bucket: number }> {
+	const bucket = getRateLimitBucket(now, windowSeconds);
+	const key = getRateLimitKey(actor, action, bucket);
+	const count = Number(await redis.incr(key));
+	return {
+		allowed: count <= limit,
+		count,
+		limit,
+		bucket,
+	};
 }
 
 function getOperatorBearerToken(request: Request): string | null {
@@ -383,7 +444,7 @@ async function buildHealthPayload(env: Env): Promise<Record<string, unknown>> {
 }
 
 // Define our MCP agent with knowledge tools
-export class KnowledgeMCP extends McpAgent<Env, unknown, { userId: string }> {
+export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 	server = new McpServer({
 		name: "Personal Knowledge System",
 		version: "1.0.0",
@@ -395,6 +456,42 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, { userId: string }> {
 
 	private getVector(env: Env): Index {
 		return createVectorClient(env);
+	}
+
+	private getAuthProps(): AuthProps {
+		const contextProps = getMcpAuthContext()?.props ?? {};
+		const merged = {
+			...contextProps,
+			...(this.props ?? {}),
+		} as AuthProps;
+		return {
+			userId: typeof merged.userId === "string" ? merged.userId : undefined,
+			scope: typeof merged.scope === "string" ? merged.scope : undefined,
+			scopes: normalizeScopes(merged.scopes ?? merged.scope),
+		};
+	}
+
+	private async requireWriteAccess(action: string, limit: number = WRITE_TOOL_RATE_LIMIT): Promise<string> {
+		const authProps = this.getAuthProps();
+		const userId = authProps.userId;
+		if (!userId) {
+			throw new Error(`Authenticated user context missing for ${action}`);
+		}
+
+		const scopes = new Set(normalizeScopes(authProps.scopes ?? authProps.scope));
+		if (!scopes.has("mcp:write")) {
+			throw new Error(`mcp:write scope required for ${action}`);
+		}
+
+		const redis = this.getRedis(this.env);
+		const rateLimit = await applyFixedWindowRateLimit(redis, `mcp:${userId}`, action, limit);
+		if (!rateLimit.allowed) {
+			throw new Error(
+				`Rate limit exceeded for ${action}. Allowed ${rateLimit.limit} calls per ${RATE_LIMIT_WINDOW_SECONDS} seconds.`,
+			);
+		}
+
+		return userId;
 	}
 
 	private async loadEntry(
@@ -498,7 +595,12 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, { userId: string }> {
 			updatedMetadata.injection_tier = 2;
 			appendConsolidationNote(
 				updatedMetadata,
-				`${now}: Upgraded task_query -> recurring_pattern (access_count reached ${accessCount})`,
+				formatConsolidationNote({
+					timestamp: now,
+					source: "reconsolidation",
+					action: "promote_context_type",
+					detail: `task_query -> recurring_pattern (access_count reached ${accessCount})`,
+				}),
 			);
 		}
 
@@ -648,6 +750,55 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, { userId: string }> {
 					content: [{ type: "text", text: JSON.stringify(dreamSummary) }],
 				};
 			}
+		);
+
+		// Tool: restore_archived
+		this.server.tool(
+			"restore_archived",
+			"Restore an archived entry back into active memory. Requires mcp:write scope.",
+			{
+				id: z.string().describe("Entry ID to restore (ke_xxx or pe_xxx)"),
+				reason: z.string().min(1).max(500).describe("Why this archived entry should be restored"),
+			},
+			async ({ id, reason }) => {
+				try {
+					await this.requireWriteAccess("restore_archived");
+					const result = await restoreArchivedEntry(this.env, id, reason);
+					return {
+						content: [{ type: "text", text: JSON.stringify(result) }],
+					};
+				} catch (error) {
+					const errMsg = error instanceof Error ? error.message : String(error);
+					return {
+						content: [{ type: "text", text: JSON.stringify({ error: errMsg }) }],
+					};
+				}
+			},
+		);
+
+		// Tool: set_context_type
+		this.server.tool(
+			"set_context_type",
+			"Override an active entry's context type. Requires mcp:write scope.",
+			{
+				id: z.string().describe("Entry ID to update (ke_xxx or pe_xxx)"),
+				context_type: z.enum(CONTEXT_TYPES).describe("Replacement context type"),
+				reason: z.string().min(1).max(500).describe("Why this override is needed"),
+			},
+			async ({ id, context_type, reason }) => {
+				try {
+					await this.requireWriteAccess("set_context_type");
+					const result = await setEntryContextType(this.env, id, context_type, reason);
+					return {
+						content: [{ type: "text", text: JSON.stringify(result) }],
+					};
+				} catch (error) {
+					const errMsg = error instanceof Error ? error.message : String(error);
+					return {
+						content: [{ type: "text", text: JSON.stringify({ error: errMsg }) }],
+					};
+				}
+			},
 		);
 
 		// Tool: get_context
@@ -1036,6 +1187,7 @@ const defaultHandler = {
 
 				// Auto-approve: complete authorization immediately without login
 				// This is safe for a personal single-user system
+				const approvedScopes = normalizeScopes(authRequest.scope);
 				const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
 					request: authRequest,
 					userId: "arjun",
@@ -1045,6 +1197,8 @@ const defaultHandler = {
 					scope: authRequest.scope,
 					props: {
 						userId: "arjun",
+						scope: authRequest.scope,
+						scopes: approvedScopes,
 					},
 				});
 
@@ -1072,11 +1226,28 @@ const defaultHandler = {
 			}
 
 			try {
+				const redis = createRedisClient(env);
+				const rateLimit = await applyFixedWindowRateLimit(
+					redis,
+					"operator",
+					"ops_dream_run",
+					OPERATOR_WRITE_RATE_LIMIT,
+				);
+				if (!rateLimit.allowed) {
+					return Response.json(
+						{
+							error: `Rate limit exceeded for Dream operator runs. Allowed ${rateLimit.limit} calls per ${RATE_LIMIT_WINDOW_SECONDS} seconds.`,
+						},
+						{ status: 429 },
+					);
+				}
+
 				const body = await request.json();
 				const parsed = z.object({
 					dry_run: z.boolean().default(true),
 					candidate_ids: z.array(z.string().min(1)).max(MAX_OPERATOR_DREAM_ARCHIVE_LIMIT).optional(),
 					archive_limit: z.number().int().positive().max(MAX_OPERATOR_DREAM_ARCHIVE_LIMIT).optional(),
+					promotion_limit: z.number().int().positive().max(MAX_OPERATOR_DREAM_ARCHIVE_LIMIT).optional(),
 					set_as_latest: z.boolean().default(false),
 					note: z.string().max(500).optional(),
 				}).parse(body);
@@ -1099,6 +1270,7 @@ const defaultHandler = {
 					trigger: "manual",
 					candidateIds: parsed.candidate_ids ?? null,
 					archiveLimit: archiveLimit ?? null,
+					promotionLimit: parsed.promotion_limit ?? null,
 					setAsLatest: parsed.set_as_latest,
 					note: parsed.note ?? "Operator-triggered Dream test run",
 				});
@@ -1116,6 +1288,22 @@ const defaultHandler = {
 			}
 
 			try {
+				const redis = createRedisClient(env);
+				const rateLimit = await applyFixedWindowRateLimit(
+					redis,
+					"operator",
+					"ops_dream_restore",
+					OPERATOR_WRITE_RATE_LIMIT,
+				);
+				if (!rateLimit.allowed) {
+					return Response.json(
+						{
+							error: `Rate limit exceeded for Dream operator restores. Allowed ${rateLimit.limit} calls per ${RATE_LIMIT_WINDOW_SECONDS} seconds.`,
+						},
+						{ status: 429 },
+					);
+				}
+
 				const body = await request.json();
 				const parsed = z.object({
 					entry_id: z.string().min(1),
@@ -1190,11 +1378,13 @@ export default {
 	},
 	async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
 		const promise = runDreamCycle(env, {
-			dryRun: true,
+			dryRun: false,
 			trigger: "scheduled",
 			cron: controller.cron,
 			scheduledTime: controller.scheduledTime,
-			note: "Phase 5 scaffolding run: audit and archive-candidate discovery only.",
+			archiveLimit: NIGHTLY_DREAM_ARCHIVE_LIMIT,
+			promotionLimit: NIGHTLY_DREAM_PROMOTION_LIMIT,
+			note: `Nightly bounded Dream run with archiveLimit=${NIGHTLY_DREAM_ARCHIVE_LIMIT} and promotionLimit=${NIGHTLY_DREAM_PROMOTION_LIMIT}.`,
 		});
 		ctx.waitUntil(promise);
 		const result = await promise;

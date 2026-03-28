@@ -133,7 +133,7 @@ This is the software analog of strategic forgetting: preserve what matters, but 
 
 The most ambitious part of the design is the Dream job.
 
-Dream is partially live now. The scheduler, audit trail, candidate discovery loop, and reversible archive/restore mechanics are implemented. Nightly scheduled runs still operate in dry-run mode while replay-heavy consolidation and operator-facing write tools remain planned. The intended structure is:
+Dream is partially live now. The scheduler, audit trail, candidate discovery loop, reversible archive/restore mechanics, and write-capable operator tools are implemented. The nightly Worker is now configured for bounded live runs, although the last completed public run may still show `dry_run: true` until the next scheduled execution occurs. Replay-heavy consolidation is still planned. The intended structure is:
 
 1. Survey
    Load active entries, compute salience, and bucket them into stable, active, weak, and decay candidates.
@@ -338,7 +338,7 @@ Dream is the long-horizon maintenance loop. The idea is:
 - archive low-value memories with reversible pointers
 - rebuild the current self-model without re-injecting everything forever
 
-Dream is Phase 5 work. The dry-run scheduler and audit output are live, and the reversible archive/restore path has been verified on a controlled live sample. Nightly scheduled Dream runs still remain `dry_run` only.
+Dream is Phase 5 work. The bounded live scheduler, audit output, reversible archive/restore path, and write-capable operator tools are implemented. The last recorded Dream run can still show `dry_run` if it predates the latest deploy, but the deployed scheduler is now set for bounded live archive and promotion batches.
 
 ## What Is Live Today
 
@@ -350,9 +350,10 @@ As of March 27, 2026, the live system has:
 - completed Phase 1, Phase 2, Phase 3, and Phase 4 of the current memory upgrade
 - `0` pending classifications in `classification:pending`
 - tier counts of `500` Tier 1, `24` Tier 2, `85` Tier 3
-- `0` archived entries
-- latest Dream dry-run surfaced `83` archive candidates without mutating active memory
-- reversible archive snapshot and restore semantics have been verified on a single live entry, which was immediately restored to active memory
+- `0` archived entries at the time of the latest health check
+- latest recorded Dream run surfaced `78` archive candidates and is still marked `dry_run`
+- the deployed scheduler is now configured for bounded live archive and promotion batches on the next scheduled run
+- reversible archive snapshot and restore semantics have been verified on live data, and the full archive -> MCP restore -> MCP context override path has been validated on staging
 
 Operationally, the following are live:
 
@@ -362,14 +363,15 @@ Operationally, the following are live:
 - rebuilt thin index with tier/salience metadata
 - OAuth-enabled Cloudflare MCP server
 - background reconsolidation on retrieval
-- nightly Dream dry-run scheduler and audit records
+- write-capable MCP tools for `restore_archived` and `set_context_type`
+- nightly bounded-live Dream scheduler and audit records
 - reversible Dream archive snapshot and restore mechanics
 - `/health` and `/status` rollout endpoints
 
 Not live yet:
 
-- nightly scheduled Dream archival and replay-heavy consolidation
-- write-capable operator MCP tools such as restore/archive overrides
+- replay-heavy Dream consolidation such as duplicate merges and contradiction handling
+- external-runner fallback for heavier Dream work
 
 ## How The Repo Is Organized
 
@@ -481,8 +483,10 @@ The staging smoke path is now production-shaped. It covers:
 - staging Worker `/health`
 - unauthorized operator rejection
 - Dream dry-run on staging
+- bounded live Dream archive on staging
 - OAuth discovery, client registration, auth-code exchange, and bearer-token issuance
-- MCP `initialize`, `tools/list`, `get_index`, `search`, `get_context`, and `get_dream_summary`
+- MCP `initialize`, `tools/list`, `get_index`, `search`, `get_context`, `get_dream_summary`, `restore_archived`, and `set_context_type`
+- health verification after archive and after restore
 - final Redis vs Vector vs thin-index consistency verification
 
 There is now also a local Worker-runtime test layer under [cloudflare-mcp/mcp-server/test](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/knowledge-system/cloudflare-mcp/mcp-server/test). It runs inside Cloudflare's `workerd` runtime and covers:
@@ -491,7 +495,8 @@ There is now also a local Worker-runtime test layer under [cloudflare-mcp/mcp-se
 - unauthorized operator rejection
 - OAuth discovery, client registration, auth-code exchange, and token issuance
 - MCP `initialize`, `tools/list`, `get_index`, and `get_dream_summary`
-- scheduled Dream trigger wiring
+- write-tool rejection without `mcp:write`
+- scheduled bounded-live Dream trigger wiring
 
 That local test layer is automated in GitHub Actions at [.github/workflows/worker-runtime-tests.yml](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/knowledge-system/.github/workflows/worker-runtime-tests.yml).
 
@@ -506,11 +511,14 @@ Completed:
 - Phase 2 live backfill and normalization
 - Phase 3 tier-aware retrieval and rollout status endpoint
 - Phase 4 reconsolidation on retrieval
+- Phase 5 bounded Dream control plane, archive/restore path, and staging validation
+- Phase 6 operator tool surface and write-scope enforcement
 
 Next:
 
-- Phase 5 Dream archival writes, replay logic, and reversibility controls
-- Phase 6 ingestion hardening and operator tools
+- replay-heavy Dream logic such as duplicate merge and contradiction handling
+- ingestion hardening and source-fusion improvements
+- broader fixture and ranking coverage in the automated test stack
 
 The upgrade checklist lives in `docs/pks-memory-upgrade-checklist.md`.
 

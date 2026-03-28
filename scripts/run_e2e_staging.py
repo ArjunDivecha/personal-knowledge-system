@@ -19,6 +19,14 @@ from _memory_migration import append_report, utc_now_iso
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def get_env_value(*keys: str) -> str | None:
+    for key in keys:
+        value = os.getenv(key)
+        if value:
+            return value
+    return None
+
+
 def run_command(cmd: list[str], env: dict[str, str] | None = None) -> dict[str, Any]:
     result = subprocess.run(cmd, capture_output=True, text=True, env=env)
     return {
@@ -38,10 +46,31 @@ def call_health(base_url: str) -> dict[str, Any]:
     }
 
 
-def call_dream_dry_run(base_url: str) -> dict[str, Any]:
-    token = os.getenv("STAGING_DREAM_OPERATOR_TOKEN")
+def call_dream_run(
+    base_url: str,
+    *,
+    dry_run: bool,
+    set_as_latest: bool,
+    note: str,
+    candidate_ids: list[str] | None = None,
+    archive_limit: int | None = None,
+    promotion_limit: int | None = None,
+) -> dict[str, Any]:
+    token = get_env_value("STAGING_DREAM_OPERATOR_TOKEN", "DREAM_OPERATOR_TOKEN")
     if not token:
-        return {"skipped": True, "reason": "STAGING_DREAM_OPERATOR_TOKEN not set"}
+        return {"skipped": True, "reason": "STAGING_DREAM_OPERATOR_TOKEN or DREAM_OPERATOR_TOKEN not set"}
+
+    payload: dict[str, Any] = {
+        "dry_run": dry_run,
+        "set_as_latest": set_as_latest,
+        "note": note,
+    }
+    if candidate_ids:
+        payload["candidate_ids"] = candidate_ids
+    if archive_limit is not None:
+        payload["archive_limit"] = archive_limit
+    if promotion_limit is not None:
+        payload["promotion_limit"] = promotion_limit
 
     response = requests.post(
         f"{base_url.rstrip('/')}/ops/dream/run",
@@ -49,11 +78,7 @@ def call_dream_dry_run(base_url: str) -> dict[str, Any]:
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         },
-        json={
-            "dry_run": True,
-            "set_as_latest": False,
-            "note": "Staging smoke test Dream dry run",
-        },
+        json=payload,
         timeout=60,
     )
     body = response.json() if response.headers.get("content-type", "").startswith("application/json") else response.text
@@ -159,7 +184,37 @@ def mcp_post(
     return session.post(f"{base_url.rstrip('/')}/mcp", json=payload, headers=headers, timeout=30)
 
 
-def call_mcp_sequence(base_url: str) -> list[dict[str, Any]]:
+def call_mcp_tool(
+    session: requests.Session,
+    base_url: str,
+    access_token: str,
+    session_id: str,
+    *,
+    rpc_id: int,
+    name: str,
+    arguments: dict[str, Any],
+) -> tuple[requests.Response, dict[str, Any], Any]:
+    response = mcp_post(
+        session,
+        base_url,
+        access_token,
+        {
+            "jsonrpc": "2.0",
+            "id": rpc_id,
+            "method": "tools/call",
+            "params": {
+                "name": name,
+                "arguments": arguments,
+            },
+        },
+        session_id=session_id,
+    )
+    response_data = parse_sse_json(response.text)
+    payload = json.loads(response_data["result"]["content"][0]["text"])
+    return response, response_data, payload
+
+
+def call_mcp_sequence(base_url: str, archived_entry_id: str | None = None) -> list[dict[str, Any]]:
     session, access_token = oauth_client_flow(base_url)
     steps: list[dict[str, Any]] = []
 
@@ -200,7 +255,11 @@ def call_mcp_sequence(base_url: str) -> list[dict[str, Any]]:
         {
             "name": "mcp_tools_list",
             "status_code": tools_list_response.status_code,
-            "ok": tools_list_response.ok and "get_index" in tool_names and "search" in tool_names,
+            "ok": tools_list_response.ok
+            and "get_index" in tool_names
+            and "search" in tool_names
+            and "restore_archived" in tool_names
+            and "set_context_type" in tool_names,
             "body": {"tool_names": tool_names},
         }
     )
@@ -214,34 +273,113 @@ def call_mcp_sequence(base_url: str) -> list[dict[str, Any]]:
     )
     get_index_data = parse_sse_json(get_index_response.text)
     get_index_payload = json.loads(get_index_data["result"]["content"][0]["text"])
+    expected_topic_count = 1 if archived_entry_id else 2
+    expected_archived_count = 1 if archived_entry_id else 0
     steps.append(
         {
             "name": "mcp_get_index",
             "status_code": get_index_response.status_code,
             "ok": get_index_response.ok
-            and get_index_payload.get("total_topics") == 2
-            and get_index_payload.get("total_projects") == 1,
+            and get_index_payload.get("total_topics") == expected_topic_count
+            and get_index_payload.get("total_projects") == 1
+            and get_index_payload.get("archived_count") == expected_archived_count,
+            "expected": {
+                "total_topics": expected_topic_count,
+                "total_projects": 1,
+                "archived_count": expected_archived_count,
+            },
             "body": get_index_payload,
         }
     )
 
-    search_response = mcp_post(
+    next_rpc_id = 4
+    if archived_entry_id:
+        restore_response, _, restore_payload = call_mcp_tool(
+            session,
+            base_url,
+            access_token,
+            mcp_session_id,
+            rpc_id=next_rpc_id,
+            name="restore_archived",
+            arguments={
+                "id": archived_entry_id,
+                "reason": "Staging end-to-end validation restore",
+            },
+        )
+        next_rpc_id += 1
+        steps.append(
+            {
+                "name": "mcp_restore_archived",
+                "status_code": restore_response.status_code,
+                "ok": restore_response.ok
+                and restore_payload.get("id") == archived_entry_id
+                and restore_payload.get("context_type") == "explicit_save"
+                and restore_payload.get("injection_tier") == 1,
+                "body": restore_payload,
+            }
+        )
+
+        set_context_response, _, set_context_payload = call_mcp_tool(
+            session,
+            base_url,
+            access_token,
+            mcp_session_id,
+            rpc_id=next_rpc_id,
+            name="set_context_type",
+            arguments={
+                "id": archived_entry_id,
+                "context_type": "recurring_pattern",
+                "reason": "Staging end-to-end validation override",
+            },
+        )
+        next_rpc_id += 1
+        steps.append(
+            {
+                "name": "mcp_set_context_type",
+                "status_code": set_context_response.status_code,
+                "ok": set_context_response.ok
+                and set_context_payload.get("id") == archived_entry_id
+                and set_context_payload.get("context_type") == "recurring_pattern"
+                and set_context_payload.get("injection_tier") == 2,
+                "body": set_context_payload,
+            }
+        )
+
+        deep_response, _, deep_payload = call_mcp_tool(
+            session,
+            base_url,
+            access_token,
+            mcp_session_id,
+            rpc_id=next_rpc_id,
+            name="get_deep",
+            arguments={"id": archived_entry_id},
+        )
+        next_rpc_id += 1
+        deep_metadata = deep_payload.get("metadata") or {}
+        steps.append(
+            {
+                "name": "mcp_get_deep_after_restore",
+                "status_code": deep_response.status_code,
+                "ok": deep_response.ok
+                and deep_payload.get("id") == archived_entry_id
+                and deep_metadata.get("archived") is False
+                and deep_metadata.get("context_type") == "recurring_pattern"
+                and deep_metadata.get("classification_status") == "manual_override"
+                and deep_metadata.get("injection_tier") == 2,
+                "body": deep_payload,
+            }
+        )
+
+    search_response, _, search_payload = call_mcp_tool(
         session,
         base_url,
         access_token,
-        {
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "tools/call",
-            "params": {
-                "name": "search",
-                "arguments": {"query": "quantitative investing", "limit": 3},
-            },
-        },
-        session_id=mcp_session_id,
+        mcp_session_id,
+        rpc_id=next_rpc_id,
+        name="search",
+        arguments={"query": "quantitative investing", "limit": 3},
     )
-    search_data = parse_sse_json(search_response.text)
-    search_payload = json.loads(search_data["result"]["content"][0]["text"])
+    next_rpc_id += 1
     top_result = (search_payload.get("results") or [{}])[0]
     steps.append(
         {
@@ -252,23 +390,16 @@ def call_mcp_sequence(base_url: str) -> list[dict[str, Any]]:
         }
     )
 
-    context_response = mcp_post(
+    context_response, _, context_payload = call_mcp_tool(
         session,
         base_url,
         access_token,
-        {
-            "jsonrpc": "2.0",
-            "id": 5,
-            "method": "tools/call",
-            "params": {
-                "name": "get_context",
-                "arguments": {"topic": "Quantitative investing background"},
-            },
-        },
-        session_id=mcp_session_id,
+        mcp_session_id,
+        rpc_id=next_rpc_id,
+        name="get_context",
+        arguments={"topic": "Quantitative investing background"},
     )
-    context_data = parse_sse_json(context_response.text)
-    context_payload = json.loads(context_data["result"]["content"][0]["text"])
+    next_rpc_id += 1
     steps.append(
         {
             "name": "mcp_get_context",
@@ -278,20 +409,15 @@ def call_mcp_sequence(base_url: str) -> list[dict[str, Any]]:
         }
     )
 
-    dream_summary_response = mcp_post(
+    dream_summary_response, _, dream_summary_payload = call_mcp_tool(
         session,
         base_url,
         access_token,
-        {
-            "jsonrpc": "2.0",
-            "id": 6,
-            "method": "tools/call",
-            "params": {"name": "get_dream_summary", "arguments": {}},
-        },
-        session_id=mcp_session_id,
+        mcp_session_id,
+        rpc_id=next_rpc_id,
+        name="get_dream_summary",
+        arguments={},
     )
-    dream_summary_data = parse_sse_json(dream_summary_response.text)
-    dream_summary_payload = json.loads(dream_summary_data["result"]["content"][0]["text"])
     steps.append(
         {
             "name": "mcp_get_dream_summary",
@@ -309,12 +435,13 @@ def call_mcp_sequence(base_url: str) -> list[dict[str, Any]]:
 
 def build_verify_env() -> dict[str, str]:
     env = dict(os.environ)
-    env["UPSTASH_REDIS_REST_URL"] = os.environ["STAGING_UPSTASH_REDIS_REST_URL"]
-    env["UPSTASH_REDIS_REST_TOKEN"] = os.environ["STAGING_UPSTASH_REDIS_REST_TOKEN"]
-    env["UPSTASH_VECTOR_REST_URL"] = os.environ["STAGING_UPSTASH_VECTOR_REST_URL"]
-    env["UPSTASH_VECTOR_REST_TOKEN"] = os.environ["STAGING_UPSTASH_VECTOR_REST_TOKEN"]
-    if os.getenv("STAGING_OPENAI_API_KEY"):
-        env["OPENAI_API_KEY"] = os.environ["STAGING_OPENAI_API_KEY"]
+    env["UPSTASH_REDIS_REST_URL"] = get_env_value("STAGING_UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_URL") or ""
+    env["UPSTASH_REDIS_REST_TOKEN"] = get_env_value("STAGING_UPSTASH_REDIS_REST_TOKEN", "UPSTASH_REDIS_REST_TOKEN") or ""
+    env["UPSTASH_VECTOR_REST_URL"] = get_env_value("STAGING_UPSTASH_VECTOR_REST_URL", "UPSTASH_VECTOR_REST_URL") or ""
+    env["UPSTASH_VECTOR_REST_TOKEN"] = get_env_value("STAGING_UPSTASH_VECTOR_REST_TOKEN", "UPSTASH_VECTOR_REST_TOKEN") or ""
+    openai_key = get_env_value("STAGING_OPENAI_API_KEY", "OPENAI_API_KEY")
+    if openai_key:
+        env["OPENAI_API_KEY"] = openai_key
     return env
 
 
@@ -329,6 +456,7 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--skip-seed", action="store_true")
     parser.add_argument("--skip-dream", action="store_true")
+    parser.add_argument("--skip-write-path", action="store_true")
     args = parser.parse_args()
 
     report: dict[str, Any] = {
@@ -355,9 +483,49 @@ def main() -> int:
     if not args.dry_run:
         report["steps"].append({"name": "health_check", **call_health(args.base_url)})
         report["steps"].append({"name": "operator_unauthorized", **call_operator_unauthorized(args.base_url)})
+        archived_entry_id: str | None = None
         if not args.skip_dream:
-            report["steps"].append({"name": "dream_dry_run", **call_dream_dry_run(args.base_url)})
-        report["steps"].extend(call_mcp_sequence(args.base_url))
+            dry_run_step = call_dream_run(
+                args.base_url,
+                dry_run=True,
+                set_as_latest=False,
+                note="Staging smoke test Dream dry run",
+            )
+            report["steps"].append({"name": "dream_dry_run", **dry_run_step})
+
+            archive_candidates = dry_run_step.get("body", {}).get("archive_candidates") or []
+            if archive_candidates:
+                archived_entry_id = archive_candidates[0].get("id")
+
+            if not args.skip_write_path and archived_entry_id:
+                live_run_step = call_dream_run(
+                    args.base_url,
+                    dry_run=False,
+                    set_as_latest=False,
+                    note="Staging smoke test bounded live archive",
+                    candidate_ids=[archived_entry_id],
+                    archive_limit=1,
+                )
+                report["steps"].append({"name": "dream_live_archive", **live_run_step})
+                report["steps"].append({"name": "health_after_archive", **call_health(args.base_url)})
+            elif not args.skip_write_path:
+                report["steps"].append(
+                    {
+                        "name": "dream_live_archive",
+                        "ok": False,
+                        "status_code": None,
+                        "body": {"error": "Dream dry run returned no archive candidates to validate write path"},
+                    }
+                )
+
+        report["steps"].extend(
+            call_mcp_sequence(
+                args.base_url,
+                archived_entry_id=archived_entry_id if not args.skip_write_path else None,
+            )
+        )
+        if not args.skip_write_path and archived_entry_id:
+            report["steps"].append({"name": "health_after_restore", **call_health(args.base_url)})
         time.sleep(1)
         verify_command = [
             str(REPO_ROOT / "distillation" / "venv" / "bin" / "python"),

@@ -1,6 +1,12 @@
 import { Redis } from "@upstash/redis/cloudflare";
 import { Index } from "@upstash/vector";
-import { computeSalience, MEMORY_POLICY, resolveStoredInjectionTier } from "./salience";
+import {
+	computeSalience,
+	defaultInjectionTier,
+	MEMORY_POLICY,
+	resolveStoredInjectionTier,
+} from "./salience";
+import { formatConsolidationNote } from "./consolidation";
 
 type EntryType = "knowledge" | "project";
 type DreamStatus = "completed" | "skipped_no_backfill" | "skipped_locked" | "failed";
@@ -14,6 +20,7 @@ interface RunDreamOptions {
 	note?: string | null;
 	candidateIds?: string[] | null;
 	archiveLimit?: number | null;
+	promotionLimit?: number | null;
 	setAsLatest?: boolean;
 }
 
@@ -50,6 +57,11 @@ const ARCHIVED_PREFIX = "archived";
 const DREAM_LOCK_TTL_SECONDS = 30 * 60;
 const DREAM_SAMPLE_LIMIT = 25;
 const DREAM_SCAN_COUNT = 200;
+const INDEX_REBUILD_LOCK_KEY = "index:rebuild:lock";
+const INDEX_REBUILD_LOCK_TTL_SECONDS = 5 * 60;
+const THIN_INDEX_STAGING_PREFIX = "index:staging:";
+const THIN_INDEX_TOPIC_LIMIT = 100;
+const THIN_INDEX_PROJECT_LIMIT = 50;
 
 function createRedisClient(env: Env): Redis {
 	return new Redis({
@@ -225,6 +237,55 @@ function setVectorMetadataBase(entry: LoadedEntry): Record<string, unknown> {
 	};
 }
 
+function truncate(value: unknown, maxLength: number): string {
+	const text = typeof value === "string" ? value : "";
+	if (text.length <= maxLength) {
+		return text;
+	}
+	return `${text.slice(0, maxLength - 3)}...`;
+}
+
+function sortTimestamp(value: string | null): number {
+	if (!value) return Number.NEGATIVE_INFINITY;
+	const parsed = new Date(value).getTime();
+	return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
+}
+
+function getTopicState(entry: Record<string, unknown>): "active" | "contested" | "stale" {
+	const rawState = typeof entry.state === "string" ? entry.state : "active";
+	if (rawState === "contested" || rawState === "stale") {
+		return rawState;
+	}
+	return "active";
+}
+
+function getConfidence(entry: Record<string, unknown>): "high" | "medium" | "low" {
+	const rawConfidence = typeof entry.confidence === "string" ? entry.confidence : "medium";
+	if (rawConfidence === "high" || rawConfidence === "low") {
+		return rawConfidence;
+	}
+	return "medium";
+}
+
+function getRepoName(rawRepo: unknown): string | null {
+	if (!rawRepo || typeof rawRepo !== "object" || Array.isArray(rawRepo)) {
+		return null;
+	}
+	const repo = (rawRepo as Record<string, unknown>).repo;
+	return typeof repo === "string" && repo.length > 0 ? repo : null;
+}
+
+function getRelatedRepos(entry: Record<string, unknown>): Record<string, unknown>[] {
+	const relatedRepos = entry.related_repos;
+	if (!Array.isArray(relatedRepos)) {
+		return [];
+	}
+	return relatedRepos.filter(
+		(repo): repo is Record<string, unknown> =>
+			Boolean(repo) && typeof repo === "object" && !Array.isArray(repo),
+	);
+}
+
 async function scanKeys(redis: Redis, match: string): Promise<string[]> {
 	let cursor = "0";
 	const keys: string[] = [];
@@ -238,9 +299,12 @@ async function scanKeys(redis: Redis, match: string): Promise<string[]> {
 	return keys;
 }
 
-async function loadEntriesByType(redis: Redis, entryType: EntryType): Promise<LoadedEntry[]> {
+async function loadEntryBatchByType(
+	redis: Redis,
+	entryType: EntryType,
+): Promise<{ entries: LoadedEntry[]; archivedCount: number }> {
 	const keys = await scanKeys(redis, `${entryType}:*`);
-	if (keys.length === 0) return [];
+	if (keys.length === 0) return { entries: [], archivedCount: 0 };
 
 	const rawEntries = await redis.mget<unknown[]>(keys);
 	const normalizedEntries = rawEntries
@@ -256,6 +320,7 @@ async function loadEntriesByType(redis: Redis, entryType: EntryType): Promise<Lo
 	]);
 
 	const loadedEntries: LoadedEntry[] = [];
+	let archivedCount = 0;
 	for (let index = 0; index < normalizedEntries.length; index += 1) {
 		const entry = normalizedEntries[index];
 		const entryId = typeof entry.id === "string" ? entry.id : null;
@@ -263,7 +328,10 @@ async function loadEntriesByType(redis: Redis, entryType: EntryType): Promise<Lo
 
 		overlayAccessSignals(entry, accessCounts[index], lastAccessedValues[index]);
 		const metadata = (entry.metadata as Record<string, unknown> | undefined) ?? {};
-		if (metadata.archived === true) continue;
+		if (metadata.archived === true) {
+			archivedCount += 1;
+			continue;
+		}
 
 		const contextType =
 			typeof metadata.context_type === "string" ? metadata.context_type : "task_query";
@@ -289,7 +357,11 @@ async function loadEntriesByType(redis: Redis, entryType: EntryType): Promise<Lo
 		});
 	}
 
-	return loadedEntries;
+	return { entries: loadedEntries, archivedCount };
+}
+
+async function loadEntriesByType(redis: Redis, entryType: EntryType): Promise<LoadedEntry[]> {
+	return (await loadEntryBatchByType(redis, entryType)).entries;
 }
 
 function isArchiveCandidate(entry: LoadedEntry): boolean {
@@ -391,6 +463,137 @@ function buildBaseRunRecord(
 	};
 }
 
+async function acquireIndexRebuildLock(redis: Redis, runId: string): Promise<boolean> {
+	const lockPayload = JSON.stringify({
+		run_id: runId,
+		acquired_at: new Date().toISOString(),
+	});
+	const result = await redis.set(INDEX_REBUILD_LOCK_KEY, lockPayload, {
+		nx: true,
+		ex: INDEX_REBUILD_LOCK_TTL_SECONDS,
+	});
+	return Boolean(result);
+}
+
+async function releaseIndexRebuildLock(redis: Redis, runId: string): Promise<void> {
+	const currentLock = parseStoredObject(await redis.get(INDEX_REBUILD_LOCK_KEY));
+	if (currentLock?.run_id === runId) {
+		await redis.del(INDEX_REBUILD_LOCK_KEY);
+	}
+}
+
+async function rebuildThinIndexSafely(redis: Redis, runId: string): Promise<Record<string, unknown>> {
+	if (!(await acquireIndexRebuildLock(redis, runId))) {
+		throw new Error("index_rebuild_lock_held");
+	}
+
+	try {
+		const [knowledgeBatch, projectBatch] = await Promise.all([
+			loadEntryBatchByType(redis, "knowledge"),
+			loadEntryBatchByType(redis, "project"),
+		]);
+		const generatedAt = new Date().toISOString();
+		let contestedCount = 0;
+		const rankedTopics = knowledgeBatch.entries
+			.filter((entry) => entry.entry.state !== "deprecated")
+			.map((entry) => {
+				const topicState = getTopicState(entry.entry);
+				if (topicState === "contested") {
+					contestedCount += 1;
+				}
+				return entry;
+			})
+			.sort((left, right) => {
+				if (left.injectionTier !== right.injectionTier) {
+					return left.injectionTier - right.injectionTier;
+				}
+				if (left.salienceScore !== right.salienceScore) {
+					return right.salienceScore - left.salienceScore;
+				}
+				return sortTimestamp(right.updatedAt) - sortTimestamp(left.updatedAt);
+			});
+		const rankedProjects = [...projectBatch.entries].sort((left, right) => {
+			if (left.injectionTier !== right.injectionTier) {
+				return left.injectionTier - right.injectionTier;
+			}
+			if (left.salienceScore !== right.salienceScore) {
+				return right.salienceScore - left.salienceScore;
+			}
+			return sortTimestamp(right.updatedAt) - sortTimestamp(left.updatedAt);
+		});
+
+		const thinIndex = {
+			generated_at: generatedAt,
+			token_count: 0,
+			topics: rankedTopics.slice(0, THIN_INDEX_TOPIC_LIMIT).map((entry) => ({
+				id: entry.id,
+				domain:
+					typeof entry.entry.domain === "string" && entry.entry.domain.length > 0
+						? entry.entry.domain
+						: entry.label,
+				current_view_summary: truncate(entry.entry.current_view, 80),
+				state: getTopicState(entry.entry),
+				confidence: getConfidence(entry.entry),
+				last_updated: entry.updatedAt ?? generatedAt,
+				top_repo: getRepoName(getRelatedRepos(entry.entry)[0]),
+				context_type: entry.contextType,
+				injection_tier: entry.injectionTier,
+				salience_score: entry.salienceScore,
+				mention_count: entry.mentionCount,
+				archived: false,
+			})),
+			projects: rankedProjects.slice(0, THIN_INDEX_PROJECT_LIMIT).map((entry) => {
+				const primaryRepo =
+					getRelatedRepos(entry.entry).find(
+						(repo) => (repo.is_primary === true),
+					) ?? getRelatedRepos(entry.entry)[0];
+				return {
+					id: entry.id,
+					name:
+						typeof entry.entry.name === "string" && entry.entry.name.length > 0
+							? entry.entry.name
+							: entry.label,
+					status:
+						typeof entry.entry.status === "string" && entry.entry.status.length > 0
+							? entry.entry.status
+							: "active",
+					goal_summary: truncate(entry.entry.goal, 80),
+					current_phase:
+						typeof entry.entry.current_phase === "string" ? entry.entry.current_phase : "",
+					blocked_on:
+						typeof entry.entry.blocked_on === "string" ? entry.entry.blocked_on : null,
+					last_touched: entry.updatedAt ?? generatedAt,
+					primary_repo: getRepoName(primaryRepo),
+					context_type: entry.contextType,
+					injection_tier: entry.injectionTier,
+					salience_score: entry.salienceScore,
+					mention_count: entry.mentionCount,
+					archived: false,
+				};
+			}),
+			recent_evolutions: [],
+			contested_count: contestedCount,
+			total_topic_count: rankedTopics.length,
+			total_project_count: rankedProjects.length,
+			tier_1_count: rankedTopics.filter((entry) => entry.injectionTier === 1).length +
+				rankedProjects.filter((entry) => entry.injectionTier === 1).length,
+			tier_2_count: rankedTopics.filter((entry) => entry.injectionTier === 2).length +
+				rankedProjects.filter((entry) => entry.injectionTier === 2).length,
+			tier_3_count: rankedTopics.filter((entry) => entry.injectionTier === 3).length +
+				rankedProjects.filter((entry) => entry.injectionTier === 3).length,
+			archived_count: knowledgeBatch.archivedCount + projectBatch.archivedCount,
+		};
+		thinIndex.token_count = Math.round(JSON.stringify(thinIndex).length / 4);
+
+		const stagingKey = `${THIN_INDEX_STAGING_PREFIX}${runId}`;
+		await redis.set(stagingKey, JSON.stringify(thinIndex));
+		await redis.rename(stagingKey, "index:current");
+		return thinIndex;
+	} finally {
+		await releaseIndexRebuildLock(redis, runId);
+	}
+}
+
 async function persistEntry(
 	redis: Redis,
 	vector: Index,
@@ -418,7 +621,12 @@ async function promoteEntry(
 	entry.metadata.last_consolidated = timestamp;
 	appendConsolidationNote(
 		entry.metadata,
-		`${timestamp}: Dream promoted task_query -> recurring_pattern (run ${runId})`,
+		formatConsolidationNote({
+			timestamp,
+			source: "dream",
+			action: "promote_context_type",
+			detail: `task_query -> recurring_pattern (run ${runId})`,
+		}),
 	);
 	entry.contextType = "recurring_pattern";
 	entry.injectionTier = 2;
@@ -485,7 +693,12 @@ async function archiveEntry(
 	latestMetadata.last_consolidated = timestamp;
 	appendConsolidationNote(
 		latestMetadata,
-		`${timestamp}: Dream archived entry (run ${runId}) because ${reason}`,
+		formatConsolidationNote({
+			timestamp,
+			source: "dream",
+			action: "archive_entry",
+			detail: `${reason} (run ${runId})`,
+		}),
 	);
 	latestEntry.metadata = latestMetadata;
 
@@ -545,7 +758,12 @@ export async function restoreArchivedEntry(
 	metadata.restored_reason = reason;
 	appendConsolidationNote(
 		metadata,
-		`${timestamp}: Restored archived entry as explicit_save (${reason})`,
+		formatConsolidationNote({
+			timestamp,
+			source: "operator",
+			action: "restore_archived",
+			detail: `restored as explicit_save (${reason})`,
+		}),
 	);
 	delete metadata.archived_at;
 	delete metadata.archived_reason;
@@ -570,6 +788,7 @@ export async function restoreArchivedEntry(
 	restoredLoadedEntry.metadata.salience_score = restoredLoadedEntry.salienceScore;
 
 	await persistEntry(redis, vector, restoredLoadedEntry);
+	await rebuildThinIndexSafely(redis, `restore_${entryId}_${timestamp.replace(/[:.]/g, "-")}`);
 
 	return {
 		id: entryId,
@@ -578,6 +797,76 @@ export async function restoreArchivedEntry(
 		injection_tier: restoredLoadedEntry.injectionTier,
 		snapshot_key: latestPointer.snapshot_key,
 		restored_at: timestamp,
+	};
+}
+
+export async function setEntryContextType(
+	env: Env,
+	entryId: string,
+	contextType: string,
+	reason: string,
+): Promise<Record<string, unknown>> {
+	const redis = createRedisClient(env);
+	const vector = createVectorClient(env);
+	const entryType: EntryType = entryId.startsWith("pe_") ? "project" : "knowledge";
+	const rawEntry = await redis.get(getEntryKey(entryType, entryId));
+	const entry = normalizeEntry(rawEntry, entryType);
+
+	if (!entry) {
+		throw new Error(`Entry not found: ${entryId}`);
+	}
+
+	const metadata = (entry.metadata as Record<string, unknown> | undefined) ?? {};
+	if (metadata.archived === true) {
+		throw new Error(`Entry ${entryId} is archived. Restore it before changing context type.`);
+	}
+
+	const previousContextType =
+		typeof metadata.context_type === "string" ? metadata.context_type : "task_query";
+	const timestamp = new Date().toISOString();
+	metadata.context_type = contextType;
+	metadata.classification_status = "manual_override";
+	metadata.auto_inferred = false;
+	metadata.injection_tier = defaultInjectionTier(contextType);
+	metadata.last_consolidated = timestamp;
+	appendConsolidationNote(
+		metadata,
+		formatConsolidationNote({
+			timestamp,
+			source: "operator",
+			action: "set_context_type",
+			detail: `${previousContextType} -> ${contextType} (${reason})`,
+		}),
+	);
+	entry.metadata = metadata;
+
+	const loadedEntry: LoadedEntry = {
+		id: entryId,
+		type: entryType,
+		entry,
+		metadata,
+		label: getEntryLabel(entry),
+		updatedAt: getEntryUpdatedAt(entry, metadata),
+		contextType,
+		injectionTier: defaultInjectionTier(contextType),
+		mentionCount: Math.max(1, toOptionalInteger(metadata.mention_count) ?? 1),
+		accessCount: Math.max(0, toOptionalInteger(metadata.access_count) ?? 0),
+		sourceConversationCount: toStringArray(metadata.source_conversations).length,
+		salienceScore: computeSalience(entry),
+	};
+	loadedEntry.metadata.salience_score = loadedEntry.salienceScore;
+
+	await persistEntry(redis, vector, loadedEntry);
+	await rebuildThinIndexSafely(redis, `set_context_${entryId}_${timestamp.replace(/[:.]/g, "-")}`);
+
+	return {
+		id: entryId,
+		type: entryType,
+		previous_context_type: previousContextType,
+		context_type: contextType,
+		injection_tier: loadedEntry.injectionTier,
+		salience_score: loadedEntry.salienceScore,
+		updated_at: timestamp,
 	};
 }
 
@@ -640,10 +929,12 @@ export async function runDreamCycle(
 	}
 
 	try {
-		const [knowledgeEntries, projectEntries] = await Promise.all([
-			loadEntriesByType(redis, "knowledge"),
-			loadEntriesByType(redis, "project"),
+		const [knowledgeBatch, projectBatch] = await Promise.all([
+			loadEntryBatchByType(redis, "knowledge"),
+			loadEntryBatchByType(redis, "project"),
 		]);
+		const knowledgeEntries = knowledgeBatch.entries;
+		const projectEntries = projectBatch.entries;
 		const allEntries = [...knowledgeEntries, ...projectEntries];
 		const candidateIdFilter =
 			options.candidateIds && options.candidateIds.length > 0
@@ -668,9 +959,13 @@ export async function runDreamCycle(
 			bucketCounts[classifyBucket(entry)] += 1;
 		}
 
+		const promotionCandidatesLimited =
+			typeof options.promotionLimit === "number" && options.promotionLimit >= 0
+				? promotionCandidates.slice(0, options.promotionLimit)
+				: promotionCandidates;
 		const promotedEntries: Array<Record<string, unknown>> = [];
 		if (!options.dryRun) {
-			for (const entry of promotionCandidates) {
+			for (const entry of promotionCandidatesLimited) {
 				promotedEntries.push(await promoteEntry(redis, vector, entry, runId, startedAt));
 			}
 		}
@@ -688,6 +983,7 @@ export async function runDreamCycle(
 					await archiveEntry(redis, vector, entry, runId, startedAt, archiveReason),
 				);
 			}
+			await rebuildThinIndexSafely(redis, runId);
 		}
 
 		const completedAt = new Date().toISOString();
@@ -720,6 +1016,7 @@ export async function runDreamCycle(
 				prune: {
 					status: options.dryRun ? "dry_run" : "completed",
 					archive_candidate_count: archiveCandidates.length,
+					archive_limit: options.archiveLimit ?? null,
 					archived_count: archivedEntries.length,
 				},
 			},
@@ -735,6 +1032,8 @@ export async function runDreamCycle(
 				archived: archivedEntries.length,
 				promotion_candidates: promotionCandidates.length,
 				promoted: promotedEntries.length,
+				promotion_limit: options.promotionLimit ?? null,
+				archive_limit: options.archiveLimit ?? null,
 			},
 			archive_candidates: archiveCandidates.map((entry) => ({
 				id: entry.id,

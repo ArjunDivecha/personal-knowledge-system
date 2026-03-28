@@ -34,7 +34,7 @@ Source PRD: [PKS-Upgrade-PRD.md](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Wo
 - [x] Identify config-level blockers that still require manual confirmation
 - [x] Verify Cloudflare plan tier supports the intended scheduled CPU budget
 - [ ] Verify deployed Worker rejects external scheduled invocations
-- [ ] Verify current OAuth scope model for future write-capable MCP tools
+- [x] Verify current OAuth scope model for future write-capable MCP tools
 
 ## Phase 1: Schema And Migration Hooks
 
@@ -105,21 +105,20 @@ Phase 4 notes:
 - [x] Add cron config
 - [x] Keep initial Dream deterministic and non-LLM
 - [ ] Add external-runner fallback path for replay-heavy work
-- [ ] Decide free-plan-compatible execution path for Dream:
-  - external runner / GitHub Actions
-  - or Cron trigger that only wakes a Durable Object / Queue consumer
-- [ ] Add `index:rebuild:lock` plus staging-key swap for index rebuilds
+- [x] Confirm execution path for Dream on the current Workers plan
+- [x] Add `index:rebuild:lock` plus staging-key swap for index rebuilds
 - [x] Add timestamped archive keys plus `:latest` pointers
 - [x] Define `dream:run:{iso}` schema
-- [ ] Define `consolidation_notes` schema/format
+- [x] Define `consolidation_notes` schema/format
 - [ ] Add Dream audit retention policy
 - [ ] Add Dream alert thresholds
 
 Phase 5 notes:
-- The nightly scheduled Dream path is currently `dry_run` only. It writes audit records and archive candidates but does not mutate or archive entries on cron.
-- A local scheduled dry-run on `2026-03-27` completed successfully and wrote `dream:last_run` plus `dream:run:{run_id}` with `83` archive candidates.
-- Live cron registration is now active for `0 3 * * *` UTC.
+- The nightly scheduled Dream path is now configured for bounded live runs with `archiveLimit=5` and `promotionLimit=10`.
+- The latest public `dream:last_run` record can still show `dry_run: true` until the next scheduled execution after deployment.
+- Live cron registration is active for `0 3 * * *` UTC.
 - Reversible archival writes and restore semantics are implemented behind the Dream engine and were verified on `2026-03-27` with a controlled single-entry archive/restore test.
+- Staging end-to-end validation on `2026-03-27` successfully covered: dry-run candidate discovery, bounded live archive, MCP `restore_archived`, MCP `set_context_type`, and final strict consistency verification with `0` issues.
 
 ## Phase 6: Ingestion Hardening And Operator Tools
 
@@ -127,9 +126,9 @@ Phase 5 notes:
 - [ ] Add source-aware mention counting
 - [ ] Add project staleness rule to classification
 - [x] Add `get_dream_summary`
-- [ ] Add `restore_archived`
-- [ ] Add `set_context_type`
-- [ ] Add OAuth scope checks and rate limits for write-capable tools
+- [x] Add `restore_archived`
+- [x] Add `set_context_type`
+- [x] Add OAuth scope checks and rate limits for write-capable tools
 - [ ] Update `skill/SKILL.md` for tier-aware usage
 
 ## Acceptance Gates
@@ -141,17 +140,10 @@ Phase 5 notes:
 - [x] Repeated retrieval increments access counters without races
 - [x] Dream dry run produces reversible archive candidates only
 - [x] Controlled live archive/restore preserves a timestamped snapshot and returns the entry to active state
-- [ ] New write-capable MCP tools reject unauthorized calls
+- [x] New write-capable MCP tools reject unauthorized calls
 
-## Cloudflare Free Plan Notes
+## Cloudflare Plan Notes
 
-- Current free-plan limits are sufficient for the existing personal MCP service pattern:
-  - Workers requests: `100,000/day`
-  - HTTP Worker CPU: `10 ms`
-  - Subrequests: `50/request`
-  - Cron Triggers: `5/account`
-  - Durable Object requests: `100,000/day`
-- The PRD as originally written is **not** free-plan-safe if Dream runs directly inside a Worker Cron Trigger, because free-plan Cron CPU is only `10 ms`.
-- Free-plan-compatible path:
-  - keep the interactive MCP service on Workers + Durable Objects
-  - move Dream to an external runner, or use the Cron Trigger only as a lightweight wake-up mechanism for a more capable downstream path
+- Workers Paid is now active on the deployment account.
+- The chosen Dream execution path is a bounded nightly Worker cron with explicit archive and promotion caps.
+- If replay-heavy Dream logic outgrows the current Worker budget, the next fallback is still an external runner.
