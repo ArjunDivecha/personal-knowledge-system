@@ -464,6 +464,7 @@ The testing system is documented in [docs/testing-matrix.md](/Users/arjundivecha
 The root [Makefile](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/knowledge-system/Makefile) is the command surface for this work. The current starter commands are:
 
 - `make worker-typecheck`
+- `make worker-test`
 - `make verify-memory-full`
 - `make seed-staging-dry-run`
 - `make staging-smoke-dry-run`
@@ -483,6 +484,16 @@ The staging smoke path is now production-shaped. It covers:
 - OAuth discovery, client registration, auth-code exchange, and bearer-token issuance
 - MCP `initialize`, `tools/list`, `get_index`, `search`, `get_context`, and `get_dream_summary`
 - final Redis vs Vector vs thin-index consistency verification
+
+There is now also a local Worker-runtime test layer under [cloudflare-mcp/mcp-server/test](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/knowledge-system/cloudflare-mcp/mcp-server/test). It runs inside Cloudflare's `workerd` runtime and covers:
+
+- `/health`
+- unauthorized operator rejection
+- OAuth discovery, client registration, auth-code exchange, and token issuance
+- MCP `initialize`, `tools/list`, `get_index`, and `get_dream_summary`
+- scheduled Dream trigger wiring
+
+That local test layer is automated in GitHub Actions at [.github/workflows/worker-runtime-tests.yml](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/knowledge-system/.github/workflows/worker-runtime-tests.yml).
 
 ## Current Upgrade Status
 

@@ -30,7 +30,7 @@ The repo already has useful probes, but they are not yet a unified testing stack
 - production-shaped Dream canary:
   - [test-dream-live.ts](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/knowledge-system/cloudflare-mcp/mcp-server/scripts/test-dream-live.ts)
 
-That is a good operator toolbox. It is not yet a full layered test system.
+That is now complemented by local Worker-runtime tests and a CI workflow, but the broader stack is still mid-build rather than finished.
 
 ## Environments
 
@@ -135,6 +135,12 @@ Tooling note:
 - Worker runtime tests should converge on Cloudflare's Vitest integration rather than raw curl scripts.
 - When local behavior diverges from real bindings, use remote-aware development/testing instead of trusting a purely local simulation.
 
+Current implementation:
+
+- local Worker-runtime tests live in [cloudflare-mcp/mcp-server/test/](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/knowledge-system/cloudflare-mcp/mcp-server/test)
+- they run inside `workerd` using Cloudflare's Workers Vitest integration
+- they are enforced in CI via [.github/workflows/worker-runtime-tests.yml](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/knowledge-system/.github/workflows/worker-runtime-tests.yml)
+
 ### Layer D: Storage Consistency
 
 Validates:
@@ -207,6 +213,7 @@ The root [Makefile](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/
 Key commands:
 
 - `make worker-typecheck`
+- `make worker-test`
 - `make verify-memory-full`
 - `make dream-live-canary`
 - `make seed-staging-dry-run`
@@ -233,11 +240,20 @@ Current staging smoke coverage:
 - run MCP `initialize`, `tools/list`, `get_index`, `search`, `get_context`, and `get_dream_summary`
 - finish with `verify_memory_consistency.py --full --strict` against staging data
 
+Current local Worker-runtime coverage:
+
+- `/health`
+- unauthorized operator rejection
+- landing page routing
+- OAuth discovery, client registration, authorization code, and token exchange
+- MCP `initialize`, `tools/list`, `get_index`, and `get_dream_summary`
+- scheduled Dream dry-run trigger wiring
+
 ## Near-Term Build Order
 
 1. Build a small gold fixture corpus.
-2. Seed an isolated staging Redis/Vector pair from that corpus.
-3. Add Worker runtime tests for `/health`, operator auth, and MCP basics.
+2. Add Python fixture tests for deterministic policy checks.
+3. Expand local Worker-runtime coverage to `search` and reconsolidation writes with outbound mocks.
 4. Add staging smoke tests that hit the deployed staging Worker.
 5. Add CI to run offline and local layers automatically.
 6. Keep production canaries separate and explicit.

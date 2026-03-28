@@ -1,14 +1,18 @@
 # Worker Test Suite
 
-This directory is reserved for Worker runtime tests.
+This directory contains Worker-runtime tests that run inside Cloudflare's `workerd` runtime via the Workers Vitest pool.
 
-The intended scope is:
+Current scope:
 
 - `/health`
 - OAuth and registration edges
 - MCP initialize/list/call flows
-- search filtering and tier behavior
+- scheduled Dream trigger behavior
 - operator endpoint authorization
-- Dream dry-run operator calls in staging
+- basic transport validation for MCP over HTTP
 
-These tests should target isolated staging or local Worker environments, not production by default.
+Design rules:
+
+- use local Worker-runtime tests here for deterministic transport and route coverage
+- use [scripts/run_e2e_staging.py](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/knowledge-system/scripts/run_e2e_staging.py) for full staging smoke
+- keep production out of this directory; production should only be touched by explicit canaries
