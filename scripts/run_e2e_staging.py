@@ -37,6 +37,28 @@ def run_command(cmd: list[str], env: dict[str, str] | None = None) -> dict[str, 
     }
 
 
+def build_staging_seed_env() -> dict[str, str]:
+    env = dict(os.environ)
+    required_keys = (
+        "STAGING_UPSTASH_REDIS_REST_URL",
+        "STAGING_UPSTASH_REDIS_REST_TOKEN",
+        "STAGING_UPSTASH_VECTOR_REST_URL",
+        "STAGING_UPSTASH_VECTOR_REST_TOKEN",
+    )
+    missing_keys = [key for key in required_keys if not os.getenv(key)]
+    if missing_keys:
+        raise RuntimeError(
+            "Missing required staging environment variables: "
+            + ", ".join(missing_keys)
+        )
+    for key in required_keys:
+        env[key] = os.getenv(key, "")
+    openai_key = get_env_value("STAGING_OPENAI_API_KEY", "OPENAI_API_KEY")
+    if openai_key:
+        env["STAGING_OPENAI_API_KEY"] = openai_key
+    return env
+
+
 def call_health(base_url: str) -> dict[str, Any]:
     response = requests.get(f"{base_url.rstrip('/')}/health", timeout=30)
     return {
@@ -110,8 +132,12 @@ def parse_sse_json(text: str) -> dict[str, Any]:
             return json.loads(line[6:])
     raise RuntimeError("No JSON payload found in SSE response")
 
-
-def oauth_client_flow(base_url: str) -> tuple[requests.Session, str]:
+def oauth_client_flow(
+    base_url: str,
+    *,
+    scope: str = "mcp:read",
+    operator_token: str | None = None,
+) -> tuple[requests.Session, str]:
     session = requests.Session()
     metadata = session.get(f"{base_url.rstrip('/')}/.well-known/oauth-authorization-server", timeout=30).json()
 
@@ -124,7 +150,7 @@ def oauth_client_flow(base_url: str) -> tuple[requests.Session, str]:
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
             "token_endpoint_auth_method": "client_secret_post",
-            "scope": "mcp:read mcp:write",
+            "scope": scope,
         },
         timeout=30,
     )
@@ -137,9 +163,10 @@ def oauth_client_flow(base_url: str) -> tuple[requests.Session, str]:
             "response_type": "code",
             "client_id": client["client_id"],
             "redirect_uri": redirect_uri,
-            "scope": "mcp:read mcp:write",
+            "scope": scope,
             "state": f"staging-{uuid.uuid4().hex}",
         },
+        headers={"Authorization": f"Bearer {operator_token}"} if operator_token else None,
         allow_redirects=False,
         timeout=30,
     )
@@ -215,7 +242,13 @@ def call_mcp_tool(
 
 
 def call_mcp_sequence(base_url: str, archived_entry_id: str | None = None) -> list[dict[str, Any]]:
-    session, access_token = oauth_client_flow(base_url)
+    operator_token = get_env_value("STAGING_DREAM_OPERATOR_TOKEN", "DREAM_OPERATOR_TOKEN")
+    requested_scope = "mcp:read mcp:write" if archived_entry_id and operator_token else "mcp:read"
+    session, access_token = oauth_client_flow(
+        base_url,
+        scope=requested_scope,
+        operator_token=operator_token if archived_entry_id else None,
+    )
     steps: list[dict[str, Any]] = []
 
     initialize_payload = {
@@ -478,7 +511,7 @@ def main() -> int:
             cmd.append("--dry-run")
         else:
             cmd.append("--reset")
-        report["steps"].append({"name": "seed_staging", **run_command(cmd)})
+        report["steps"].append({"name": "seed_staging", **run_command(cmd, env=build_staging_seed_env())})
 
     if not args.dry_run:
         report["steps"].append({"name": "health_check", **call_health(args.base_url)})

@@ -219,6 +219,18 @@ function normalizeScopes(raw: unknown): string[] {
 	return [];
 }
 
+function getApprovedAuthorizationScopes(
+	requestedScopes: string[],
+	allowWriteScope: boolean,
+): string[] {
+	const normalizedScopes = requestedScopes.length > 0 ? requestedScopes : ["mcp:read"];
+	return [...new Set(normalizedScopes)].filter((scope) => {
+		if (scope === "mcp:read") return true;
+		if (scope === "mcp:write") return allowWriteScope;
+		return false;
+	});
+}
+
 async function applyFixedWindowRateLimit(
 	redis: Redis,
 	actor: string,
@@ -1186,18 +1198,26 @@ const defaultHandler = {
 				}
 
 				// Auto-approve: complete authorization immediately without login
-				// This is safe for a personal single-user system
-				const approvedScopes = normalizeScopes(authRequest.scope);
+				// Write scope is only granted for operator-authorized authorization requests.
+				const requestedScopes = normalizeScopes(authRequest.scope);
+				const approvedScopes = getApprovedAuthorizationScopes(
+					requestedScopes,
+					isAuthorizedOperatorRequest(request, env),
+				);
+				if (approvedScopes.length === 0) {
+					return new Response("No supported scopes requested", { status: 403 });
+				}
+				const approvedScopeString = approvedScopes.join(" ");
 				const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
 					request: authRequest,
 					userId: "arjun",
 					metadata: {
 						label: "Personal Knowledge MCP"
 					},
-					scope: authRequest.scope,
+					scope: approvedScopes,
 					props: {
 						userId: "arjun",
-						scope: authRequest.scope,
+						scope: approvedScopeString,
 						scopes: approvedScopes,
 					},
 				});

@@ -381,6 +381,34 @@ function isPromotionCandidate(entry: LoadedEntry): boolean {
 	);
 }
 
+function compareArchivePriority(left: LoadedEntry, right: LoadedEntry): number {
+	if (left.salienceScore !== right.salienceScore) {
+		return left.salienceScore - right.salienceScore;
+	}
+	const updatedDiff = sortTimestamp(left.updatedAt) - sortTimestamp(right.updatedAt);
+	if (updatedDiff !== 0) {
+		return updatedDiff;
+	}
+	return left.id.localeCompare(right.id);
+}
+
+function comparePromotionPriority(left: LoadedEntry, right: LoadedEntry): number {
+	if (left.mentionCount !== right.mentionCount) {
+		return right.mentionCount - left.mentionCount;
+	}
+	if (left.accessCount !== right.accessCount) {
+		return right.accessCount - left.accessCount;
+	}
+	if (left.salienceScore !== right.salienceScore) {
+		return right.salienceScore - left.salienceScore;
+	}
+	const updatedDiff = sortTimestamp(right.updatedAt) - sortTimestamp(left.updatedAt);
+	if (updatedDiff !== 0) {
+		return updatedDiff;
+	}
+	return left.id.localeCompare(right.id);
+}
+
 function classifyBucket(entry: LoadedEntry): DreamBucket {
 	const immortal =
 		MEMORY_POLICY.half_lives_days[
@@ -482,37 +510,26 @@ async function releaseIndexRebuildLock(redis: Redis, runId: string): Promise<voi
 	}
 }
 
-async function rebuildThinIndexSafely(redis: Redis, runId: string): Promise<Record<string, unknown>> {
-	if (!(await acquireIndexRebuildLock(redis, runId))) {
-		throw new Error("index_rebuild_lock_held");
-	}
-
-	try {
-		const [knowledgeBatch, projectBatch] = await Promise.all([
-			loadEntryBatchByType(redis, "knowledge"),
-			loadEntryBatchByType(redis, "project"),
-		]);
-		const generatedAt = new Date().toISOString();
-		let contestedCount = 0;
-		const rankedTopics = knowledgeBatch.entries
-			.filter((entry) => entry.entry.state !== "deprecated")
-			.map((entry) => {
-				const topicState = getTopicState(entry.entry);
-				if (topicState === "contested") {
-					contestedCount += 1;
-				}
-				return entry;
-			})
-			.sort((left, right) => {
-				if (left.injectionTier !== right.injectionTier) {
-					return left.injectionTier - right.injectionTier;
-				}
-				if (left.salienceScore !== right.salienceScore) {
-					return right.salienceScore - left.salienceScore;
-				}
-				return sortTimestamp(right.updatedAt) - sortTimestamp(left.updatedAt);
-			});
-		const rankedProjects = [...projectBatch.entries].sort((left, right) => {
+async function rebuildThinIndexWithHeldLock(
+	redis: Redis,
+	runId: string,
+): Promise<Record<string, unknown>> {
+	const [knowledgeBatch, projectBatch] = await Promise.all([
+		loadEntryBatchByType(redis, "knowledge"),
+		loadEntryBatchByType(redis, "project"),
+	]);
+	const generatedAt = new Date().toISOString();
+	let contestedCount = 0;
+	const rankedTopics = knowledgeBatch.entries
+		.filter((entry) => entry.entry.state !== "deprecated")
+		.map((entry) => {
+			const topicState = getTopicState(entry.entry);
+			if (topicState === "contested") {
+				contestedCount += 1;
+			}
+			return entry;
+		})
+		.sort((left, right) => {
 			if (left.injectionTier !== right.injectionTier) {
 				return left.injectionTier - right.injectionTier;
 			}
@@ -521,74 +538,92 @@ async function rebuildThinIndexSafely(redis: Redis, runId: string): Promise<Reco
 			}
 			return sortTimestamp(right.updatedAt) - sortTimestamp(left.updatedAt);
 		});
+	const rankedProjects = [...projectBatch.entries].sort((left, right) => {
+		if (left.injectionTier !== right.injectionTier) {
+			return left.injectionTier - right.injectionTier;
+		}
+		if (left.salienceScore !== right.salienceScore) {
+			return right.salienceScore - left.salienceScore;
+		}
+		return sortTimestamp(right.updatedAt) - sortTimestamp(left.updatedAt);
+	});
 
-		const thinIndex = {
-			generated_at: generatedAt,
-			token_count: 0,
-			topics: rankedTopics.slice(0, THIN_INDEX_TOPIC_LIMIT).map((entry) => ({
+	const thinIndex = {
+		generated_at: generatedAt,
+		token_count: 0,
+		topics: rankedTopics.slice(0, THIN_INDEX_TOPIC_LIMIT).map((entry) => ({
+			id: entry.id,
+			domain:
+				typeof entry.entry.domain === "string" && entry.entry.domain.length > 0
+					? entry.entry.domain
+					: entry.label,
+			current_view_summary: truncate(entry.entry.current_view, 80),
+			state: getTopicState(entry.entry),
+			confidence: getConfidence(entry.entry),
+			last_updated: entry.updatedAt ?? generatedAt,
+			top_repo: getRepoName(getRelatedRepos(entry.entry)[0]),
+			context_type: entry.contextType,
+			injection_tier: entry.injectionTier,
+			salience_score: entry.salienceScore,
+			mention_count: entry.mentionCount,
+			archived: false,
+		})),
+		projects: rankedProjects.slice(0, THIN_INDEX_PROJECT_LIMIT).map((entry) => {
+			const primaryRepo =
+				getRelatedRepos(entry.entry).find(
+					(repo) => (repo.is_primary === true),
+				) ?? getRelatedRepos(entry.entry)[0];
+			return {
 				id: entry.id,
-				domain:
-					typeof entry.entry.domain === "string" && entry.entry.domain.length > 0
-						? entry.entry.domain
+				name:
+					typeof entry.entry.name === "string" && entry.entry.name.length > 0
+						? entry.entry.name
 						: entry.label,
-				current_view_summary: truncate(entry.entry.current_view, 80),
-				state: getTopicState(entry.entry),
-				confidence: getConfidence(entry.entry),
-				last_updated: entry.updatedAt ?? generatedAt,
-				top_repo: getRepoName(getRelatedRepos(entry.entry)[0]),
+				status:
+					typeof entry.entry.status === "string" && entry.entry.status.length > 0
+						? entry.entry.status
+						: "active",
+				goal_summary: truncate(entry.entry.goal, 80),
+				current_phase:
+					typeof entry.entry.current_phase === "string" ? entry.entry.current_phase : "",
+				blocked_on:
+					typeof entry.entry.blocked_on === "string" ? entry.entry.blocked_on : null,
+				last_touched: entry.updatedAt ?? generatedAt,
+				primary_repo: getRepoName(primaryRepo),
 				context_type: entry.contextType,
 				injection_tier: entry.injectionTier,
 				salience_score: entry.salienceScore,
 				mention_count: entry.mentionCount,
 				archived: false,
-			})),
-			projects: rankedProjects.slice(0, THIN_INDEX_PROJECT_LIMIT).map((entry) => {
-				const primaryRepo =
-					getRelatedRepos(entry.entry).find(
-						(repo) => (repo.is_primary === true),
-					) ?? getRelatedRepos(entry.entry)[0];
-				return {
-					id: entry.id,
-					name:
-						typeof entry.entry.name === "string" && entry.entry.name.length > 0
-							? entry.entry.name
-							: entry.label,
-					status:
-						typeof entry.entry.status === "string" && entry.entry.status.length > 0
-							? entry.entry.status
-							: "active",
-					goal_summary: truncate(entry.entry.goal, 80),
-					current_phase:
-						typeof entry.entry.current_phase === "string" ? entry.entry.current_phase : "",
-					blocked_on:
-						typeof entry.entry.blocked_on === "string" ? entry.entry.blocked_on : null,
-					last_touched: entry.updatedAt ?? generatedAt,
-					primary_repo: getRepoName(primaryRepo),
-					context_type: entry.contextType,
-					injection_tier: entry.injectionTier,
-					salience_score: entry.salienceScore,
-					mention_count: entry.mentionCount,
-					archived: false,
-				};
-			}),
-			recent_evolutions: [],
-			contested_count: contestedCount,
-			total_topic_count: rankedTopics.length,
-			total_project_count: rankedProjects.length,
-			tier_1_count: rankedTopics.filter((entry) => entry.injectionTier === 1).length +
-				rankedProjects.filter((entry) => entry.injectionTier === 1).length,
-			tier_2_count: rankedTopics.filter((entry) => entry.injectionTier === 2).length +
-				rankedProjects.filter((entry) => entry.injectionTier === 2).length,
-			tier_3_count: rankedTopics.filter((entry) => entry.injectionTier === 3).length +
-				rankedProjects.filter((entry) => entry.injectionTier === 3).length,
-			archived_count: knowledgeBatch.archivedCount + projectBatch.archivedCount,
-		};
-		thinIndex.token_count = Math.round(JSON.stringify(thinIndex).length / 4);
+			};
+		}),
+		recent_evolutions: [],
+		contested_count: contestedCount,
+		total_topic_count: rankedTopics.length,
+		total_project_count: rankedProjects.length,
+		tier_1_count: rankedTopics.filter((entry) => entry.injectionTier === 1).length +
+			rankedProjects.filter((entry) => entry.injectionTier === 1).length,
+		tier_2_count: rankedTopics.filter((entry) => entry.injectionTier === 2).length +
+			rankedProjects.filter((entry) => entry.injectionTier === 2).length,
+		tier_3_count: rankedTopics.filter((entry) => entry.injectionTier === 3).length +
+			rankedProjects.filter((entry) => entry.injectionTier === 3).length,
+		archived_count: knowledgeBatch.archivedCount + projectBatch.archivedCount,
+	};
+	thinIndex.token_count = Math.round(JSON.stringify(thinIndex).length / 4);
 
-		const stagingKey = `${THIN_INDEX_STAGING_PREFIX}${runId}`;
-		await redis.set(stagingKey, JSON.stringify(thinIndex));
-		await redis.rename(stagingKey, "index:current");
-		return thinIndex;
+	const stagingKey = `${THIN_INDEX_STAGING_PREFIX}${runId}`;
+	await redis.set(stagingKey, JSON.stringify(thinIndex));
+	await redis.rename(stagingKey, "index:current");
+	return thinIndex;
+}
+
+async function rebuildThinIndexSafely(redis: Redis, runId: string): Promise<Record<string, unknown>> {
+	if (!(await acquireIndexRebuildLock(redis, runId))) {
+		throw new Error("index_rebuild_lock_held");
+	}
+
+	try {
+		return await rebuildThinIndexWithHeldLock(redis, runId);
 	} finally {
 		await releaseIndexRebuildLock(redis, runId);
 	}
@@ -787,8 +822,17 @@ export async function restoreArchivedEntry(
 	};
 	restoredLoadedEntry.metadata.salience_score = restoredLoadedEntry.salienceScore;
 
-	await persistEntry(redis, vector, restoredLoadedEntry);
-	await rebuildThinIndexSafely(redis, `restore_${entryId}_${timestamp.replace(/[:.]/g, "-")}`);
+	const rebuildRunId = `restore_${entryId}_${timestamp.replace(/[:.]/g, "-")}`;
+	if (!(await acquireIndexRebuildLock(redis, rebuildRunId))) {
+		throw new Error("index_rebuild_lock_held");
+	}
+
+	try {
+		await persistEntry(redis, vector, restoredLoadedEntry);
+		await rebuildThinIndexWithHeldLock(redis, rebuildRunId);
+	} finally {
+		await releaseIndexRebuildLock(redis, rebuildRunId);
+	}
 
 	return {
 		id: entryId,
@@ -856,8 +900,17 @@ export async function setEntryContextType(
 	};
 	loadedEntry.metadata.salience_score = loadedEntry.salienceScore;
 
-	await persistEntry(redis, vector, loadedEntry);
-	await rebuildThinIndexSafely(redis, `set_context_${entryId}_${timestamp.replace(/[:.]/g, "-")}`);
+	const rebuildRunId = `set_context_${entryId}_${timestamp.replace(/[:.]/g, "-")}`;
+	if (!(await acquireIndexRebuildLock(redis, rebuildRunId))) {
+		throw new Error("index_rebuild_lock_held");
+	}
+
+	try {
+		await persistEntry(redis, vector, loadedEntry);
+		await rebuildThinIndexWithHeldLock(redis, rebuildRunId);
+	} finally {
+		await releaseIndexRebuildLock(redis, rebuildRunId);
+	}
 
 	return {
 		id: entryId,
@@ -943,11 +996,11 @@ export async function runDreamCycle(
 		const promotionCandidates = allEntries.filter((entry) => {
 			if (candidateIdFilter && !candidateIdFilter.has(entry.id)) return false;
 			return isPromotionCandidate(entry);
-		});
+		}).sort(comparePromotionPriority);
 		const archiveCandidates = allEntries.filter((entry) => {
 			if (candidateIdFilter && !candidateIdFilter.has(entry.id)) return false;
 			return isArchiveCandidate(entry);
-		});
+		}).sort(compareArchivePriority);
 		const bucketCounts: Record<DreamBucket, number> = {
 			stable: 0,
 			active: 0,

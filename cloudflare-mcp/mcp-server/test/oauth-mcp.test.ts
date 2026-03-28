@@ -6,6 +6,7 @@ const redisMock = vi.hoisted(() => ({
 	get: vi.fn(),
 	scard: vi.fn(),
 	llen: vi.fn(),
+	incr: vi.fn(),
 }));
 
 vi.mock("@upstash/redis/cloudflare", () => ({
@@ -63,12 +64,13 @@ async function authorizeClient(baseUrl: string): Promise<{
 	clientId: string;
 	clientSecret: string;
 }> {
-	return authorizeClientWithScope(baseUrl, "mcp:read mcp:write");
+	return authorizeClientWithScope(baseUrl, "mcp:read");
 }
 
 async function authorizeClientWithScope(
 	baseUrl: string,
 	scope: string,
+	options?: { operatorToken?: string },
 ): Promise<{
 	accessToken: string;
 	clientId: string;
@@ -103,7 +105,13 @@ async function authorizeClientWithScope(
 	authorizeUrl.searchParams.set("scope", scope);
 	authorizeUrl.searchParams.set("state", "worker-runtime-test");
 
-	const authorizeResponse = await dispatch(new IncomingRequest(authorizeUrl.toString()));
+	const authorizeResponse = await dispatch(
+		new IncomingRequest(authorizeUrl.toString(), {
+			headers: options?.operatorToken
+				? { authorization: `Bearer ${options.operatorToken}` }
+				: undefined,
+		}),
+	);
 	expect(authorizeResponse.status).toBe(302);
 	const redirectTarget = authorizeResponse.headers.get("location");
 	expect(redirectTarget).toBeTruthy();
@@ -191,6 +199,7 @@ beforeEach(() => {
 	});
 	redisMock.scard.mockResolvedValue(0);
 	redisMock.llen.mockResolvedValue(0);
+	redisMock.incr.mockResolvedValue(1);
 });
 
 describe("OAuth and MCP integration", () => {
@@ -311,9 +320,9 @@ describe("OAuth and MCP integration", () => {
 		expect((dreamSummary.counts as Record<string, unknown>).archive_candidates).toBe(78);
 	});
 
-	it("rejects write-capable MCP tools without mcp:write scope", async () => {
+	it("downgrades public OAuth write requests to read-only scope", async () => {
 		const baseUrl = "https://example.com";
-		const { accessToken } = await authorizeClientWithScope(baseUrl, "mcp:read");
+		const { accessToken } = await authorizeClientWithScope(baseUrl, "mcp:read mcp:write");
 
 		const initializeResponse = await dispatch(
 			new IncomingRequest(`${baseUrl}/mcp`, {
@@ -369,5 +378,70 @@ describe("OAuth and MCP integration", () => {
 		const writeText = ((writeResult.content as Array<Record<string, unknown>>)[0].text as string);
 		const payload = JSON.parse(writeText) as Record<string, unknown>;
 		expect(String(payload.error || "")).toContain("mcp:write");
+	});
+
+	it("grants write scope only when /authorize is operator-authenticated", async () => {
+		const baseUrl = "https://example.com";
+		const { accessToken } = await authorizeClientWithScope(
+			baseUrl,
+			"mcp:read mcp:write",
+			{ operatorToken: "test-dream-operator-token" },
+		);
+
+		const initializeResponse = await dispatch(
+			new IncomingRequest(`${baseUrl}/mcp`, {
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${accessToken}`,
+					accept: "application/json, text/event-stream",
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({
+					jsonrpc: "2.0",
+					id: 1,
+					method: "initialize",
+					params: {
+						protocolVersion: "2024-11-05",
+						capabilities: {},
+						clientInfo: { name: "worker-runtime-test", version: "1.0" },
+					},
+				}),
+			}),
+		);
+		expect(initializeResponse.status).toBe(200);
+		const sessionId = initializeResponse.headers.get("mcp-session-id");
+		expect(sessionId).toBeTruthy();
+
+		const writeResponse = await dispatch(
+			new IncomingRequest(`${baseUrl}/mcp`, {
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${accessToken}`,
+					accept: "application/json, text/event-stream",
+					"content-type": "application/json",
+					"mcp-session-id": sessionId!,
+				},
+				body: JSON.stringify({
+					jsonrpc: "2.0",
+					id: 2,
+					method: "tools/call",
+					params: {
+						name: "set_context_type",
+						arguments: {
+							id: "ke_quant",
+							context_type: "recurring_pattern",
+							reason: "worker runtime test",
+						},
+					},
+				}),
+			}),
+		);
+		expect(writeResponse.status).toBe(200);
+		const writeEnvelope = await readRpcEnvelope(writeResponse);
+		const writeResult = writeEnvelope.result as Record<string, unknown>;
+		const writeText = ((writeResult.content as Array<Record<string, unknown>>)[0].text as string);
+		const payload = JSON.parse(writeText) as Record<string, unknown>;
+		expect(String(payload.error || "")).not.toContain("mcp:write");
+		expect(String(payload.error || "")).toContain("Entry not found");
 	});
 });
