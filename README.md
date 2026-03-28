@@ -449,6 +449,28 @@ The upgrade work introduced three important operator scripts:
 
 These scripts are how the repo moved from legacy mixed-schema data to the current retrieval model.
 
+## Validation Strategy
+
+This repo now has an explicit testing plan. The goal is to validate the full memory loop, not just confirm that individual scripts exit successfully.
+
+The three operating layers are:
+
+- fixture tests for deterministic logic and policy behavior
+- staging end-to-end tests against isolated Redis, Vector, and Worker infrastructure
+- production canaries for bounded live verification only
+
+The testing system is documented in [docs/testing-matrix.md](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/knowledge-system/docs/testing-matrix.md).
+
+The root [Makefile](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/knowledge-system/Makefile) is the command surface for this work. The current starter commands are:
+
+- `make worker-typecheck`
+- `make verify-memory-full`
+- `make seed-staging-dry-run`
+- `make staging-smoke-dry-run`
+- `make dream-live-canary`
+
+The long-term rule is simple: production is not the default test bed.
+
 ## Current Upgrade Status
 
 The repository is in the middle of a larger PKS memory upgrade.
