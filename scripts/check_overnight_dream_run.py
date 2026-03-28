@@ -20,8 +20,6 @@ DEFAULT_BASE_URL = "https://mcp.dancing-ganesh.com"
 DEFAULT_CRON_HOUR_UTC = 7
 DEFAULT_CRON_MINUTE_UTC = 10
 DEFAULT_MAX_START_DELAY_MINUTES = 45
-EXPECTED_ARCHIVE_LIMIT = 5
-EXPECTED_PROMOTION_LIMIT = 10
 
 
 @dataclass
@@ -34,7 +32,7 @@ class ValidationResult:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Check whether the latest scheduled Dream run executed in bounded live mode.",
+        description="Check whether the latest scheduled Dream run executed in full live mode.",
     )
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--cron-hour-utc", type=int, default=DEFAULT_CRON_HOUR_UTC)
@@ -233,22 +231,14 @@ def validate_dream_run(
         issues.append("Dream summary is missing counts")
         counts = {}
 
-    if counts.get("archive_limit") != EXPECTED_ARCHIVE_LIMIT:
+    if counts.get("archive_limit") is not None:
         issues.append(
-            f"archive_limit is {counts.get('archive_limit')}, expected {EXPECTED_ARCHIVE_LIMIT}",
+            f"archive_limit is {counts.get('archive_limit')}, expected None for full nightly runs",
         )
-    if counts.get("promotion_limit") != EXPECTED_PROMOTION_LIMIT:
+    if counts.get("promotion_limit") is not None:
         issues.append(
-            f"promotion_limit is {counts.get('promotion_limit')}, expected {EXPECTED_PROMOTION_LIMIT}",
+            f"promotion_limit is {counts.get('promotion_limit')}, expected None for full nightly runs",
         )
-
-    archived_count = counts.get("archived")
-    if isinstance(archived_count, int) and archived_count > EXPECTED_ARCHIVE_LIMIT:
-        issues.append(f"archived count {archived_count} exceeds cap {EXPECTED_ARCHIVE_LIMIT}")
-
-    promoted_count = counts.get("promoted")
-    if isinstance(promoted_count, int) and promoted_count > EXPECTED_PROMOTION_LIMIT:
-        issues.append(f"promoted count {promoted_count} exceeds cap {EXPECTED_PROMOTION_LIMIT}")
 
     if run_at is not None:
         if run_at < expected_boundary:
@@ -316,10 +306,10 @@ def main() -> int:
     print(f"Report written to {report_path}")
 
     if validation.passed:
-        print("PASS: latest scheduled Dream run is present and in bounded live mode.")
+        print("PASS: latest scheduled Dream run is present and in full live mode.")
         return 0
 
-    print("FAIL: latest scheduled Dream run does not yet satisfy the overnight checks.")
+    print("FAIL: latest scheduled Dream run does not yet satisfy the overnight full-run checks.")
     for issue in validation.issues:
         print(f"- {issue}")
     return 1

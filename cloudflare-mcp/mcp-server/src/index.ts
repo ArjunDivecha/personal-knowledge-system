@@ -26,8 +26,6 @@ const MAX_OPERATOR_DREAM_ARCHIVE_LIMIT = 10;
 const RATE_LIMIT_WINDOW_SECONDS = 60 * 60;
 const WRITE_TOOL_RATE_LIMIT = 24;
 const OPERATOR_WRITE_RATE_LIMIT = 12;
-const NIGHTLY_DREAM_ARCHIVE_LIMIT = 5;
-const NIGHTLY_DREAM_PROMOTION_LIMIT = 10;
 const CONTEXT_TYPES = [
 	"professional_identity",
 	"stated_preference",
@@ -1402,9 +1400,7 @@ export default {
 			trigger: "scheduled",
 			cron: controller.cron,
 			scheduledTime: controller.scheduledTime,
-			archiveLimit: NIGHTLY_DREAM_ARCHIVE_LIMIT,
-			promotionLimit: NIGHTLY_DREAM_PROMOTION_LIMIT,
-			note: `Nightly bounded Dream run with archiveLimit=${NIGHTLY_DREAM_ARCHIVE_LIMIT} and promotionLimit=${NIGHTLY_DREAM_PROMOTION_LIMIT}.`,
+			note: "Nightly full Dream run.",
 		});
 		ctx.waitUntil(promise);
 		const result = await promise;

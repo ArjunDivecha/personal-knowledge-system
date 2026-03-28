@@ -133,7 +133,7 @@ This is the software analog of strategic forgetting: preserve what matters, but 
 
 The most ambitious part of the design is the Dream job.
 
-Dream is partially live now. The scheduler, audit trail, candidate discovery loop, reversible archive/restore mechanics, and write-capable operator tools are implemented. The nightly Worker is now configured for bounded live runs, although the last completed public run may still show `dry_run: true` until the next scheduled execution occurs. Replay-heavy consolidation is still planned. The intended structure is:
+Dream is partially live now. The scheduler, audit trail, candidate discovery loop, reversible archive/restore mechanics, and write-capable operator tools are implemented. The nightly Worker is now configured for full live runs of the currently implemented Dream engine. Replay-heavy consolidation is still planned. The intended structure is:
 
 1. Survey
    Load active entries, compute salience, and bucket them into stable, active, weak, and decay candidates.
@@ -342,7 +342,7 @@ Dream is the long-horizon maintenance loop. The idea is:
 - archive low-value memories with reversible pointers
 - rebuild the current self-model without re-injecting everything forever
 
-Dream is Phase 5 work. The bounded live scheduler, audit output, reversible archive/restore path, and write-capable operator tools are implemented. The last recorded Dream run can still show `dry_run` if it predates the latest deploy, but the deployed scheduler is now set for bounded live archive and promotion batches.
+Dream is Phase 5 work. The live scheduler, audit output, reversible archive/restore path, and write-capable operator tools are implemented. The last recorded Dream run can still show `dry_run` if it predates the latest deploy, but the deployed scheduler is now set for full live runs of the currently implemented Dream path.
 
 ## What Is Live Today
 
@@ -355,8 +355,8 @@ As of March 27, 2026, the live system has:
 - `0` pending classifications in `classification:pending`
 - tier counts of `500` Tier 1, `24` Tier 2, `85` Tier 3
 - `0` archived entries at the time of the latest health check
-- latest recorded Dream run surfaced `78` archive candidates and is still marked `dry_run`
-- the deployed scheduler is now configured for bounded live archive and promotion batches on the next scheduled run
+- latest recorded Dream run surfaced `78` archive candidates and may still show `dry_run` if it predates the latest deploy
+- the deployed scheduler is now configured for full live Dream runs on the next scheduled run
 - reversible archive snapshot and restore semantics have been verified on live data, and the full archive -> MCP restore -> MCP context override path has been validated on staging
 
 Operationally, the following are live:
