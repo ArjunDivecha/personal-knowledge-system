@@ -187,6 +187,10 @@ The goal is a memory system that gets better at representing what matters.
 
 ## System Model
 
+Current high-level schema:
+
+![Personal Knowledge System architecture](docs/assets/pks-architecture-schema.png)
+
 ```text
 Raw Sources
   Claude exports
