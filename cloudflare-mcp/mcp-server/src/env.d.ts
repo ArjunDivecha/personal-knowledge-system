@@ -11,6 +11,7 @@ declare global {
 		GITHUB_TOKEN: string;
 		DREAM_OPERATOR_TOKEN: string;
 		MCP_OBJECT: DurableObjectNamespace<import("./index").KnowledgeMCP>;
+		OPENAI_MCP_OBJECT: DurableObjectNamespace<import("./index").OpenAIKnowledgeMCP>;
 		OAUTH_KV: KVNamespace;
 		OAUTH_PROVIDER: OAuthHelpers;
 	}

@@ -460,6 +460,10 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 		version: "1.0.0",
 	});
 
+	protected includeWriteTools(): boolean {
+		return true;
+	}
+
 	private getRedis(env: Env): Redis {
 		return createRedisClient(env);
 	}
@@ -762,54 +766,56 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 			}
 		);
 
-		// Tool: restore_archived
-		this.server.tool(
-			"restore_archived",
-			"Restore an archived entry back into active memory. Requires mcp:write scope.",
-			{
-				id: z.string().describe("Entry ID to restore (ke_xxx or pe_xxx)"),
-				reason: z.string().min(1).max(500).describe("Why this archived entry should be restored"),
-			},
-			async ({ id, reason }) => {
-				try {
-					await this.requireWriteAccess("restore_archived");
-					const result = await restoreArchivedEntry(this.env, id, reason);
-					return {
-						content: [{ type: "text", text: JSON.stringify(result) }],
-					};
-				} catch (error) {
-					const errMsg = error instanceof Error ? error.message : String(error);
-					return {
-						content: [{ type: "text", text: JSON.stringify({ error: errMsg }) }],
-					};
-				}
-			},
-		);
+		if (this.includeWriteTools()) {
+			// Tool: restore_archived
+			this.server.tool(
+				"restore_archived",
+				"Restore an archived entry back into active memory. Requires mcp:write scope.",
+				{
+					id: z.string().describe("Entry ID to restore (ke_xxx or pe_xxx)"),
+					reason: z.string().min(1).max(500).describe("Why this archived entry should be restored"),
+				},
+				async ({ id, reason }) => {
+					try {
+						await this.requireWriteAccess("restore_archived");
+						const result = await restoreArchivedEntry(this.env, id, reason);
+						return {
+							content: [{ type: "text", text: JSON.stringify(result) }],
+						};
+					} catch (error) {
+						const errMsg = error instanceof Error ? error.message : String(error);
+						return {
+							content: [{ type: "text", text: JSON.stringify({ error: errMsg }) }],
+						};
+					}
+				},
+			);
 
-		// Tool: set_context_type
-		this.server.tool(
-			"set_context_type",
-			"Override an active entry's context type. Requires mcp:write scope.",
-			{
-				id: z.string().describe("Entry ID to update (ke_xxx or pe_xxx)"),
-				context_type: z.enum(CONTEXT_TYPES).describe("Replacement context type"),
-				reason: z.string().min(1).max(500).describe("Why this override is needed"),
-			},
-			async ({ id, context_type, reason }) => {
-				try {
-					await this.requireWriteAccess("set_context_type");
-					const result = await setEntryContextType(this.env, id, context_type, reason);
-					return {
-						content: [{ type: "text", text: JSON.stringify(result) }],
-					};
-				} catch (error) {
-					const errMsg = error instanceof Error ? error.message : String(error);
-					return {
-						content: [{ type: "text", text: JSON.stringify({ error: errMsg }) }],
-					};
-				}
-			},
-		);
+			// Tool: set_context_type
+			this.server.tool(
+				"set_context_type",
+				"Override an active entry's context type. Requires mcp:write scope.",
+				{
+					id: z.string().describe("Entry ID to update (ke_xxx or pe_xxx)"),
+					context_type: z.enum(CONTEXT_TYPES).describe("Replacement context type"),
+					reason: z.string().min(1).max(500).describe("Why this override is needed"),
+				},
+				async ({ id, context_type, reason }) => {
+					try {
+						await this.requireWriteAccess("set_context_type");
+						const result = await setEntryContextType(this.env, id, context_type, reason);
+						return {
+							content: [{ type: "text", text: JSON.stringify(result) }],
+						};
+					} catch (error) {
+						const errMsg = error instanceof Error ? error.message : String(error);
+						return {
+							content: [{ type: "text", text: JSON.stringify({ error: errMsg }) }],
+						};
+					}
+				},
+			);
+		}
 
 		// Tool: get_context
 		this.server.tool(
@@ -1048,13 +1054,18 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 									);
 									if (!repos || repos.length === 0) { hasMore = false; continue; }
 									for (const r of repos) {
+										const pushedAt = typeof r.pushed_at === "string" ? r.pushed_at : null;
+										const repoUpdatedAt = typeof r.updated_at === "string" ? r.updated_at : null;
+										const activityAt = pushedAt ?? repoUpdatedAt;
 										allRepos.push({
 											name: r.name,
 											owner: account,
 											description: r.description,
 											language: r.language,
 											stars: r.stargazers_count || 0,
-											updated: r.updated_at,
+											updated: activityAt,
+											pushed_at: pushedAt,
+											repo_updated_at: repoUpdatedAt,
 											private: r.private || false,
 										});
 									}
@@ -1062,7 +1073,11 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 									else page++;
 								}
 							}
-							allRepos.sort((a, b) => new Date(b.updated).getTime() - new Date(a.updated).getTime());
+							allRepos.sort((a, b) => {
+								const left = typeof a.updated === "string" ? new Date(a.updated).getTime() : 0;
+								const right = typeof b.updated === "string" ? new Date(b.updated).getTime() : 0;
+								return right - left;
+							});
 							return { content: [{ type: "text", text: JSON.stringify({ total: allRepos.length, accounts: GITHUB_ACCOUNTS, repos: allRepos }) }] };
 						}
 
@@ -1177,6 +1192,12 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 				}
 			}
 		);
+	}
+}
+
+export class OpenAIKnowledgeMCP extends KnowledgeMCP {
+	protected includeWriteTools(): boolean {
+		return false;
 	}
 }
 
@@ -1336,7 +1357,7 @@ const defaultHandler = {
 			}
 		}
 
-		// OAuth discovery endpoint for iOS Claude
+		// OAuth discovery endpoint for MCP clients
 		if (url.pathname === "/.well-known/oauth-authorization-server") {
 			const baseUrl = `${url.protocol}//${url.host}`;
 			return new Response(JSON.stringify({
@@ -1347,7 +1368,10 @@ const defaultHandler = {
 				scopes_supported: ["mcp:read", "mcp:write"],
 				response_types_supported: ["code"],
 				grant_types_supported: ["authorization_code", "refresh_token"],
-				token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic"],
+				token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic", "none"],
+				revocation_endpoint: `${baseUrl}/token`,
+				code_challenge_methods_supported: ["plain", "S256"],
+				client_id_metadata_document_supported: false,
 			}), {
 				headers: { "Content-Type": "application/json" }
 			});
@@ -1362,8 +1386,10 @@ const defaultHandler = {
 					<p>This is Arjun's personal knowledge system with OAuth support.</p>
 					<h2>Endpoints</h2>
 					<ul>
-						<li><code>/sse</code> - MCP over SSE (for Claude)</li>
-						<li><code>/mcp</code> - MCP over HTTP</li>
+						<li><code>/sse</code> - Full MCP over SSE (Claude / full tool surface)</li>
+						<li><code>/mcp</code> - Full MCP over HTTP</li>
+						<li><code>/openai/sse</code> - Read-only MCP over SSE for Codex / ChatGPT</li>
+						<li><code>/openai/mcp</code> - Read-only MCP over HTTP for Codex / ChatGPT</li>
 						<li><code>/authorize</code> - OAuth authorization</li>
 						<li><code>/token</code> - OAuth token endpoint</li>
 						<li><code>/register</code> - Dynamic client registration</li>
@@ -1382,6 +1408,8 @@ const oauthProvider = new OAuthProvider({
 	apiHandlers: {
 		"/mcp": KnowledgeMCP.serve("/mcp", { binding: "MCP_OBJECT" }) as any,
 		"/sse": KnowledgeMCP.serveSSE("/sse", { binding: "MCP_OBJECT" }) as any,
+		"/openai/mcp": OpenAIKnowledgeMCP.serve("/openai/mcp", { binding: "OPENAI_MCP_OBJECT" }) as any,
+		"/openai/sse": OpenAIKnowledgeMCP.serveSSE("/openai/sse", { binding: "OPENAI_MCP_OBJECT" }) as any,
 	},
 	defaultHandler: defaultHandler as any,
 	authorizeEndpoint: "/authorize",

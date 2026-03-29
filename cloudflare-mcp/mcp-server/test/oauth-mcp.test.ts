@@ -380,6 +380,68 @@ describe("OAuth and MCP integration", () => {
 		expect(String(payload.error || "")).toContain("mcp:write");
 	});
 
+	it("serves a read-only OpenAI tool surface on /openai/mcp", async () => {
+		const baseUrl = "https://example.com";
+		const { accessToken } = await authorizeClient(baseUrl);
+
+		const initializeResponse = await dispatch(
+			new IncomingRequest(`${baseUrl}/openai/mcp`, {
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${accessToken}`,
+					accept: "application/json, text/event-stream",
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({
+					jsonrpc: "2.0",
+					id: 1,
+					method: "initialize",
+					params: {
+						protocolVersion: "2024-11-05",
+						capabilities: {},
+						clientInfo: { name: "worker-runtime-test", version: "1.0" },
+					},
+				}),
+			}),
+		);
+		expect(initializeResponse.status).toBe(200);
+		const sessionId = initializeResponse.headers.get("mcp-session-id");
+		expect(sessionId).toBeTruthy();
+
+		const toolsListResponse = await dispatch(
+			new IncomingRequest(`${baseUrl}/openai/mcp`, {
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${accessToken}`,
+					accept: "application/json, text/event-stream",
+					"content-type": "application/json",
+					"mcp-session-id": sessionId!,
+				},
+				body: JSON.stringify({
+					jsonrpc: "2.0",
+					id: 2,
+					method: "tools/list",
+					params: {},
+				}),
+			}),
+		);
+		const toolsEnvelope = await readRpcEnvelope(toolsListResponse);
+		const tools = ((toolsEnvelope.result as Record<string, unknown>).tools as Array<Record<string, unknown>>)
+			.map((tool) => tool.name);
+		expect(tools).toEqual(
+			expect.arrayContaining([
+				"get_index",
+				"get_context",
+				"search",
+				"get_deep",
+				"get_dream_summary",
+				"github",
+			]),
+		);
+		expect(tools).not.toContain("restore_archived");
+		expect(tools).not.toContain("set_context_type");
+	});
+
 	it("grants write scope only when /authorize is operator-authenticated", async () => {
 		const baseUrl = "https://example.com";
 		const { accessToken } = await authorizeClientWithScope(
