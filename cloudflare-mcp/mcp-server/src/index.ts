@@ -1205,6 +1205,21 @@ export class OpenAIKnowledgeMCP extends KnowledgeMCP {
 const defaultHandler = {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const url = new URL(request.url);
+		const baseUrl = `${url.protocol}//${url.host}`;
+
+		if (url.pathname === "/.well-known/oauth-protected-resource" || url.pathname.startsWith("/.well-known/oauth-protected-resource/")) {
+			const suffix = url.pathname === "/.well-known/oauth-protected-resource"
+				? ""
+				: url.pathname.slice("/.well-known/oauth-protected-resource".length);
+			const resource = suffix ? `${baseUrl}${suffix}` : baseUrl;
+			const isOpenAIResource = suffix.startsWith("/openai/");
+			return Response.json({
+				resource,
+				authorization_servers: [baseUrl],
+				scopes_supported: isOpenAIResource ? ["mcp:read"] : ["mcp:read", "mcp:write"],
+				bearer_methods_supported: ["header"],
+			});
+		}
 
 		// Handle OAuth authorization - auto-approve for personal single-user system
 		if (url.pathname === "/authorize") {
@@ -1359,7 +1374,6 @@ const defaultHandler = {
 
 		// OAuth discovery endpoint for MCP clients
 		if (url.pathname === "/.well-known/oauth-authorization-server") {
-			const baseUrl = `${url.protocol}//${url.host}`;
 			return new Response(JSON.stringify({
 				issuer: baseUrl,
 				authorization_endpoint: `${baseUrl}/authorize`,

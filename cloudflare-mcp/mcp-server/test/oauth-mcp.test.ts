@@ -203,6 +203,17 @@ beforeEach(() => {
 });
 
 describe("OAuth and MCP integration", () => {
+	it("serves OAuth protected resource metadata for OpenAI endpoints", async () => {
+		const response = await dispatch(
+			new IncomingRequest("https://example.com/.well-known/oauth-protected-resource/openai/mcp"),
+		);
+		expect(response.status).toBe(200);
+		const payload = (await response.json()) as Record<string, unknown>;
+		expect(payload.resource).toBe("https://example.com/openai/mcp");
+		expect(payload.authorization_servers).toEqual(["https://example.com"]);
+		expect(payload.scopes_supported).toEqual(["mcp:read"]);
+	});
+
 	it("completes OAuth and serves MCP tools through the real transport", async () => {
 		const baseUrl = "https://example.com";
 		const { accessToken } = await authorizeClient(baseUrl);
