@@ -26,6 +26,7 @@ const MAX_OPERATOR_DREAM_ARCHIVE_LIMIT = 10;
 const RATE_LIMIT_WINDOW_SECONDS = 60 * 60;
 const WRITE_TOOL_RATE_LIMIT = 24;
 const OPERATOR_WRITE_RATE_LIMIT = 12;
+const OPENAI_ROUTE_PREFIX = "/openai/";
 const CONTEXT_TYPES = [
 	"professional_identity",
 	"stated_preference",
@@ -42,6 +43,77 @@ type AuthProps = {
 	scope?: string;
 	scopes?: string[];
 };
+
+function getBaseUrl(url: URL): string {
+	return `${url.protocol}//${url.host}`;
+}
+
+function isOpenAIResourcePath(pathname: string): boolean {
+	return pathname.startsWith(OPENAI_ROUTE_PREFIX);
+}
+
+function normalizeOAuthResource(resource: string | null, baseUrl: string): string | null {
+	if (!resource) return resource;
+	const trimmed = resource.trim();
+	if (!trimmed) return resource;
+	if (trimmed === baseUrl) return baseUrl;
+	if (trimmed.startsWith(`${baseUrl}${OPENAI_ROUTE_PREFIX}`)) {
+		return baseUrl;
+	}
+	return resource;
+}
+
+function rewriteAuthorizeRequestResource(request: Request): Request {
+	const url = new URL(request.url);
+	if (url.pathname !== "/authorize") {
+		return request;
+	}
+
+	const normalizedResource = normalizeOAuthResource(url.searchParams.get("resource"), getBaseUrl(url));
+	if (!normalizedResource || normalizedResource === url.searchParams.get("resource")) {
+		return request;
+	}
+
+	url.searchParams.set("resource", normalizedResource);
+	return new Request(url.toString(), request);
+}
+
+async function rewriteTokenRequestResource(request: Request): Promise<Request> {
+	const url = new URL(request.url);
+	if (url.pathname !== "/token") {
+		return request;
+	}
+
+	const contentType = request.headers.get("content-type") || "";
+	if (!contentType.includes("application/x-www-form-urlencoded")) {
+		return request;
+	}
+
+	const bodyText = await request.clone().text();
+	const params = new URLSearchParams(bodyText);
+	const resourceValues = params.getAll("resource");
+	if (resourceValues.length === 0) {
+		return request;
+	}
+
+	const baseUrl = getBaseUrl(url);
+	const normalizedValues = resourceValues.map((value) => normalizeOAuthResource(value, baseUrl) ?? value);
+	const changed = normalizedValues.some((value, index) => value !== resourceValues[index]);
+	if (!changed) {
+		return request;
+	}
+
+	params.delete("resource");
+	for (const value of normalizedValues) {
+		params.append("resource", value);
+	}
+
+	return new Request(request.url, {
+		method: request.method,
+		headers: request.headers,
+		body: params.toString(),
+	});
+}
 
 function createRedisClient(env: Env): Redis {
 	return new Redis({
@@ -1205,14 +1277,18 @@ export class OpenAIKnowledgeMCP extends KnowledgeMCP {
 const defaultHandler = {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const url = new URL(request.url);
-		const baseUrl = `${url.protocol}//${url.host}`;
+		const baseUrl = getBaseUrl(url);
 
 		if (url.pathname === "/.well-known/oauth-protected-resource" || url.pathname.startsWith("/.well-known/oauth-protected-resource/")) {
 			const suffix = url.pathname === "/.well-known/oauth-protected-resource"
 				? ""
 				: url.pathname.slice("/.well-known/oauth-protected-resource".length);
-			const resource = suffix ? `${baseUrl}${suffix}` : baseUrl;
-			const isOpenAIResource = suffix.startsWith("/openai/");
+			const isOpenAIResource = isOpenAIResourcePath(suffix);
+			const resource = isOpenAIResource
+				? baseUrl
+				: suffix
+					? `${baseUrl}${suffix}`
+					: baseUrl;
 			return Response.json({
 				resource,
 				authorization_servers: [baseUrl],
@@ -1225,7 +1301,7 @@ const defaultHandler = {
 		if (url.pathname === "/authorize") {
 			try {
 				// Parse the OAuth authorization request
-				const authRequest = await env.OAUTH_PROVIDER.parseAuthRequest(request);
+				const authRequest = await env.OAUTH_PROVIDER.parseAuthRequest(rewriteAuthorizeRequestResource(request));
 
 				if (!authRequest.clientId) {
 					return new Response("Missing client_id", { status: 400 });
@@ -1433,8 +1509,12 @@ const oauthProvider = new OAuthProvider({
 });
 
 export default {
-	fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-		return oauthProvider.fetch(request, env, ctx);
+	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+		let normalizedRequest = request;
+		if (new URL(request.url).pathname === "/token") {
+			normalizedRequest = await rewriteTokenRequestResource(request);
+		}
+		return oauthProvider.fetch(normalizedRequest, env, ctx);
 	},
 	async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
 		const promise = runDreamCycle(env, {

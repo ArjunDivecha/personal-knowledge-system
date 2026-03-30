@@ -70,7 +70,7 @@ async function authorizeClient(baseUrl: string): Promise<{
 async function authorizeClientWithScope(
 	baseUrl: string,
 	scope: string,
-	options?: { operatorToken?: string },
+	options?: { operatorToken?: string; resource?: string },
 ): Promise<{
 	accessToken: string;
 	clientId: string;
@@ -104,6 +104,9 @@ async function authorizeClientWithScope(
 	authorizeUrl.searchParams.set("redirect_uri", "http://127.0.0.1:9881/callback");
 	authorizeUrl.searchParams.set("scope", scope);
 	authorizeUrl.searchParams.set("state", "worker-runtime-test");
+	if (options?.resource) {
+		authorizeUrl.searchParams.set("resource", options.resource);
+	}
 
 	const authorizeResponse = await dispatch(
 		new IncomingRequest(authorizeUrl.toString(), {
@@ -130,6 +133,7 @@ async function authorizeClientWithScope(
 				redirect_uri: "http://127.0.0.1:9881/callback",
 				client_id: client.client_id,
 				client_secret: client.client_secret,
+				...(options?.resource ? { resource: options.resource } : {}),
 			}),
 		}),
 	);
@@ -209,7 +213,7 @@ describe("OAuth and MCP integration", () => {
 		);
 		expect(response.status).toBe(200);
 		const payload = (await response.json()) as Record<string, unknown>;
-		expect(payload.resource).toBe("https://example.com/openai/mcp");
+		expect(payload.resource).toBe("https://example.com");
 		expect(payload.authorization_servers).toEqual(["https://example.com"]);
 		expect(payload.scopes_supported).toEqual(["mcp:read"]);
 	});
@@ -451,6 +455,39 @@ describe("OAuth and MCP integration", () => {
 		);
 		expect(tools).not.toContain("restore_archived");
 		expect(tools).not.toContain("set_context_type");
+	});
+
+	it("accepts OpenAI resource-scoped OAuth requests on /openai/mcp", async () => {
+		const baseUrl = "https://example.com";
+		const { accessToken } = await authorizeClientWithScope(
+			baseUrl,
+			"mcp:read",
+			{ resource: `${baseUrl}/openai/mcp` },
+		);
+
+		const initializeResponse = await dispatch(
+			new IncomingRequest(`${baseUrl}/openai/mcp`, {
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${accessToken}`,
+					accept: "application/json, text/event-stream",
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({
+					jsonrpc: "2.0",
+					id: 1,
+					method: "initialize",
+					params: {
+						protocolVersion: "2024-11-05",
+						capabilities: {},
+						clientInfo: { name: "worker-runtime-test", version: "1.0" },
+					},
+				}),
+			}),
+		);
+
+		expect(initializeResponse.status).toBe(200);
+		expect(initializeResponse.headers.get("mcp-session-id")).toBeTruthy();
 	});
 
 	it("grants write scope only when /authorize is operator-authenticated", async () => {
