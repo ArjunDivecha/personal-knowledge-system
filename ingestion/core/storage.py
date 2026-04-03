@@ -143,6 +143,69 @@ class StorageClient:
             all_embeddings.extend(batch_embeddings)
         
         return all_embeddings
+
+    def _normalize_knowledge_metadata(self, metadata: Optional[dict]) -> dict:
+        """Apply Phase 1 metadata defaults for ingestion-created knowledge entries."""
+        meta = dict(metadata or {})
+        updated_at = meta.get("updated_at") or meta.get("created_at") or datetime.utcnow().isoformat()
+        created_at = meta.get("created_at") or updated_at
+
+        meta["created_at"] = created_at
+        meta["updated_at"] = updated_at
+        meta["source_conversations"] = list(meta.get("source_conversations") or [])
+        meta["source_messages"] = list(meta.get("source_messages") or [])
+        meta["access_count"] = int(meta.get("access_count", 0) or 0)
+        meta["last_accessed"] = meta.get("last_accessed")
+        meta["schema_version"] = int(meta.get("schema_version", 2) or 2)
+        meta["classification_status"] = meta.get("classification_status") or "pending"
+        meta["context_type"] = meta.get("context_type")
+        meta["mention_count"] = meta.get("mention_count")
+        meta["first_seen"] = meta.get("first_seen")
+        meta["last_seen"] = meta.get("last_seen")
+        meta["auto_inferred"] = meta.get("auto_inferred")
+        meta["source_weights"] = dict(meta.get("source_weights")) if isinstance(meta.get("source_weights"), dict) else {}
+        meta["injection_tier"] = meta.get("injection_tier")
+        meta["salience_score"] = meta.get("salience_score")
+        meta["last_consolidated"] = meta.get("last_consolidated")
+        meta["consolidation_notes"] = list(meta.get("consolidation_notes") or [])
+        meta["archived"] = bool(meta.get("archived", False))
+        return meta
+
+    def _sync_classification_pending(self, entry_id: str, metadata: Optional[dict]):
+        """Keep the migration-time pending-classification set in sync."""
+        if self.redis.exists("migration:backfill_complete") > 0:
+            return
+
+        status = (metadata or {}).get("classification_status")
+        if status == "pending" or status is None:
+            self.redis.sadd("classification:pending", entry_id)
+            return
+
+        self.redis.srem("classification:pending", entry_id)
+
+    def _build_vector_metadata(self, entry: dict) -> dict:
+        """Build Phase 1-safe vector metadata for new ingestion writes."""
+        metadata = entry.get("metadata", {}) or {}
+        vector_metadata = {
+            "type": "knowledge",
+            "domain": entry["domain"],
+            "state": entry.get("state", "active"),
+            "updated_at": metadata.get("updated_at", datetime.utcnow().isoformat()),
+            "classification_status": metadata.get("classification_status", "pending"),
+            "archived": metadata.get("archived", False),
+        }
+
+        source_conversations = metadata.get("source_conversations") or []
+        if source_conversations:
+            vector_metadata["source"] = source_conversations[0] if len(source_conversations) == 1 else ",".join(source_conversations[:3])
+        if metadata.get("context_type"):
+            vector_metadata["context_type"] = metadata["context_type"]
+        if metadata.get("injection_tier") is not None:
+            vector_metadata["injection_tier"] = metadata["injection_tier"]
+        if metadata.get("salience_score") is not None:
+            vector_metadata["salience_score"] = metadata["salience_score"]
+
+        return vector_metadata
     
     # -------------------------------------------------------------------------
     # KNOWLEDGE ENTRY OPERATIONS
@@ -156,6 +219,8 @@ class StorageClient:
             embedding_text: Text to embed (defaults to domain + current_view)
         """
         entry_id = entry["id"]
+        entry = dict(entry)
+        entry["metadata"] = self._normalize_knowledge_metadata(entry.get("metadata"))
         
         # Save to Redis
         key = f"knowledge:{entry_id}"
@@ -168,6 +233,7 @@ class StorageClient:
         state = entry.get("state", "active")
         state_key = f"by_state:{state}"
         self.redis.sadd(state_key, entry_id)
+        self._sync_classification_pending(entry_id, entry.get("metadata"))
         
         # Generate and save embedding
         if embedding_text is None:
@@ -179,12 +245,7 @@ class StorageClient:
             vectors=[{
                 "id": entry_id,
                 "vector": embedding,
-                "metadata": {
-                    "type": "knowledge",
-                    "domain": entry["domain"],
-                    "state": state,
-                    "updated_at": entry.get("metadata", {}).get("updated_at", datetime.utcnow().isoformat()),
-                }
+                "metadata": self._build_vector_metadata(entry)
             }]
         )
     
@@ -198,6 +259,10 @@ class StorageClient:
         """
         if not entries:
             return
+
+        entries = [dict(entry) for entry in entries]
+        for entry in entries:
+            entry["metadata"] = self._normalize_knowledge_metadata(entry.get("metadata"))
         
         # Generate all embeddings first
         if embedding_texts is None:
@@ -219,6 +284,7 @@ class StorageClient:
             
             state = entry.get("state", "active")
             self.redis.sadd(f"by_state:{state}", entry["id"])
+            self._sync_classification_pending(entry["id"], entry.get("metadata"))
         
         # Save to Vector in batches
         vectors = []
@@ -226,12 +292,7 @@ class StorageClient:
             vectors.append({
                 "id": entry["id"],
                 "vector": embedding,
-                "metadata": {
-                    "type": "knowledge",
-                    "domain": entry["domain"],
-                    "state": entry.get("state", "active"),
-                    "updated_at": entry.get("metadata", {}).get("updated_at", datetime.utcnow().isoformat()),
-                }
+                "metadata": self._build_vector_metadata(entry)
             })
         
         # Upstash Vector batch limit
@@ -377,4 +438,3 @@ class StorageClient:
             "total_vectors": vector_info.vector_count,
             "vector_dimensions": vector_info.dimension,
         }
-

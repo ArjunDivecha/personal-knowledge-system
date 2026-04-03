@@ -18,6 +18,7 @@ OUTPUT FILES:
 
 import json
 from typing import Optional, Any
+from datetime import datetime
 
 from upstash_redis import Redis
 
@@ -106,6 +107,7 @@ class RedisClient:
         
         state_key = f"by_state:{entry.state}"
         self.client.sadd(state_key, entry.id)
+        self._sync_classification_pending(entry.id, entry.metadata.classification_status if entry.metadata else None)
     
     def get_all_knowledge_entries(self) -> list[KnowledgeEntry]:
         """Get all knowledge entries."""
@@ -158,6 +160,7 @@ class RedisClient:
         
         status_key = f"by_status:{entry.status}"
         self.client.sadd(status_key, entry.id)
+        self._sync_classification_pending(entry.id, entry.metadata.classification_status if entry.metadata else None)
     
     def get_all_project_entries(self) -> list[ProjectEntry]:
         """Get all project entries."""
@@ -257,5 +260,20 @@ class RedisClient:
             
             if "metadata" in data and data["metadata"]:
                 data["metadata"]["access_count"] = data["metadata"].get("access_count", 0) + 1
+                data["metadata"]["last_accessed"] = datetime.utcnow().isoformat()
                 self.client.set(key, json.dumps(data))
 
+    def _sync_classification_pending(self, entry_id: str, classification_status: Optional[str]):
+        """Keep the migration-time pending-classification set in sync."""
+        if self.client.exists("migration:backfill_complete") > 0:
+            return
+
+        if classification_status == "pending" or classification_status is None:
+            self.client.sadd("classification:pending", entry_id)
+            return
+
+        self.client.srem("classification:pending", entry_id)
+
+    def get_set_cardinality(self, key: str) -> int:
+        """Return the cardinality of a Redis set."""
+        return int(self.client.scard(key) or 0)

@@ -39,9 +39,11 @@ Thumbs.db
 
 # Archives (potentially large)
 archive/
+distillation/backups/
 
 # Logs
 *.log
+scripts/reports/
 
 # Environment files with secrets
 **/.env

@@ -19,5 +19,5 @@
 			"node"
 		]
 	},
-	"include": ["worker-configuration.d.ts", "src/**/*.ts"]
+	"include": ["worker-configuration.d.ts", "src/**/*.ts", "src/**/*.d.ts"]
 }

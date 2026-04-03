@@ -1,0 +1,47 @@
+name: Worker Runtime Tests
+
+on:
+  push:
+    paths:
+      - ".github/workflows/worker-runtime-tests.yml"
+      - "Makefile"
+      - "README.md"
+      - "docs/testing-matrix.md"
+      - "cloudflare-mcp/mcp-server/**"
+  pull_request:
+    paths:
+      - ".github/workflows/worker-runtime-tests.yml"
+      - "Makefile"
+      - "README.md"
+      - "docs/testing-matrix.md"
+      - "cloudflare-mcp/mcp-server/**"
+
+jobs:
+  worker-runtime:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloudflare-mcp/mcp-server
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: cloudflare-mcp/mcp-server/package-lock.json
+
+      - name: Install Worker dependencies
+        run: npm ci
+
+      - name: Generate Worker types
+        run: npm run cf-typegen
+
+      - name: Type-check Worker
+        run: npm run type-check
+
+      - name: Run Worker runtime tests
+        run: npm run test:worker
