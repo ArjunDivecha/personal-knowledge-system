@@ -131,4 +131,79 @@ describe("Worker HTTP routes", () => {
 		expect(html).toContain("/mcp");
 		expect(html).toContain("/health");
 	});
+
+	it("handles unauthenticated HEAD probes on MCP routes", async () => {
+		const response = await dispatch(
+			new IncomingRequest("https://example.com/mcp", {
+				method: "HEAD",
+			}),
+		);
+
+		expect(response.status).toBe(401);
+		expect(response.headers.get("www-authenticate")).toContain('resource_metadata="https://example.com/mcp/.well-known/oauth-protected-resource"');
+		expect(response.headers.get("access-control-allow-methods")).toContain("HEAD");
+		expect(response.headers.get("access-control-allow-origin")).toBe("*");
+	});
+
+	it("serves CORS preflight for MCP routes", async () => {
+		const response = await dispatch(
+			new IncomingRequest("https://example.com/mcp", {
+				method: "OPTIONS",
+				headers: {
+					origin: "https://claude.ai",
+					"access-control-request-method": "POST",
+				},
+			}),
+		);
+
+		expect(response.status).toBe(204);
+		expect(response.headers.get("access-control-allow-origin")).toBe("https://claude.ai");
+		expect(response.headers.get("access-control-allow-methods")).toContain("POST");
+		expect(response.headers.get("access-control-allow-headers")).toContain("Authorization");
+	});
+
+	it("serves protected resource metadata on the MCP-relative path", async () => {
+		const response = await dispatch(
+			new IncomingRequest("https://example.com/mcp/.well-known/oauth-protected-resource"),
+		);
+
+		expect(response.status).toBe(200);
+		const payload = (await response.json()) as Record<string, unknown>;
+		expect(payload).toEqual(
+			expect.objectContaining({
+				resource: "https://example.com/mcp",
+				authorization_servers: ["https://example.com"],
+				scopes_supported: ["mcp:read", "mcp:write"],
+			}),
+		);
+	});
+
+	it("serves OAuth authorization metadata on Claude-compatible aliases", async () => {
+		const openIdResponse = await dispatch(
+			new IncomingRequest("https://example.com/.well-known/openid-configuration"),
+		);
+		expect(openIdResponse.status).toBe(200);
+		expect(openIdResponse.headers.get("content-type")).toContain("application/json");
+		const openIdPayload = (await openIdResponse.json()) as Record<string, unknown>;
+		expect(openIdPayload).toEqual(
+			expect.objectContaining({
+				issuer: "https://example.com",
+				authorization_endpoint: "https://example.com/authorize",
+				token_endpoint: "https://example.com/token",
+				registration_endpoint: "https://example.com/register",
+			}),
+		);
+
+		const relativeResponse = await dispatch(
+			new IncomingRequest("https://example.com/mcp/.well-known/oauth-authorization-server"),
+		);
+		expect(relativeResponse.status).toBe(200);
+		const relativePayload = (await relativeResponse.json()) as Record<string, unknown>;
+		expect(relativePayload).toEqual(
+			expect.objectContaining({
+				issuer: "https://example.com",
+				authorization_endpoint: "https://example.com/authorize",
+			}),
+		);
+	});
 });

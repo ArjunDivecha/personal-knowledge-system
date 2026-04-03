@@ -1,5 +1,6 @@
 import { Redis } from "@upstash/redis/cloudflare";
 import { Index } from "@upstash/vector";
+import OpenAI from "openai";
 import {
 	computeSalience,
 	defaultInjectionTier,
@@ -11,6 +12,8 @@ import { formatConsolidationNote } from "./consolidation";
 type EntryType = "knowledge" | "project";
 type DreamStatus = "completed" | "skipped_no_backfill" | "skipped_locked" | "failed";
 type DreamBucket = "stable" | "active" | "weak" | "decay_candidate";
+type KnowledgeEntryState = "active" | "contested" | "stale";
+type KnowledgeEntryConfidence = "high" | "medium" | "low";
 
 interface RunDreamOptions {
 	dryRun: boolean;
@@ -61,6 +64,79 @@ interface ArchivedSnapshot {
 	snapshot: Record<string, unknown>;
 }
 
+interface UpdateEntryParams {
+	entryId: string;
+	expectedRevision: number;
+	mutationId: string;
+	reason: string;
+	actorId: string;
+	currentView?: string;
+	confidence?: KnowledgeEntryConfidence;
+	state?: KnowledgeEntryState;
+	contextType?: string;
+}
+
+interface CreateEntryParams {
+	mutationId: string;
+	reason: string;
+	actorId: string;
+	domain: string;
+	currentView: string;
+	confidence?: KnowledgeEntryConfidence;
+	state?: KnowledgeEntryState;
+	contextType?: string;
+	keyInsights?: string[];
+	sourceConversationId?: string;
+	sourceMessageIds?: string[];
+	evidenceSnippet?: string;
+}
+
+interface ArchiveEntryParams {
+	entryId: string;
+	expectedRevision: number;
+	mutationId: string;
+	reason: string;
+	actorId: string;
+}
+
+interface RestoreEntryParams {
+	entryId: string;
+	expectedRevision: number;
+	mutationId: string;
+	reason: string;
+	actorId: string;
+	restoreOverrides?: {
+		currentView?: string;
+		confidence?: KnowledgeEntryConfidence;
+		state?: KnowledgeEntryState;
+		contextType?: string;
+	};
+}
+
+interface AddInsightParams {
+	entryId: string;
+	expectedRevision: number;
+	mutationId: string;
+	reason: string;
+	actorId: string;
+	insight: string;
+	sourceConversationId?: string;
+	sourceMessageIds?: string[];
+	evidenceSnippet?: string;
+}
+
+interface ConsolidateEntriesParams {
+	keepId: string;
+	archiveIds: string[];
+	expectedRevisions: Record<string, number>;
+	mutationId: string;
+	reason: string;
+	actorId: string;
+	updatedView?: string;
+	confidence?: KnowledgeEntryConfidence;
+	contextType?: string;
+}
+
 const DREAM_LOCK_KEY = "dream:lock";
 const DREAM_LAST_RUN_KEY = "dream:last_run";
 const DREAM_LAST_ATTEMPT_KEY = "dream:last_attempt";
@@ -72,6 +148,10 @@ const DREAM_SCAN_COUNT = 200;
 const INDEX_REBUILD_LOCK_KEY = "index:rebuild:lock";
 const INDEX_REBUILD_LOCK_TTL_SECONDS = 5 * 60;
 const THIN_INDEX_STAGING_PREFIX = "index:staging:";
+const MUTATION_LOG_KEY = "mutation_log";
+const MUTATION_LOG_LIMIT = 1000;
+const MUTATION_RESULT_PREFIX = "mutation_result:";
+const MUTATION_RESULT_TTL_SECONDS = 72 * 60 * 60;
 const THIN_INDEX_TOPIC_LIMIT = 100;
 const THIN_INDEX_PROJECT_LIMIT = 50;
 const DUPLICATE_FINGERPRINT_MIN_LENGTH = 6;
@@ -176,6 +256,22 @@ function getArchivedLatestKey(entryType: EntryType, entryId: string): string {
 	return `${ARCHIVED_PREFIX}:${entryType}:${entryId}:latest`;
 }
 
+function getMutationResultKey(mutationId: string): string {
+	return `${MUTATION_RESULT_PREFIX}${mutationId}`;
+}
+
+async function generateEntryId(redis: Redis, entryType: EntryType): Promise<string> {
+	const prefix = entryType === "knowledge" ? "ke" : "pe";
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		const id = `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+		const existing = await redis.get(getEntryKey(entryType, id));
+		if (!existing) {
+			return id;
+		}
+	}
+	throw new Error(`unable_to_allocate_${prefix}_id`);
+}
+
 function getEntryLabel(entry: Record<string, unknown>): string {
 	if (typeof entry.domain === "string" && entry.domain.length > 0) return entry.domain;
 	if (typeof entry.name === "string" && entry.name.length > 0) return entry.name;
@@ -211,6 +307,7 @@ function normalizeEntry(raw: unknown, entryType: EntryType): Record<string, unkn
 		last_consolidated:
 			typeof metadata.last_consolidated === "string" ? metadata.last_consolidated : null,
 		consolidation_notes: toStringArray(metadata.consolidation_notes),
+		revision: toOptionalInteger(metadata.revision) ?? 0,
 	};
 
 	return {
@@ -592,6 +689,31 @@ function ensureRelatedKnowledgeLink(
 		});
 	}
 	entry.related_knowledge = relatedKnowledge;
+}
+
+function removeRelatedKnowledgeLinks(
+	entry: Record<string, unknown>,
+	relatedIds: string[],
+	relationships?: string[],
+): void {
+	const relatedIdSet = new Set(relatedIds);
+	const relationshipSet = relationships ? new Set(relationships) : null;
+	const existingRelatedKnowledge = Array.isArray(entry.related_knowledge)
+		? entry.related_knowledge
+		: [];
+	const relatedKnowledge = existingRelatedKnowledge.filter(
+		(item): item is Record<string, unknown> =>
+			Boolean(item) && typeof item === "object" && !Array.isArray(item),
+	);
+	entry.related_knowledge = relatedKnowledge.filter((item) => {
+		if (!relatedIdSet.has(String(item.knowledge_id ?? ""))) {
+			return true;
+		}
+		if (!relationshipSet) {
+			return false;
+		}
+		return !relationshipSet.has(String(item.relationship ?? ""));
+	});
 }
 
 function sortTimestamp(value: string | null): number {
@@ -982,14 +1104,328 @@ async function persistEntry(
 	redis: Redis,
 	vector: Index,
 	entry: LoadedEntry,
+	options?: { embedding?: number[]; skipVector?: boolean },
 ): Promise<void> {
 	entry.metadata.salience_score = computeSalience(entry.entry);
 	entry.entry.metadata = entry.metadata;
 	await redis.set(getEntryKey(entry.type, entry.id), JSON.stringify(entry.entry));
+	if (options?.skipVector) {
+		return;
+	}
+	if (options?.embedding) {
+		await vector.upsert({
+			id: entry.id,
+			vector: options.embedding,
+			metadata: setVectorMetadataBase(entry),
+		});
+		return;
+	}
 	await vector.update({
 		id: entry.id,
 		metadata: setVectorMetadataBase(entry),
 		metadataUpdateMode: "PATCH",
+	});
+}
+
+async function deleteVectorEntry(vector: Index, entryId: string): Promise<void> {
+	const deletableVector = vector as Index & {
+		delete?: (ids: string | string[]) => Promise<unknown>;
+	};
+	if (typeof deletableVector.delete === "function") {
+		await deletableVector.delete(entryId);
+	}
+}
+
+async function getEmbedding(env: Env, text: string): Promise<number[]> {
+	if (!env.OPENAI_API_KEY) {
+		throw new Error("OPENAI_API_KEY not configured");
+	}
+
+	const openai = new OpenAI({ apiKey: env.OPENAI_API_KEY });
+	const response = await openai.embeddings.create({
+		model: "text-embedding-3-large",
+		input: text,
+		dimensions: 3072,
+	});
+	return response.data[0].embedding;
+}
+
+async function appendMutationLog(
+	redis: Redis,
+	event: Record<string, unknown>,
+): Promise<void> {
+	await redis.lpush(MUTATION_LOG_KEY, JSON.stringify(event));
+	await redis.ltrim(MUTATION_LOG_KEY, 0, MUTATION_LOG_LIMIT - 1);
+}
+
+function appendEvolutionNote(
+	entry: Record<string, unknown>,
+	timestamp: string,
+	actorId: string,
+	reason: string,
+): void {
+	const currentEvolution = Array.isArray(entry.evolution) ? entry.evolution : [];
+	currentEvolution.push({
+		date: timestamp,
+		actor: actorId,
+		change_summary: reason,
+	});
+	entry.evolution = currentEvolution.slice(-50);
+}
+
+function buildThinIndexTopicEntry(entry: LoadedEntry, generatedAt: string): Record<string, unknown> {
+	return {
+		id: entry.id,
+		domain:
+			typeof entry.entry.domain === "string" && entry.entry.domain.length > 0
+				? entry.entry.domain
+				: entry.label,
+		current_view_summary: truncate(entry.entry.current_view, 80),
+		state: getTopicState(entry.entry),
+		confidence: getConfidence(entry.entry),
+		last_updated: entry.updatedAt ?? generatedAt,
+		top_repo: getRepoName(getRelatedRepos(entry.entry)[0]),
+		context_type: entry.contextType,
+		injection_tier: entry.injectionTier,
+		salience_score: entry.salienceScore,
+		mention_count: entry.mentionCount,
+		archived: Boolean(entry.metadata.archived),
+	};
+}
+
+function buildThinIndexProjectEntry(entry: LoadedEntry, generatedAt: string): Record<string, unknown> {
+	const primaryRepo =
+		getRelatedRepos(entry.entry).find((repo) => repo.is_primary === true) ??
+		getRelatedRepos(entry.entry)[0];
+	return {
+		id: entry.id,
+		name:
+			typeof entry.entry.name === "string" && entry.entry.name.length > 0
+				? entry.entry.name
+				: entry.label,
+		status:
+			typeof entry.entry.status === "string" && entry.entry.status.length > 0
+				? entry.entry.status
+				: "active",
+		goal_summary: truncate(entry.entry.goal, 80),
+		current_phase:
+			typeof entry.entry.current_phase === "string" ? entry.entry.current_phase : "",
+		blocked_on:
+			typeof entry.entry.blocked_on === "string" ? entry.entry.blocked_on : null,
+		last_touched: entry.updatedAt ?? generatedAt,
+		primary_repo: getRepoName(primaryRepo),
+		context_type: entry.contextType,
+		injection_tier: entry.injectionTier,
+		salience_score: entry.salienceScore,
+		mention_count: entry.mentionCount,
+		archived: Boolean(entry.metadata.archived),
+	};
+}
+
+function buildEntryEmbeddingText(entry: LoadedEntry): string {
+	if (entry.type === "knowledge") {
+		const insightTexts = Array.isArray(entry.entry.key_insights)
+			? entry.entry.key_insights
+				.filter(
+					(item): item is Record<string, unknown> =>
+						Boolean(item) && typeof item === "object" && !Array.isArray(item),
+				)
+				.map((item) => (typeof item.insight === "string" ? item.insight.trim() : ""))
+				.filter((item) => item.length > 0)
+				.slice(0, 3)
+			: [];
+		return [
+			typeof entry.entry.domain === "string" ? entry.entry.domain : entry.label,
+			typeof entry.entry.current_view === "string" ? entry.entry.current_view : "",
+			...insightTexts,
+		]
+			.map((part) => part.trim())
+			.filter((part) => part.length > 0)
+			.join(" ");
+	}
+
+	return [
+		typeof entry.entry.name === "string" ? entry.entry.name : entry.label,
+		typeof entry.entry.goal === "string" ? entry.entry.goal : "",
+		typeof entry.entry.current_phase === "string" ? entry.entry.current_phase : "",
+	]
+		.map((part) => part.trim())
+		.filter((part) => part.length > 0)
+		.join(" ");
+}
+
+function buildLoadedEntry(
+	entryId: string,
+	entryType: EntryType,
+	entry: Record<string, unknown>,
+): LoadedEntry {
+	const metadata = (entry.metadata as Record<string, unknown> | undefined) ?? {};
+	const loadedEntry: LoadedEntry = {
+		id: entryId,
+		type: entryType,
+		entry,
+		metadata,
+		label: getEntryLabel(entry),
+		updatedAt: getEntryUpdatedAt(entry, metadata),
+		contextType:
+			typeof metadata.context_type === "string" ? metadata.context_type : "task_query",
+		injectionTier: resolveStoredInjectionTier(metadata),
+		mentionCount: Math.max(1, toOptionalInteger(metadata.mention_count) ?? 1),
+		accessCount: Math.max(0, toOptionalInteger(metadata.access_count) ?? 0),
+		sourceConversationCount: toStringArray(metadata.source_conversations).length,
+		salienceScore: computeSalience(entry),
+	};
+	loadedEntry.metadata.salience_score = loadedEntry.salienceScore;
+	return loadedEntry;
+}
+
+async function loadLoadedEntry(
+	redis: Redis,
+	entryType: EntryType,
+	entryId: string,
+): Promise<LoadedEntry | null> {
+	const entry = normalizeEntry(await redis.get(getEntryKey(entryType, entryId)), entryType);
+	if (!entry) {
+		return null;
+	}
+	const [accessCountRaw, lastAccessedRaw] = await Promise.all([
+		redis.get(getEntryAccessKey(entryId)),
+		redis.get(getEntryLastAccessedKey(entryId)),
+	]);
+	overlayAccessSignals(entry, accessCountRaw, lastAccessedRaw);
+	return buildLoadedEntry(entryId, entryType, entry);
+}
+
+async function patchThinIndexEntry(
+	redis: Redis,
+	entry: LoadedEntry,
+	generatedAt: string,
+): Promise<void> {
+	const rawIndex = parseStoredObject(await redis.get("index:current"));
+	if (!rawIndex) {
+		return;
+	}
+
+	if (entry.type === "knowledge") {
+		const existingTopics = Array.isArray(rawIndex.topics)
+			? rawIndex.topics.filter(
+				(topic): topic is Record<string, unknown> =>
+					Boolean(topic) && typeof topic === "object" && !Array.isArray(topic),
+			)
+			: [];
+		const thinEntry = buildThinIndexTopicEntry(entry, generatedAt);
+		let found = false;
+		const nextTopics = existingTopics.map((topic) => {
+			if (topic.id !== entry.id) {
+				return topic;
+			}
+			found = true;
+			return {
+				...topic,
+				...thinEntry,
+			};
+		});
+		if (!found && !thinEntry.archived) {
+			nextTopics.push(thinEntry);
+		}
+		nextTopics.sort((left, right) => {
+			const tierDiff =
+				(Number(left.injection_tier ?? 3) - Number(right.injection_tier ?? 3));
+			if (tierDiff !== 0) return tierDiff;
+			const salienceDiff =
+				Number(right.salience_score ?? 0) - Number(left.salience_score ?? 0);
+			if (salienceDiff !== 0) return salienceDiff;
+			return sortTimestamp(
+				typeof right.last_updated === "string" ? right.last_updated : null,
+			) - sortTimestamp(
+				typeof left.last_updated === "string" ? left.last_updated : null,
+			);
+		});
+		rawIndex.topics = nextTopics.slice(0, THIN_INDEX_TOPIC_LIMIT);
+	} else {
+		const existingProjects = Array.isArray(rawIndex.projects)
+			? rawIndex.projects.filter(
+				(project): project is Record<string, unknown> =>
+					Boolean(project) && typeof project === "object" && !Array.isArray(project),
+			)
+			: [];
+		const thinEntry = buildThinIndexProjectEntry(entry, generatedAt);
+		let found = false;
+		const nextProjects = existingProjects.map((project) => {
+			if (project.id !== entry.id) {
+				return project;
+			}
+			found = true;
+			return {
+				...project,
+				...thinEntry,
+			};
+		});
+		if (!found && !thinEntry.archived) {
+			nextProjects.push(thinEntry);
+		}
+		nextProjects.sort((left, right) => {
+			const tierDiff =
+				(Number(left.injection_tier ?? 3) - Number(right.injection_tier ?? 3));
+			if (tierDiff !== 0) return tierDiff;
+			const salienceDiff =
+				Number(right.salience_score ?? 0) - Number(left.salience_score ?? 0);
+			if (salienceDiff !== 0) return salienceDiff;
+			return sortTimestamp(
+				typeof right.last_touched === "string" ? right.last_touched : null,
+			) - sortTimestamp(
+				typeof left.last_touched === "string" ? left.last_touched : null,
+			);
+		});
+		rawIndex.projects = nextProjects.slice(0, THIN_INDEX_PROJECT_LIMIT);
+	}
+
+	rawIndex.generated_at = generatedAt;
+	rawIndex.token_count = 0;
+	rawIndex.token_count = Math.round(JSON.stringify(rawIndex).length / 4);
+	await redis.set("index:current", JSON.stringify(rawIndex));
+}
+
+async function incrementThinIndexCountsForCreate(
+	redis: Redis,
+	entry: LoadedEntry,
+	generatedAt: string,
+): Promise<void> {
+	const rawIndex = parseStoredObject(await redis.get("index:current"));
+	if (!rawIndex) {
+		return;
+	}
+
+	if (entry.type === "knowledge") {
+		rawIndex.total_topic_count = Math.max(
+			0,
+			toOptionalInteger(rawIndex.total_topic_count) ?? 0,
+		) + 1;
+	} else {
+		rawIndex.total_project_count = Math.max(
+			0,
+			toOptionalInteger(rawIndex.total_project_count) ?? 0,
+		) + 1;
+	}
+
+	const tierKey = `tier_${entry.injectionTier}_count`;
+	rawIndex[tierKey] = Math.max(
+		0,
+		toOptionalInteger(rawIndex[tierKey]) ?? 0,
+	) + 1;
+
+	rawIndex.generated_at = generatedAt;
+	rawIndex.token_count = Math.round(JSON.stringify(rawIndex).length / 4);
+	await redis.set("index:current", JSON.stringify(rawIndex));
+}
+
+async function storeMutationResult(
+	redis: Redis,
+	mutationId: string,
+	result: Record<string, unknown>,
+): Promise<void> {
+	await redis.set(getMutationResultKey(mutationId), JSON.stringify(result), {
+		ex: MUTATION_RESULT_TTL_SECONDS,
 	});
 }
 
@@ -1338,7 +1774,8 @@ async function archiveEntry(
 		salienceScore: computeSalience(latestEntry),
 	};
 	archivedEntry.metadata.salience_score = archivedEntry.salienceScore;
-	await persistEntry(redis, vector, archivedEntry);
+	await persistEntry(redis, vector, archivedEntry, { skipVector: true });
+	await deleteVectorEntry(vector, entry.id);
 
 	return {
 		id: entry.id,
@@ -1419,7 +1856,8 @@ export async function restoreArchivedEntry(
 	}
 
 	try {
-		await persistEntry(redis, vector, restoredLoadedEntry);
+		const embedding = await getEmbedding(env, buildEntryEmbeddingText(restoredLoadedEntry));
+		await persistEntry(redis, vector, restoredLoadedEntry, { embedding });
 		await rebuildThinIndexWithHeldLock(redis, rebuildRunId);
 	} finally {
 		await releaseIndexRebuildLock(redis, rebuildRunId);
@@ -1433,6 +1871,873 @@ export async function restoreArchivedEntry(
 		snapshot_key: latestPointer.snapshot_key,
 		restored_at: timestamp,
 	};
+}
+
+export async function archiveExistingEntry(
+	env: Env,
+	params: ArchiveEntryParams,
+): Promise<Record<string, unknown>> {
+	const redis = createRedisClient(env);
+	const vector = createVectorClient(env);
+	const storedMutation = parseStoredObject(await redis.get(getMutationResultKey(params.mutationId)));
+	if (storedMutation) {
+		return storedMutation;
+	}
+
+	const entryType: EntryType = params.entryId.startsWith("pe_") ? "project" : "knowledge";
+	const rawEntry = await redis.get(getEntryKey(entryType, params.entryId));
+	const entry = normalizeEntry(rawEntry, entryType);
+	if (!entry) {
+		const result = {
+			ok: false,
+			error: "entry_not_found",
+			id: params.entryId,
+		};
+		await storeMutationResult(redis, params.mutationId, result);
+		return result;
+	}
+
+	const metadata = (entry.metadata as Record<string, unknown> | undefined) ?? {};
+	if (metadata.archived === true) {
+		const result = {
+			ok: false,
+			error: "entry_archived",
+			id: params.entryId,
+		};
+		await storeMutationResult(redis, params.mutationId, result);
+		return result;
+	}
+
+	const currentRevision = toOptionalInteger(metadata.revision) ?? 0;
+	if (params.expectedRevision !== currentRevision) {
+		const result = {
+			ok: false,
+			error: "conflict",
+			id: params.entryId,
+			expected_revision: params.expectedRevision,
+			actual_revision: currentRevision,
+			current_summary: {
+				updated_at: getEntryUpdatedAt(entry, metadata),
+				archived: false,
+			},
+		};
+		await storeMutationResult(redis, params.mutationId, result);
+		return result;
+	}
+
+	const timestamp = new Date().toISOString();
+	const runId = `operator_archive_${params.entryId}_${timestamp.replace(/[:.]/g, "-")}`;
+	const [accessCountRaw, lastAccessedRaw] = await Promise.all([
+		redis.get(getEntryAccessKey(params.entryId)),
+		redis.get(getEntryLastAccessedKey(params.entryId)),
+	]);
+	overlayAccessSignals(entry, accessCountRaw, lastAccessedRaw);
+
+	const archiveSnapshotKey = getArchivedSnapshotKey(entryType, params.entryId, runId);
+	const archivedSnapshot: ArchivedSnapshot = {
+		schema_version: 1,
+		entry_id: params.entryId,
+		entry_type: entryType,
+		run_id: runId,
+		archived_at: timestamp,
+		archive_reason: params.reason,
+		snapshot: JSON.parse(JSON.stringify(entry)),
+	};
+	await redis.set(archiveSnapshotKey, JSON.stringify(archivedSnapshot));
+	await redis.set(
+		getArchivedLatestKey(entryType, params.entryId),
+		JSON.stringify({
+			entry_id: params.entryId,
+			entry_type: entryType,
+			run_id: runId,
+			archived_at: timestamp,
+			snapshot_key: archiveSnapshotKey,
+		}),
+	);
+
+	const previousState =
+		entryType === "knowledge" && typeof entry.state === "string" ? entry.state : null;
+	metadata.archived = true;
+	metadata.archived_at = timestamp;
+	metadata.archived_reason = params.reason;
+	metadata.archived_run_id = runId;
+	metadata.archive_snapshot_key = archiveSnapshotKey;
+	metadata.updated_at = timestamp;
+	metadata.updated_by = {
+		actor_id: params.actorId,
+		tool: "archive_entry",
+	};
+	metadata.revision = currentRevision + 1;
+	metadata.last_consolidated = timestamp;
+	appendConsolidationNote(
+		metadata,
+		formatConsolidationNote({
+			timestamp,
+			source: "operator",
+			action: "archive_entry",
+			detail: params.reason,
+		}),
+	);
+	entry.metadata = metadata;
+
+	const loadedEntry = buildLoadedEntry(params.entryId, entryType, entry);
+
+	if (entryType === "knowledge" && previousState) {
+		await redis.srem(`by_state:${previousState}`, params.entryId);
+		await redis.sadd("by_state:archived", params.entryId);
+	}
+
+	await persistEntry(redis, vector, loadedEntry, { skipVector: true });
+	await deleteVectorEntry(vector, params.entryId);
+	await patchThinIndexEntry(redis, loadedEntry, timestamp);
+
+	const result = {
+		ok: true,
+		id: params.entryId,
+		type: entryType,
+		mutation_id: params.mutationId,
+		revision: metadata.revision,
+		archived: true,
+		archived_at: timestamp,
+		snapshot_key: archiveSnapshotKey,
+		side_effects: {
+			vector: "deleted",
+		},
+		entry,
+	};
+	await appendMutationLog(redis, {
+		ts: timestamp,
+		mutation_id: params.mutationId,
+		tool: "archive_entry",
+		client: "mcp",
+		actor_id: params.actorId,
+		request_id: params.mutationId,
+		ids_affected: [params.entryId],
+		before_revisions: { [params.entryId]: currentRevision },
+		after_revisions: { [params.entryId]: metadata.revision as number },
+		reason: params.reason,
+	});
+	await storeMutationResult(redis, params.mutationId, result);
+	return result;
+}
+
+export async function restoreEntry(
+	env: Env,
+	params: RestoreEntryParams,
+): Promise<Record<string, unknown>> {
+	const redis = createRedisClient(env);
+	const vector = createVectorClient(env);
+	const storedMutation = parseStoredObject(await redis.get(getMutationResultKey(params.mutationId)));
+	if (storedMutation) {
+		return storedMutation;
+	}
+
+	const entryType: EntryType = params.entryId.startsWith("pe_") ? "project" : "knowledge";
+	const rawEntry = await redis.get(getEntryKey(entryType, params.entryId));
+	const currentEntry = normalizeEntry(rawEntry, entryType);
+	if (!currentEntry) {
+		const result = {
+			ok: false,
+			error: "entry_not_found",
+			id: params.entryId,
+		};
+		await storeMutationResult(redis, params.mutationId, result);
+		return result;
+	}
+
+	const currentMetadata = (currentEntry.metadata as Record<string, unknown> | undefined) ?? {};
+	if (currentMetadata.archived !== true) {
+		const result = {
+			ok: false,
+			error: "entry_not_archived",
+			id: params.entryId,
+		};
+		await storeMutationResult(redis, params.mutationId, result);
+		return result;
+	}
+
+	const currentRevision = toOptionalInteger(currentMetadata.revision) ?? 0;
+	if (params.expectedRevision !== currentRevision) {
+		const result = {
+			ok: false,
+			error: "conflict",
+			id: params.entryId,
+			expected_revision: params.expectedRevision,
+			actual_revision: currentRevision,
+			current_summary: {
+				updated_at: getEntryUpdatedAt(currentEntry, currentMetadata),
+				archived: true,
+			},
+		};
+		await storeMutationResult(redis, params.mutationId, result);
+		return result;
+	}
+
+	const latestPointer = parseStoredObject(await redis.get(getArchivedLatestKey(entryType, params.entryId)));
+	if (!latestPointer?.snapshot_key || typeof latestPointer.snapshot_key !== "string") {
+		const result = {
+			ok: false,
+			error: "archive_snapshot_missing",
+			id: params.entryId,
+		};
+		await storeMutationResult(redis, params.mutationId, result);
+		return result;
+	}
+
+	const archivedSnapshot = parseStoredObject(await redis.get(latestPointer.snapshot_key));
+	const snapshotEntry = normalizeEntry(archivedSnapshot?.snapshot, entryType);
+	if (!snapshotEntry) {
+		const result = {
+			ok: false,
+			error: "archive_snapshot_missing",
+			id: params.entryId,
+		};
+		await storeMutationResult(redis, params.mutationId, result);
+		return result;
+	}
+
+	const timestamp = new Date().toISOString();
+	const restoredMetadata = (snapshotEntry.metadata as Record<string, unknown> | undefined) ?? {};
+	restoredMetadata.archived = false;
+	restoredMetadata.updated_at = timestamp;
+	restoredMetadata.updated_by = {
+		actor_id: params.actorId,
+		tool: "restore_entry",
+	};
+	restoredMetadata.revision = currentRevision + 1;
+	restoredMetadata.restored_at = timestamp;
+	restoredMetadata.restored_reason = params.reason;
+	restoredMetadata.last_consolidated = timestamp;
+	delete restoredMetadata.archived_at;
+	delete restoredMetadata.archived_reason;
+	delete restoredMetadata.archived_run_id;
+	delete restoredMetadata.archive_snapshot_key;
+	if (params.restoreOverrides?.currentView !== undefined && entryType === "knowledge") {
+		snapshotEntry.current_view = params.restoreOverrides.currentView;
+	}
+	if (params.restoreOverrides?.confidence !== undefined && entryType === "knowledge") {
+		snapshotEntry.confidence = params.restoreOverrides.confidence;
+	}
+	if (params.restoreOverrides?.state !== undefined && entryType === "knowledge") {
+		snapshotEntry.state = params.restoreOverrides.state;
+	}
+	if (params.restoreOverrides?.contextType !== undefined) {
+		restoredMetadata.context_type = params.restoreOverrides.contextType;
+		restoredMetadata.classification_status = "manual_override";
+		restoredMetadata.auto_inferred = false;
+		restoredMetadata.injection_tier = defaultInjectionTier(params.restoreOverrides.contextType);
+	}
+	appendConsolidationNote(
+		restoredMetadata,
+		formatConsolidationNote({
+			timestamp,
+			source: "operator",
+			action: "restore_entry",
+			detail: params.reason,
+		}),
+	);
+	snapshotEntry.metadata = restoredMetadata;
+
+	const restoredLoadedEntry = buildLoadedEntry(params.entryId, entryType, snapshotEntry);
+
+	if (entryType === "knowledge") {
+		await redis.srem("by_state:archived", params.entryId);
+		const restoredState =
+			typeof snapshotEntry.state === "string" ? snapshotEntry.state : "active";
+		await redis.sadd(`by_state:${restoredState}`, params.entryId);
+	}
+
+	const embedding = await getEmbedding(env, buildEntryEmbeddingText(restoredLoadedEntry));
+	await persistEntry(redis, vector, restoredLoadedEntry, { embedding });
+	await patchThinIndexEntry(redis, restoredLoadedEntry, timestamp);
+
+	const result = {
+		ok: true,
+		id: params.entryId,
+		type: entryType,
+		mutation_id: params.mutationId,
+		revision: restoredMetadata.revision,
+		archived: false,
+		restored_at: timestamp,
+		side_effects: {
+			vector: "recreated",
+		},
+		entry: snapshotEntry,
+	};
+	await appendMutationLog(redis, {
+		ts: timestamp,
+		mutation_id: params.mutationId,
+		tool: "restore_entry",
+		client: "mcp",
+		actor_id: params.actorId,
+		request_id: params.mutationId,
+		ids_affected: [params.entryId],
+		before_revisions: { [params.entryId]: currentRevision },
+		after_revisions: { [params.entryId]: restoredMetadata.revision as number },
+		reason: params.reason,
+	});
+	await storeMutationResult(redis, params.mutationId, result);
+	return result;
+}
+
+export async function consolidateEntries(
+	env: Env,
+	params: ConsolidateEntriesParams,
+): Promise<Record<string, unknown>> {
+	const redis = createRedisClient(env);
+	const vector = createVectorClient(env);
+	const storedMutation = parseStoredObject(await redis.get(getMutationResultKey(params.mutationId)));
+	if (storedMutation) {
+		return storedMutation;
+	}
+
+	const uniqueArchiveIds = [...new Set(params.archiveIds)].filter((id) => id !== params.keepId);
+	if (uniqueArchiveIds.length === 0) {
+		const result = {
+			ok: false,
+			error: "invalid_request",
+			message: "Provide at least one distinct archive id.",
+		};
+		await storeMutationResult(redis, params.mutationId, result);
+		return result;
+	}
+
+	const entryType: EntryType = params.keepId.startsWith("pe_") ? "project" : "knowledge";
+	const touchedIds = [params.keepId, ...uniqueArchiveIds];
+	if (touchedIds.some((id) => (id.startsWith("pe_") ? "project" : "knowledge") !== entryType)) {
+		const result = {
+			ok: false,
+			error: "mixed_entry_types",
+			ids: touchedIds,
+		};
+		await storeMutationResult(redis, params.mutationId, result);
+		return result;
+	}
+
+	const missingExpectedRevision = touchedIds.find((id) => typeof params.expectedRevisions[id] !== "number");
+	if (missingExpectedRevision) {
+		const result = {
+			ok: false,
+			error: "invalid_request",
+			message: `Missing expected revision for ${missingExpectedRevision}.`,
+		};
+		await storeMutationResult(redis, params.mutationId, result);
+		return result;
+	}
+
+	if (entryType !== "knowledge" && (params.updatedView !== undefined || params.confidence !== undefined)) {
+		const result = {
+			ok: false,
+			error: "unsupported_entry_type",
+			id: params.keepId,
+			message: "updated_view and confidence are only supported for knowledge entries.",
+		};
+		await storeMutationResult(redis, params.mutationId, result);
+		return result;
+	}
+
+	const loadedEntries = await Promise.all(
+		touchedIds.map((id) => loadLoadedEntry(redis, entryType, id)),
+	);
+	const missingIndex = loadedEntries.findIndex((entry) => !entry);
+	if (missingIndex >= 0) {
+		const result = {
+			ok: false,
+			error: "entry_not_found",
+			id: touchedIds[missingIndex],
+		};
+		await storeMutationResult(redis, params.mutationId, result);
+		return result;
+	}
+
+	const resolvedEntries = loadedEntries as LoadedEntry[];
+	const archivedEntry = resolvedEntries.find((entry) => entry.metadata.archived === true);
+	if (archivedEntry) {
+		const result = {
+			ok: false,
+			error: "entry_archived",
+			id: archivedEntry.id,
+		};
+		await storeMutationResult(redis, params.mutationId, result);
+		return result;
+	}
+
+	const beforeRevisions: Record<string, number> = {};
+	for (const entry of resolvedEntries) {
+		const revision = toOptionalInteger(entry.metadata.revision) ?? 0;
+		beforeRevisions[entry.id] = revision;
+		if (params.expectedRevisions[entry.id] !== revision) {
+			const result = {
+				ok: false,
+				error: "conflict",
+				id: entry.id,
+				expected_revision: params.expectedRevisions[entry.id],
+				actual_revision: revision,
+			};
+			await storeMutationResult(redis, params.mutationId, result);
+			return result;
+		}
+	}
+
+	const timestamp = new Date().toISOString();
+	const runId = `operator_consolidate_${params.keepId}_${timestamp.replace(/[:.]/g, "-")}`;
+	const canonical = mergeCanonicalEntry(
+		resolvedEntries[0],
+		resolvedEntries.slice(1),
+		runId,
+		timestamp,
+	);
+	const duplicateEntries = resolvedEntries.slice(1);
+
+	if (entryType === "knowledge") {
+		removeRelatedKnowledgeLinks(canonical.entry, uniqueArchiveIds, ["contradicts"]);
+		for (const archiveId of uniqueArchiveIds) {
+			ensureRelatedKnowledgeLink(canonical.entry, archiveId, "supersedes");
+		}
+		if (params.updatedView !== undefined) {
+			canonical.entry.current_view = params.updatedView;
+		}
+		if (params.confidence !== undefined) {
+			canonical.entry.confidence = params.confidence;
+		}
+		canonical.entry.state = "active";
+	}
+
+	if (params.contextType !== undefined) {
+		canonical.metadata.context_type = params.contextType;
+		canonical.metadata.classification_status = "manual_override";
+		canonical.metadata.auto_inferred = false;
+		canonical.metadata.injection_tier = defaultInjectionTier(params.contextType);
+		canonical.contextType = params.contextType;
+		canonical.injectionTier = defaultInjectionTier(params.contextType);
+	}
+
+	if (entryType === "knowledge") {
+		appendEvolutionNote(canonical.entry, timestamp, params.actorId, params.reason);
+	}
+	canonical.metadata.updated_at = timestamp;
+	canonical.metadata.updated_by = {
+		actor_id: params.actorId,
+		tool: "consolidate_entries",
+	};
+	canonical.metadata.revision = beforeRevisions[params.keepId] + 1;
+	canonical.entry.metadata = canonical.metadata;
+	canonical.updatedAt = getEntryUpdatedAt(canonical.entry, canonical.metadata);
+	canonical.salienceScore = computeSalience(canonical.entry);
+	canonical.metadata.salience_score = canonical.salienceScore;
+
+	const rebuildRunId = `consolidate_${params.keepId}_${timestamp.replace(/[:.]/g, "-")}`;
+	if (!(await acquireIndexRebuildLock(redis, rebuildRunId))) {
+		throw new Error("index_rebuild_lock_held");
+	}
+
+	const archivedResults: Array<Record<string, unknown>> = [];
+	const afterRevisions: Record<string, number> = {
+		[params.keepId]: canonical.metadata.revision as number,
+	};
+
+	try {
+		if (entryType === "knowledge") {
+			const keepPreviousState =
+				typeof resolvedEntries[0].entry.state === "string" ? resolvedEntries[0].entry.state : "active";
+			if (keepPreviousState !== "active") {
+				await redis.srem(`by_state:${keepPreviousState}`, params.keepId);
+				await redis.sadd("by_state:active", params.keepId);
+			}
+		}
+
+		const embedding = await getEmbedding(env, buildEntryEmbeddingText(canonical));
+		await persistEntry(redis, vector, canonical, { embedding });
+		await syncEntryAccessSignals(redis, canonical);
+		await patchThinIndexEntry(redis, canonical, timestamp);
+
+		for (const duplicate of duplicateEntries) {
+			const duplicateMetadata = duplicate.metadata;
+			const previousRevision = beforeRevisions[duplicate.id];
+			const snapshotKey = getArchivedSnapshotKey(entryType, duplicate.id, runId);
+			const archivedSnapshot: ArchivedSnapshot = {
+				schema_version: 1,
+				entry_id: duplicate.id,
+				entry_type: entryType,
+				run_id: runId,
+				archived_at: timestamp,
+				archive_reason: `${params.reason} (consolidated into ${params.keepId})`,
+				snapshot: JSON.parse(JSON.stringify(duplicate.entry)),
+			};
+			await redis.set(snapshotKey, JSON.stringify(archivedSnapshot));
+			await redis.set(
+				getArchivedLatestKey(entryType, duplicate.id),
+				JSON.stringify({
+					entry_id: duplicate.id,
+					entry_type: entryType,
+					run_id: runId,
+					archived_at: timestamp,
+					snapshot_key: snapshotKey,
+				}),
+			);
+
+			if (entryType === "knowledge") {
+				const duplicateState =
+					typeof duplicate.entry.state === "string" ? duplicate.entry.state : "active";
+				await redis.srem(`by_state:${duplicateState}`, duplicate.id);
+				await redis.sadd("by_state:archived", duplicate.id);
+			}
+
+			duplicateMetadata.archived = true;
+			duplicateMetadata.archived_at = timestamp;
+			duplicateMetadata.archived_reason = `${params.reason} (consolidated into ${params.keepId})`;
+			duplicateMetadata.archived_run_id = runId;
+			duplicateMetadata.archive_snapshot_key = snapshotKey;
+			duplicateMetadata.updated_at = timestamp;
+			duplicateMetadata.updated_by = {
+				actor_id: params.actorId,
+				tool: "consolidate_entries",
+			};
+			duplicateMetadata.revision = previousRevision + 1;
+			duplicateMetadata.last_consolidated = timestamp;
+			appendConsolidationNote(
+				duplicateMetadata,
+				formatConsolidationNote({
+					timestamp,
+					source: "operator",
+					action: "archive_entry",
+					detail: `consolidated into ${params.keepId}: ${params.reason}`,
+				}),
+			);
+			duplicate.entry.metadata = duplicateMetadata;
+
+			const archivedDuplicate = buildLoadedEntry(duplicate.id, entryType, duplicate.entry);
+			await persistEntry(redis, vector, archivedDuplicate, { skipVector: true });
+			await deleteVectorEntry(vector, duplicate.id);
+			await patchThinIndexEntry(redis, archivedDuplicate, timestamp);
+			await redis.del(getEntryAccessKey(duplicate.id), getEntryLastAccessedKey(duplicate.id));
+
+			afterRevisions[duplicate.id] = duplicateMetadata.revision as number;
+			archivedResults.push({
+				id: duplicate.id,
+				archived: true,
+				revision: duplicateMetadata.revision,
+				snapshot_key: snapshotKey,
+			});
+		}
+	} finally {
+		await releaseIndexRebuildLock(redis, rebuildRunId);
+	}
+
+	const result = {
+		ok: true,
+		mutation_id: params.mutationId,
+		keep_id: params.keepId,
+		archive_ids: uniqueArchiveIds,
+		keep_entry: canonical.entry,
+		archived_entries: archivedResults,
+		side_effects: {
+			kept_vector: "reembedded",
+			archived_vectors: "deleted",
+		},
+	};
+	await appendMutationLog(redis, {
+		ts: timestamp,
+		mutation_id: params.mutationId,
+		tool: "consolidate_entries",
+		client: "mcp",
+		actor_id: params.actorId,
+		request_id: params.mutationId,
+		ids_affected: touchedIds,
+		before_revisions: beforeRevisions,
+		after_revisions: afterRevisions,
+		reason: params.reason,
+	});
+	await storeMutationResult(redis, params.mutationId, result);
+	return result;
+}
+
+export async function addInsight(
+	env: Env,
+	params: AddInsightParams,
+): Promise<Record<string, unknown>> {
+	const redis = createRedisClient(env);
+	const vector = createVectorClient(env);
+	const storedMutation = parseStoredObject(await redis.get(getMutationResultKey(params.mutationId)));
+	if (storedMutation) {
+		return storedMutation;
+	}
+
+	if (params.entryId.startsWith("pe_")) {
+		const result = {
+			ok: false,
+			error: "unsupported_entry_type",
+			id: params.entryId,
+			entry_type: "project",
+		};
+		await storeMutationResult(redis, params.mutationId, result);
+		return result;
+	}
+
+	const rawEntry = await redis.get(getEntryKey("knowledge", params.entryId));
+	const entry = normalizeEntry(rawEntry, "knowledge");
+	if (!entry) {
+		const result = {
+			ok: false,
+			error: "entry_not_found",
+			id: params.entryId,
+		};
+		await storeMutationResult(redis, params.mutationId, result);
+		return result;
+	}
+
+	const metadata = (entry.metadata as Record<string, unknown> | undefined) ?? {};
+	if (metadata.archived === true) {
+		const result = {
+			ok: false,
+			error: "entry_archived",
+			id: params.entryId,
+		};
+		await storeMutationResult(redis, params.mutationId, result);
+		return result;
+	}
+
+	const currentRevision = toOptionalInteger(metadata.revision) ?? 0;
+	if (params.expectedRevision !== currentRevision) {
+		const result = {
+			ok: false,
+			error: "conflict",
+			id: params.entryId,
+			expected_revision: params.expectedRevision,
+			actual_revision: currentRevision,
+			current_summary: {
+				updated_at: getEntryUpdatedAt(entry, metadata),
+				key_insights_count: Array.isArray(entry.key_insights) ? entry.key_insights.length : 0,
+			},
+		};
+		await storeMutationResult(redis, params.mutationId, result);
+		return result;
+	}
+
+	const existingInsights = Array.isArray(entry.key_insights)
+		? entry.key_insights.filter(
+			(item): item is Record<string, unknown> =>
+				Boolean(item) && typeof item === "object" && !Array.isArray(item),
+		)
+		: [];
+	const normalizedInsight = normalizeComparableText(params.insight);
+	const duplicateInsight = existingInsights.find(
+		(item) => normalizeComparableText(item.insight) === normalizedInsight,
+	);
+	if (duplicateInsight) {
+		const result = {
+			ok: true,
+			id: params.entryId,
+			type: "knowledge",
+			mutation_id: params.mutationId,
+			revision: currentRevision,
+			added: false,
+			no_op: true,
+			reason: "duplicate_insight",
+			entry,
+		};
+		await storeMutationResult(redis, params.mutationId, result);
+		return result;
+	}
+
+	const timestamp = new Date().toISOString();
+	const mergedSourceConversations = mergeStringArraysUnique(
+		metadata.source_conversations,
+		params.sourceConversationId ? [params.sourceConversationId] : [],
+	);
+	metadata.source_conversations = mergedSourceConversations;
+	metadata.source_messages = mergeStringArraysUnique(
+		metadata.source_messages,
+		params.sourceMessageIds ?? [],
+	);
+	metadata.mention_count = Math.max(
+		1,
+		mergedSourceConversations.length > 0
+			? mergedSourceConversations.length
+			: (toOptionalInteger(metadata.mention_count) ?? 1),
+	);
+
+	entry.key_insights = [
+		...existingInsights,
+		{
+			insight: params.insight,
+			evidence: {
+				conversation_id: params.sourceConversationId ?? `mcp:${params.actorId}`,
+				message_ids: params.sourceMessageIds ?? [],
+				snippet: params.evidenceSnippet ?? params.reason,
+			},
+		},
+	];
+	appendEvolutionNote(entry, timestamp, params.actorId, params.reason);
+	metadata.updated_at = timestamp;
+	metadata.updated_by = {
+		actor_id: params.actorId,
+		tool: "add_insight",
+	};
+	metadata.revision = currentRevision + 1;
+	entry.metadata = metadata;
+
+	const loadedEntry: LoadedEntry = {
+		id: params.entryId,
+		type: "knowledge",
+		entry,
+		metadata,
+		label: getEntryLabel(entry),
+		updatedAt: getEntryUpdatedAt(entry, metadata),
+		contextType:
+			typeof metadata.context_type === "string" ? metadata.context_type : "task_query",
+		injectionTier: resolveStoredInjectionTier(metadata),
+		mentionCount: Math.max(1, toOptionalInteger(metadata.mention_count) ?? 1),
+		accessCount: Math.max(0, toOptionalInteger(metadata.access_count) ?? 0),
+		sourceConversationCount: toStringArray(metadata.source_conversations).length,
+		salienceScore: computeSalience(entry),
+	};
+	loadedEntry.metadata.salience_score = loadedEntry.salienceScore;
+
+	const rebuildRunId = `add_insight_${params.entryId}_${timestamp.replace(/[:.]/g, "-")}`;
+	if (!(await acquireIndexRebuildLock(redis, rebuildRunId))) {
+		throw new Error("index_rebuild_lock_held");
+	}
+
+	try {
+		const embedding = await getEmbedding(env, buildEntryEmbeddingText(loadedEntry));
+		await persistEntry(redis, vector, loadedEntry, { embedding });
+		await patchThinIndexEntry(redis, loadedEntry, timestamp);
+	} finally {
+		await releaseIndexRebuildLock(redis, rebuildRunId);
+	}
+
+	const result = {
+		ok: true,
+		id: params.entryId,
+		type: "knowledge",
+		mutation_id: params.mutationId,
+		revision: metadata.revision,
+		added: true,
+		updated_at: timestamp,
+		side_effects: {
+			vector: "reembedded",
+		},
+		entry,
+	};
+	await appendMutationLog(redis, {
+		ts: timestamp,
+		mutation_id: params.mutationId,
+		tool: "add_insight",
+		client: "mcp",
+		actor_id: params.actorId,
+		request_id: params.mutationId,
+		ids_affected: [params.entryId],
+		before_revisions: { [params.entryId]: currentRevision },
+		after_revisions: { [params.entryId]: metadata.revision as number },
+		reason: params.reason,
+	});
+	await storeMutationResult(redis, params.mutationId, result);
+	return result;
+}
+
+export async function createEntry(
+	env: Env,
+	params: CreateEntryParams,
+): Promise<Record<string, unknown>> {
+	const redis = createRedisClient(env);
+	const vector = createVectorClient(env);
+	const storedMutation = parseStoredObject(await redis.get(getMutationResultKey(params.mutationId)));
+	if (storedMutation) {
+		return storedMutation;
+	}
+
+	const timestamp = new Date().toISOString();
+	const entryId = await generateEntryId(redis, "knowledge");
+	const contextType = params.contextType ?? "explicit_save";
+	const state = params.state ?? "active";
+	const confidence = params.confidence ?? "medium";
+	const sourceConversations = params.sourceConversationId ? [params.sourceConversationId] : [];
+	const sourceMessageIds = [...new Set(params.sourceMessageIds ?? [])];
+	const keyInsights = [...new Set((params.keyInsights ?? []).map((value) => value.trim()).filter((value) => value.length > 0))];
+	const evidence = {
+		conversation_id: params.sourceConversationId ?? `mcp:${params.actorId}`,
+		message_ids: sourceMessageIds,
+		snippet: params.evidenceSnippet ?? params.reason,
+	};
+
+	const entry: Record<string, unknown> = {
+		id: entryId,
+		type: "knowledge",
+		domain: params.domain.trim(),
+		current_view: params.currentView.trim(),
+		state,
+		confidence,
+		positions: [],
+		key_insights: keyInsights.map((insight) => ({
+			insight,
+			evidence,
+		})),
+		knows_how_to: [],
+		open_questions: [],
+		related_repos: [],
+		related_knowledge: [],
+		evolution: [],
+		metadata: {
+			created_at: timestamp,
+			updated_at: timestamp,
+			first_seen: timestamp,
+			last_seen: timestamp,
+			updated_by: {
+				actor_id: params.actorId,
+				tool: "create_entry",
+			},
+			source: "mcp",
+			source_conversations: sourceConversations,
+			source_messages: sourceMessageIds,
+			context_type: contextType,
+			classification_status: "manual_override",
+			auto_inferred: false,
+			injection_tier: defaultInjectionTier(contextType),
+			mention_count: Math.max(1, sourceConversations.length || 1),
+			access_count: 0,
+			revision: 1,
+			archived: false,
+		},
+	};
+	appendEvolutionNote(entry, timestamp, params.actorId, params.reason);
+
+	const loadedEntry = buildLoadedEntry(entryId, "knowledge", entry);
+	await redis.sadd(`by_state:${state}`, entryId);
+	const embedding = await getEmbedding(env, buildEntryEmbeddingText(loadedEntry));
+	await persistEntry(redis, vector, loadedEntry, { embedding });
+	await syncEntryAccessSignals(redis, loadedEntry);
+	await patchThinIndexEntry(redis, loadedEntry, timestamp);
+	await incrementThinIndexCountsForCreate(redis, loadedEntry, timestamp);
+
+	const result = {
+		ok: true,
+		id: entryId,
+		type: "knowledge",
+		mutation_id: params.mutationId,
+		revision: 1,
+		created: true,
+		created_at: timestamp,
+		side_effects: {
+			vector: "created",
+			index: "patched",
+		},
+		entry,
+	};
+	await appendMutationLog(redis, {
+		ts: timestamp,
+		mutation_id: params.mutationId,
+		tool: "create_entry",
+		client: "mcp",
+		actor_id: params.actorId,
+		request_id: params.mutationId,
+		ids_affected: [entryId],
+		before_revisions: {},
+		after_revisions: { [entryId]: 1 },
+		reason: params.reason,
+	});
+	await storeMutationResult(redis, params.mutationId, result);
+	return result;
 }
 
 export async function setEntryContextType(
@@ -1512,6 +2817,203 @@ export async function setEntryContextType(
 		salience_score: loadedEntry.salienceScore,
 		updated_at: timestamp,
 	};
+}
+
+export async function updateEntry(
+	env: Env,
+	params: UpdateEntryParams,
+): Promise<Record<string, unknown>> {
+	const redis = createRedisClient(env);
+	const vector = createVectorClient(env);
+	const storedMutation = parseStoredObject(await redis.get(getMutationResultKey(params.mutationId)));
+	if (storedMutation) {
+		return storedMutation;
+	}
+
+	const entryType: EntryType = params.entryId.startsWith("pe_") ? "project" : "knowledge";
+	if (
+		entryType !== "knowledge" &&
+		(params.currentView !== undefined || params.confidence !== undefined || params.state !== undefined)
+	) {
+		const result = {
+			ok: false,
+			error: "unsupported_entry_type",
+			id: params.entryId,
+			message: "current_view, confidence, and state updates are only supported for knowledge entries.",
+		};
+		await storeMutationResult(redis, params.mutationId, result);
+		return result;
+	}
+
+	const rawEntry = await redis.get(getEntryKey(entryType, params.entryId));
+	const entry = normalizeEntry(rawEntry, entryType);
+	if (!entry) {
+		const result = {
+			ok: false,
+			error: "entry_not_found",
+			id: params.entryId,
+		};
+		await storeMutationResult(redis, params.mutationId, result);
+		return result;
+	}
+
+	const metadata = (entry.metadata as Record<string, unknown> | undefined) ?? {};
+	if (metadata.archived === true) {
+		const result = {
+			ok: false,
+			error: "entry_archived",
+			id: params.entryId,
+		};
+		await storeMutationResult(redis, params.mutationId, result);
+		return result;
+	}
+
+	const currentRevision = toOptionalInteger(metadata.revision) ?? 0;
+	if (params.expectedRevision !== currentRevision) {
+		const result = {
+			ok: false,
+			error: "conflict",
+			id: params.entryId,
+			expected_revision: params.expectedRevision,
+			actual_revision: currentRevision,
+			current_summary: {
+				state: typeof entry.state === "string" ? entry.state : "active",
+				updated_at: getEntryUpdatedAt(entry, metadata),
+			},
+		};
+		await storeMutationResult(redis, params.mutationId, result);
+		return result;
+	}
+
+	if (
+		params.currentView === undefined &&
+		params.confidence === undefined &&
+		params.state === undefined &&
+		params.contextType === undefined
+	) {
+		const result = {
+			ok: false,
+			error: "invalid_request",
+			message: "Provide at least one field to update.",
+		};
+		await storeMutationResult(redis, params.mutationId, result);
+		return result;
+	}
+
+	const previousState = typeof entry.state === "string" ? entry.state : "active";
+	const previousConfidence = typeof entry.confidence === "string" ? entry.confidence : "medium";
+	const previousView = typeof entry.current_view === "string" ? entry.current_view : "";
+	const previousContextType =
+		typeof metadata.context_type === "string" ? metadata.context_type : "task_query";
+	const timestamp = new Date().toISOString();
+
+	if (params.currentView !== undefined && entryType === "knowledge") {
+		entry.current_view = params.currentView;
+	}
+	if (params.confidence !== undefined && entryType === "knowledge") {
+		entry.confidence = params.confidence;
+	}
+	if (params.state !== undefined && entryType === "knowledge") {
+		entry.state = params.state;
+	}
+	if (params.contextType !== undefined) {
+		metadata.context_type = params.contextType;
+		metadata.classification_status = "manual_override";
+		metadata.auto_inferred = false;
+		metadata.injection_tier = defaultInjectionTier(params.contextType);
+		appendConsolidationNote(
+			metadata,
+			formatConsolidationNote({
+				timestamp,
+				source: "operator",
+				action: "set_context_type",
+				detail: `${previousContextType} -> ${params.contextType} (${params.reason})`,
+			}),
+		);
+	}
+
+	if (entryType === "knowledge") {
+		appendEvolutionNote(entry, timestamp, params.actorId, params.reason);
+	}
+	metadata.updated_at = timestamp;
+	metadata.updated_by = {
+		actor_id: params.actorId,
+		tool: "update_entry",
+	};
+	metadata.revision = currentRevision + 1;
+	entry.metadata = metadata;
+
+	const loadedEntry = buildLoadedEntry(params.entryId, entryType, entry);
+
+	const currentViewChanged =
+		entryType === "knowledge" &&
+		params.currentView !== undefined &&
+		params.currentView !== previousView;
+	const contextTypeChanged =
+		params.contextType !== undefined && params.contextType !== previousContextType;
+	const rebuildRunId = `update_${params.entryId}_${timestamp.replace(/[:.]/g, "-")}`;
+	if (!(await acquireIndexRebuildLock(redis, rebuildRunId))) {
+		throw new Error("index_rebuild_lock_held");
+	}
+
+	try {
+		if (entryType === "knowledge" && params.state !== undefined && params.state !== previousState) {
+			await redis.srem(`by_state:${previousState}`, params.entryId);
+			await redis.sadd(`by_state:${params.state}`, params.entryId);
+		}
+
+		if (currentViewChanged) {
+			const embedding = await getEmbedding(env, buildEntryEmbeddingText(loadedEntry));
+			await persistEntry(redis, vector, loadedEntry, { embedding });
+		} else {
+			await persistEntry(redis, vector, loadedEntry);
+		}
+
+		await patchThinIndexEntry(redis, loadedEntry, timestamp);
+	} finally {
+		await releaseIndexRebuildLock(redis, rebuildRunId);
+	}
+
+	const result = {
+		ok: true,
+		id: params.entryId,
+		type: entryType,
+		mutation_id: params.mutationId,
+		revision: metadata.revision,
+		updated_at: timestamp,
+		changes: {
+			current_view_changed: currentViewChanged,
+			confidence_changed:
+				entryType === "knowledge" &&
+				params.confidence !== undefined &&
+				params.confidence !== previousConfidence,
+			state_changed:
+				entryType === "knowledge" &&
+				params.state !== undefined &&
+				params.state !== previousState,
+			context_type_changed: contextTypeChanged,
+		},
+		side_effects: {
+			vector: currentViewChanged ? "reembedded" : "metadata_updated",
+		},
+		entry,
+	};
+
+	await appendMutationLog(redis, {
+		ts: timestamp,
+		mutation_id: params.mutationId,
+		tool: "update_entry",
+		client: "mcp",
+		actor_id: params.actorId,
+		request_id: params.mutationId,
+		ids_affected: [params.entryId],
+		before_revisions: { [params.entryId]: currentRevision },
+		after_revisions: { [params.entryId]: metadata.revision as number },
+		reason: params.reason,
+	});
+	await storeMutationResult(redis, params.mutationId, result);
+
+	return result;
 }
 
 export async function runDreamCycle(

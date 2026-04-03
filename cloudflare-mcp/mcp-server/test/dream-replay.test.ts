@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockState = vi.hoisted(() => ({
 	store: new Map<string, unknown>(),
 	vectorUpdates: [] as Array<Record<string, unknown>>,
+	vectorDeletes: [] as string[],
 }));
 
 function globToRegex(pattern: string): RegExp {
@@ -66,6 +67,11 @@ vi.mock("@upstash/vector", () => ({
 	Index: class MockIndex {
 		async update(payload: Record<string, unknown>): Promise<void> {
 			mockState.vectorUpdates.push(payload);
+		}
+
+		async delete(_id: string | string[]): Promise<void> {
+			const ids = Array.isArray(_id) ? _id : [_id];
+			mockState.vectorDeletes.push(...ids);
 		}
 	},
 }));
@@ -138,6 +144,7 @@ describe("Dream replay logic", () => {
 	beforeEach(() => {
 		mockState.store.clear();
 		mockState.vectorUpdates.length = 0;
+		mockState.vectorDeletes.length = 0;
 		mockState.store.set("migration:backfill_complete", "2026-03-27T05:29:20+00:00");
 
 		mockState.store.set(
@@ -248,17 +255,14 @@ describe("Dream replay logic", () => {
 		expect(((contradictionA.metadata as Record<string, unknown>).consolidation_notes as string[]).join("\n"))
 			.toContain("mark_contested");
 
-		expect(mockState.vectorUpdates).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({
-					id: "ke_conflict_a",
-					metadata: expect.objectContaining({ state: "contested" }),
-				}),
-				expect.objectContaining({
-					id: "ke_dup_secondary",
-					metadata: expect.objectContaining({ archived: true }),
-				}),
-			]),
-		);
+			expect(mockState.vectorUpdates).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						id: "ke_conflict_a",
+						metadata: expect.objectContaining({ state: "contested" }),
+					}),
+				]),
+			);
+			expect(mockState.vectorDeletes).toContain("ke_dup_secondary");
+		});
 	});
-});

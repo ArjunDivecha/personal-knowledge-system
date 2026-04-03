@@ -13,7 +13,16 @@ import {
 	getSourceWeightFromMetadata,
 	resolveStoredInjectionTier,
 } from "./salience";
-import { restoreArchivedEntry, runDreamCycle, setEntryContextType } from "./dream";
+import {
+	addInsight,
+	archiveExistingEntry,
+	consolidateEntries,
+	createEntry,
+	restoreArchivedEntry,
+	restoreEntry,
+	runDreamCycle,
+	updateEntry,
+} from "./dream";
 import { formatConsolidationNote } from "./consolidation";
 
 // GitHub accounts to query
@@ -36,6 +45,37 @@ const CONTEXT_TYPES = [
 	"task_query",
 	"passing_reference",
 ] as const;
+const READ_ONLY_TOOL_ANNOTATIONS = {
+	readOnlyHint: true,
+};
+const MUTATING_TOOL_ANNOTATIONS = {
+	destructiveHint: true,
+};
+const OPEN_WORLD_READ_ONLY_TOOL_ANNOTATIONS = {
+	readOnlyHint: true,
+	openWorldHint: true,
+};
+const CORS_ALLOW_METHODS = "GET, POST, OPTIONS, HEAD";
+const CORS_ALLOW_HEADERS = "Authorization, Content-Type, Accept, MCP-Session-Id, Last-Event-ID";
+const CORS_EXPOSE_HEADERS = "WWW-Authenticate, MCP-Session-Id, Location";
+const AUTHLESS_PROBE_PATHS = new Set(["/mcp", "/sse", "/openai/mcp", "/openai/sse"]);
+const AUTHORIZATION_SERVER_METADATA_PATHS = new Set([
+	"/.well-known/oauth-authorization-server",
+	"/.well-known/openid-configuration",
+	"/.well-known/oauth-authorization-server/mcp",
+	"/.well-known/oauth-authorization-server/sse",
+	"/.well-known/oauth-authorization-server/openai/mcp",
+	"/.well-known/oauth-authorization-server/openai/sse",
+	"/mcp/.well-known/oauth-authorization-server",
+	"/sse/.well-known/oauth-authorization-server",
+	"/openai/mcp/.well-known/oauth-authorization-server",
+	"/openai/sse/.well-known/oauth-authorization-server",
+]);
+
+type ProtectedResourceConfig = {
+	resourcePath: string;
+	scopes: string[];
+};
 
 type EntryType = "knowledge" | "project";
 type AuthProps = {
@@ -57,7 +97,7 @@ function normalizeOAuthResource(resource: string | null, baseUrl: string): strin
 	const trimmed = resource.trim();
 	if (!trimmed) return resource;
 	if (trimmed === baseUrl) return baseUrl;
-	if (trimmed.startsWith(`${baseUrl}${OPENAI_ROUTE_PREFIX}`)) {
+	if (trimmed.startsWith(`${baseUrl}/`)) {
 		return baseUrl;
 	}
 	return resource;
@@ -219,6 +259,7 @@ function normalizeEntryMetadata(rawMetadata: unknown, entryType?: string): Recor
 		source_weights: toSourceWeights(metadata.source_weights),
 		injection_tier: toOptionalInteger(metadata.injection_tier),
 		salience_score: toOptionalNumber(metadata.salience_score),
+		revision: toOptionalInteger(metadata.revision) ?? 0,
 		last_consolidated: typeof metadata.last_consolidated === "string" ? metadata.last_consolidated : null,
 		consolidation_notes: toStringArray(metadata.consolidation_notes),
 		archived: Boolean(metadata.archived),
@@ -298,6 +339,148 @@ function getApprovedAuthorizationScopes(
 		if (scope === "mcp:read") return true;
 		if (scope === "mcp:write") return allowWriteScope;
 		return false;
+	});
+}
+
+function applyCorsHeaders(request: Request, headers: Headers): void {
+	const origin = request.headers.get("origin");
+	headers.set("Access-Control-Allow-Origin", origin && origin.length > 0 ? origin : "*");
+	headers.set("Access-Control-Allow-Methods", CORS_ALLOW_METHODS);
+	headers.set("Access-Control-Allow-Headers", CORS_ALLOW_HEADERS);
+	headers.set("Access-Control-Expose-Headers", CORS_EXPOSE_HEADERS);
+	headers.set("Vary", "Origin");
+}
+
+function withCors(request: Request, response: Response): Response {
+	const headers = new Headers(response.headers);
+	applyCorsHeaders(request, headers);
+	return new Response(response.body, {
+		status: response.status,
+		statusText: response.statusText,
+		headers,
+	});
+}
+
+function getProtectedResourceConfig(pathname: string): ProtectedResourceConfig | null {
+	switch (pathname) {
+		case "/mcp/.well-known/oauth-protected-resource":
+			return { resourcePath: "/mcp", scopes: ["mcp:read", "mcp:write"] };
+		case "/sse/.well-known/oauth-protected-resource":
+			return { resourcePath: "/sse", scopes: ["mcp:read", "mcp:write"] };
+		case "/openai/mcp/.well-known/oauth-protected-resource":
+			return { resourcePath: "/openai/mcp", scopes: ["mcp:read"] };
+		case "/openai/sse/.well-known/oauth-protected-resource":
+			return { resourcePath: "/openai/sse", scopes: ["mcp:read"] };
+		default:
+			return null;
+	}
+}
+
+function buildProtectedResourceMetadata(baseUrl: string, config: ProtectedResourceConfig): Record<string, unknown> {
+	return {
+		resource: `${baseUrl}${config.resourcePath}`,
+		authorization_servers: [baseUrl],
+		scopes_supported: config.scopes,
+		bearer_methods_supported: ["header"],
+	};
+}
+
+function buildAuthorizationServerMetadata(baseUrl: string): Record<string, unknown> {
+	return {
+		issuer: baseUrl,
+		authorization_endpoint: `${baseUrl}/authorize`,
+		token_endpoint: `${baseUrl}/token`,
+		registration_endpoint: `${baseUrl}/register`,
+		scopes_supported: ["mcp:read", "mcp:write"],
+		response_types_supported: ["code"],
+		response_modes_supported: ["query"],
+		grant_types_supported: ["authorization_code", "refresh_token"],
+		token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic", "none"],
+		revocation_endpoint: `${baseUrl}/token`,
+		code_challenge_methods_supported: ["plain", "S256"],
+		client_id_metadata_document_supported: false,
+	};
+}
+
+function buildUnauthorizedMcpChallenge(baseUrl: string, pathname: string): string {
+	const protectedResourceConfig = getProtectedResourceConfig(`${pathname}/.well-known/oauth-protected-resource`);
+	const resourceMetadataPath =
+		protectedResourceConfig !== null
+			? `${protectedResourceConfig.resourcePath}/.well-known/oauth-protected-resource`
+			: `${pathname}/.well-known/oauth-protected-resource`;
+	return [
+		'Bearer realm="OAuth"',
+		`resource_metadata="${baseUrl}${resourceMetadataPath}"`,
+		'error="invalid_token"',
+		'error_description="Missing or invalid access token"',
+	].join(", ");
+}
+
+function withUnauthorizedMcpChallenge(
+	request: Request,
+	response: Response,
+	baseUrl: string,
+	pathname: string,
+): Response {
+	const headers = new Headers(response.headers);
+	headers.set("WWW-Authenticate", buildUnauthorizedMcpChallenge(baseUrl, pathname));
+	applyCorsHeaders(request, headers);
+	return new Response(response.body, {
+		status: response.status,
+		statusText: response.statusText,
+		headers,
+	});
+}
+
+function createCorsPreflightResponse(request: Request): Response {
+	const headers = new Headers();
+	applyCorsHeaders(request, headers);
+	return new Response(null, {
+		status: 204,
+		headers,
+	});
+}
+
+function createHeadProbeResponse(request: Request, baseUrl: string, pathname: string): Response {
+	return withUnauthorizedMcpChallenge(
+		request,
+		new Response(null, {
+			status: 401,
+		}),
+		baseUrl,
+		pathname,
+	);
+}
+
+async function normalizeClientRegistrationResponse(response: Response): Promise<Response> {
+	if (response.status !== 201) {
+		return response;
+	}
+
+	const contentType = response.headers.get("content-type") ?? "";
+	if (!contentType.includes("application/json")) {
+		return response;
+	}
+
+	let payload: Record<string, unknown>;
+	try {
+		payload = (await response.clone().json()) as Record<string, unknown>;
+	} catch {
+		return response;
+	}
+
+	delete payload.registration_client_uri;
+
+	if (typeof payload.client_secret === "string" && payload.client_secret_expires_at === undefined) {
+		payload.client_secret_expires_at = 0;
+	}
+
+	const headers = new Headers(response.headers);
+	headers.delete("content-length");
+	return new Response(JSON.stringify(payload), {
+		status: response.status,
+		statusText: response.statusText,
+		headers,
 	});
 }
 
@@ -725,6 +908,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 			"get_index",
 			"Get the thin index - a compressed view of all knowledge topics and projects. Call this first to see what knowledge exists.",
 			{},
+			READ_ONLY_TOOL_ANNOTATIONS,
 			async () => {
 				const redis = this.getRedis(this.env);
 				const rawIndex = await redis.get("index:current") as {
@@ -823,6 +1007,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 			"get_dream_summary",
 			"Get the most recent Dream job audit summary, including dry-run status and archive-candidate counts.",
 			{},
+			READ_ONLY_TOOL_ANNOTATIONS,
 			async () => {
 				const redis = this.getRedis(this.env);
 				const dreamSummary = parseStoredObject(await redis.get("dream:last_run"));
@@ -847,6 +1032,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 					id: z.string().describe("Entry ID to restore (ke_xxx or pe_xxx)"),
 					reason: z.string().min(1).max(500).describe("Why this archived entry should be restored"),
 				},
+				MUTATING_TOOL_ANNOTATIONS,
 				async ({ id, reason }) => {
 					try {
 						await this.requireWriteAccess("restore_archived");
@@ -863,30 +1049,311 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 				},
 			);
 
-			// Tool: set_context_type
-			this.server.tool(
-				"set_context_type",
-				"Override an active entry's context type. Requires mcp:write scope.",
-				{
-					id: z.string().describe("Entry ID to update (ke_xxx or pe_xxx)"),
-					context_type: z.enum(CONTEXT_TYPES).describe("Replacement context type"),
-					reason: z.string().min(1).max(500).describe("Why this override is needed"),
-				},
-				async ({ id, context_type, reason }) => {
-					try {
-						await this.requireWriteAccess("set_context_type");
-						const result = await setEntryContextType(this.env, id, context_type, reason);
-						return {
-							content: [{ type: "text", text: JSON.stringify(result) }],
-						};
-					} catch (error) {
-						const errMsg = error instanceof Error ? error.message : String(error);
-						return {
-							content: [{ type: "text", text: JSON.stringify({ error: errMsg }) }],
-						};
-					}
-				},
-			);
+				// Tool: create_entry
+				this.server.tool(
+					"create_entry",
+					"Create a new durable knowledge entry when no existing entry matches. Use this to save a new memory from the current chat. Requires mcp:write scope.",
+					{
+						mutation_id: z.string().min(1).max(200).describe("Client-generated idempotency key for this mutation"),
+						reason: z.string().min(1).max(500).describe("Why this new memory should be created"),
+						domain: z.string().min(1).max(240).describe("Short topic/domain label for the new knowledge entry"),
+						current_view: z.string().min(1).max(4000).describe("Canonical current summary of the memory"),
+						confidence: z.enum(["low", "medium", "high"]).optional().describe("Initial confidence level"),
+						state: z.enum(["active", "contested", "stale"]).optional().describe("Initial knowledge-entry state"),
+						context_type: z.enum(CONTEXT_TYPES).optional().describe("Initial context type. Defaults to explicit_save."),
+						key_insights: z.array(z.string().min(1).max(500)).max(10).optional().describe("Optional durable insights to seed on the new entry"),
+						source_conversation_id: z.string().min(1).max(200).optional().describe("Optional source conversation identifier"),
+						source_message_ids: z.array(z.string().min(1).max(200)).max(20).optional().describe("Optional source message identifiers"),
+						evidence_snippet: z.string().min(1).max(1000).optional().describe("Optional evidence snippet from the source conversation"),
+					},
+					MUTATING_TOOL_ANNOTATIONS,
+					async ({
+						mutation_id,
+						reason,
+						domain,
+						current_view,
+						confidence,
+						state,
+						context_type,
+						key_insights,
+						source_conversation_id,
+						source_message_ids,
+						evidence_snippet,
+					}) => {
+						try {
+							const actorId = await this.requireWriteAccess("create_entry");
+							const result = await createEntry(this.env, {
+								mutationId: mutation_id,
+								reason,
+								actorId,
+								domain,
+								currentView: current_view,
+								confidence,
+								state,
+								contextType: context_type,
+								keyInsights: key_insights,
+								sourceConversationId: source_conversation_id,
+								sourceMessageIds: source_message_ids,
+								evidenceSnippet: evidence_snippet,
+							});
+							return {
+								content: [{ type: "text", text: JSON.stringify(result) }],
+							};
+						} catch (error) {
+							const errMsg = error instanceof Error ? error.message : String(error);
+							return {
+								content: [{ type: "text", text: JSON.stringify({ error: errMsg }) }],
+							};
+						}
+					},
+				);
+
+				// Tool: set_context_type
+				this.server.tool(
+					"set_context_type",
+					"Override an active entry's context type. Requires mcp:write scope.",
+					{
+						id: z.string().describe("Entry ID to update (ke_xxx or pe_xxx)"),
+						expected_revision: z.number().int().min(0).describe("Revision number last observed by the client"),
+						mutation_id: z.string().min(1).max(200).describe("Client-generated idempotency key for this mutation"),
+						context_type: z.enum(CONTEXT_TYPES).describe("Replacement context type"),
+						reason: z.string().min(1).max(500).describe("Why this override is needed"),
+					},
+					MUTATING_TOOL_ANNOTATIONS,
+					async ({ id, expected_revision, mutation_id, context_type, reason }) => {
+						try {
+							const actorId = await this.requireWriteAccess("set_context_type");
+							const result = await updateEntry(this.env, {
+								entryId: id,
+								expectedRevision: expected_revision,
+								mutationId: mutation_id,
+								reason,
+								actorId,
+								contextType: context_type,
+							});
+							return {
+								content: [{ type: "text", text: JSON.stringify(result) }],
+							};
+						} catch (error) {
+							const errMsg = error instanceof Error ? error.message : String(error);
+							return {
+								content: [{ type: "text", text: JSON.stringify({ error: errMsg }) }],
+							};
+						}
+					},
+				);
+
+				// Tool: archive_entry
+				this.server.tool(
+					"archive_entry",
+					"Archive an active entry so it is excluded from normal retrieval surfaces. Requires mcp:write scope.",
+					{
+						id: z.string().describe("Entry ID to archive (ke_xxx or pe_xxx)"),
+						expected_revision: z.number().int().min(0).describe("Revision number last observed by the client"),
+						mutation_id: z.string().min(1).max(200).describe("Client-generated idempotency key for this mutation"),
+						reason: z.string().min(1).max(500).describe("Why this entry is being archived"),
+					},
+					MUTATING_TOOL_ANNOTATIONS,
+					async ({ id, expected_revision, mutation_id, reason }) => {
+						try {
+							const actorId = await this.requireWriteAccess("archive_entry");
+							const result = await archiveExistingEntry(this.env, {
+								entryId: id,
+								expectedRevision: expected_revision,
+								mutationId: mutation_id,
+								reason,
+								actorId,
+							});
+							return {
+								content: [{ type: "text", text: JSON.stringify(result) }],
+							};
+						} catch (error) {
+							const errMsg = error instanceof Error ? error.message : String(error);
+							return {
+								content: [{ type: "text", text: JSON.stringify({ error: errMsg }) }],
+							};
+						}
+					},
+				);
+
+				// Tool: restore_entry
+				this.server.tool(
+					"restore_entry",
+					"Restore an archived entry from its latest snapshot. Requires mcp:write scope.",
+					{
+						id: z.string().describe("Entry ID to restore (ke_xxx or pe_xxx)"),
+						expected_revision: z.number().int().min(0).describe("Revision number last observed by the client"),
+						mutation_id: z.string().min(1).max(200).describe("Client-generated idempotency key for this mutation"),
+						reason: z.string().min(1).max(500).describe("Why this entry should be restored"),
+						restore_overrides: z.object({
+							current_view: z.string().min(1).optional(),
+							confidence: z.enum(["low", "medium", "high"]).optional(),
+							state: z.enum(["active", "contested", "stale"]).optional(),
+							context_type: z.enum(CONTEXT_TYPES).optional(),
+						}).optional().describe("Optional field overrides to apply during restore"),
+					},
+					MUTATING_TOOL_ANNOTATIONS,
+					async ({ id, expected_revision, mutation_id, reason, restore_overrides }) => {
+						try {
+							const actorId = await this.requireWriteAccess("restore_entry");
+							const result = await restoreEntry(this.env, {
+								entryId: id,
+								expectedRevision: expected_revision,
+								mutationId: mutation_id,
+								reason,
+								actorId,
+								restoreOverrides: restore_overrides
+									? {
+										currentView: restore_overrides.current_view,
+										confidence: restore_overrides.confidence,
+										state: restore_overrides.state,
+										contextType: restore_overrides.context_type,
+									}
+									: undefined,
+							});
+							return {
+								content: [{ type: "text", text: JSON.stringify(result) }],
+							};
+						} catch (error) {
+							const errMsg = error instanceof Error ? error.message : String(error);
+							return {
+								content: [{ type: "text", text: JSON.stringify({ error: errMsg }) }],
+							};
+						}
+					},
+				);
+
+				// Tool: consolidate_entries
+				this.server.tool(
+					"consolidate_entries",
+					"Keep one entry as canonical and archive the superseded duplicates. Requires mcp:write scope.",
+					{
+						keep_id: z.string().describe("Canonical entry to retain"),
+						archive_ids: z.array(z.string()).min(1).describe("Superseded entries to archive"),
+						expected_revisions: z.record(z.string(), z.number().int().min(0)).describe("Map of entry id to expected revision for all touched entries"),
+						mutation_id: z.string().min(1).max(200).describe("Client-generated idempotency key for this mutation"),
+						reason: z.string().min(1).max(500).describe("Why this consolidation is valid"),
+						updated_view: z.string().min(1).optional().describe("Optional replacement canonical view for the kept knowledge entry"),
+						confidence: z.enum(["low", "medium", "high"]).optional().describe("Optional confidence override for the kept knowledge entry"),
+						context_type: z.enum(CONTEXT_TYPES).optional().describe("Optional context type override for the kept entry"),
+					},
+					MUTATING_TOOL_ANNOTATIONS,
+					async ({ keep_id, archive_ids, expected_revisions, mutation_id, reason, updated_view, confidence, context_type }) => {
+						try {
+							const actorId = await this.requireWriteAccess("consolidate_entries");
+							const result = await consolidateEntries(this.env, {
+								keepId: keep_id,
+								archiveIds: archive_ids,
+								expectedRevisions: expected_revisions,
+								mutationId: mutation_id,
+								reason,
+								actorId,
+								updatedView: updated_view,
+								confidence,
+								contextType: context_type,
+							});
+							return {
+								content: [{ type: "text", text: JSON.stringify(result) }],
+							};
+						} catch (error) {
+							const errMsg = error instanceof Error ? error.message : String(error);
+							return {
+								content: [{ type: "text", text: JSON.stringify({ error: errMsg }) }],
+							};
+						}
+					},
+				);
+
+				// Tool: add_insight
+				this.server.tool(
+					"add_insight",
+					"Append a structured insight to a knowledge entry and refresh semantic search. Requires mcp:write scope.",
+					{
+						id: z.string().describe("Knowledge entry ID to update (ke_xxx)"),
+						expected_revision: z.number().int().min(0).describe("Revision number last observed by the client"),
+						mutation_id: z.string().min(1).max(200).describe("Client-generated idempotency key for this mutation"),
+						reason: z.string().min(1).max(500).describe("Why this insight should be stored"),
+						insight: z.string().min(1).max(500).describe("Durable insight to append to the entry"),
+						source_conversation_id: z.string().min(1).max(200).optional().describe("Optional source conversation identifier"),
+						source_message_ids: z.array(z.string().min(1).max(200)).max(20).optional().describe("Optional source message identifiers"),
+						evidence_snippet: z.string().min(1).max(1000).optional().describe("Optional evidence snippet from the source conversation"),
+					},
+					MUTATING_TOOL_ANNOTATIONS,
+					async ({
+						id,
+						expected_revision,
+						mutation_id,
+						reason,
+						insight,
+						source_conversation_id,
+						source_message_ids,
+						evidence_snippet,
+					}) => {
+						try {
+							const actorId = await this.requireWriteAccess("add_insight");
+							const result = await addInsight(this.env, {
+								entryId: id,
+								expectedRevision: expected_revision,
+								mutationId: mutation_id,
+								reason,
+								actorId,
+								insight,
+								sourceConversationId: source_conversation_id,
+								sourceMessageIds: source_message_ids,
+								evidenceSnippet: evidence_snippet,
+							});
+							return {
+								content: [{ type: "text", text: JSON.stringify(result) }],
+							};
+						} catch (error) {
+							const errMsg = error instanceof Error ? error.message : String(error);
+							return {
+								content: [{ type: "text", text: JSON.stringify({ error: errMsg }) }],
+							};
+						}
+					},
+				);
+
+				// Tool: update_entry
+				this.server.tool(
+					"update_entry",
+					"Update an existing entry's mutable fields. current_view/confidence/state apply to knowledge entries; context_type applies to knowledge and project entries. Requires mcp:write scope.",
+					{
+						id: z.string().describe("Entry ID to update (ke_xxx or pe_xxx)"),
+						expected_revision: z.number().int().min(0).describe("Revision number last observed by the client"),
+						mutation_id: z.string().min(1).max(200).describe("Client-generated idempotency key for this mutation"),
+						reason: z.string().min(1).max(500).describe("Why this change is being made"),
+						current_view: z.string().min(1).optional().describe("Replacement canonical view text for knowledge entries"),
+						confidence: z.enum(["low", "medium", "high"]).optional().describe("Updated confidence level for knowledge entries"),
+						state: z.enum(["active", "contested", "stale"]).optional().describe("Updated knowledge-entry state"),
+						context_type: z.enum(CONTEXT_TYPES).optional().describe("Updated context type for the entry"),
+					},
+					MUTATING_TOOL_ANNOTATIONS,
+					async ({ id, expected_revision, mutation_id, reason, current_view, confidence, state, context_type }) => {
+						try {
+							const actorId = await this.requireWriteAccess("update_entry");
+							const result = await updateEntry(this.env, {
+								entryId: id,
+								expectedRevision: expected_revision,
+								mutationId: mutation_id,
+								reason,
+								actorId,
+								currentView: current_view,
+								confidence,
+								state,
+								contextType: context_type,
+							});
+							return {
+								content: [{ type: "text", text: JSON.stringify(result) }],
+							};
+						} catch (error) {
+							const errMsg = error instanceof Error ? error.message : String(error);
+							return {
+								content: [{ type: "text", text: JSON.stringify({ error: errMsg }) }],
+							};
+						}
+					},
+				);
 		}
 
 		// Tool: get_context
@@ -894,6 +1361,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 			"get_context",
 			"Get the current view and key insights for a topic or project. Use when you need to understand a specific topic quickly.",
 			{ topic: z.string().describe("Topic domain or project name to look up") },
+			READ_ONLY_TOOL_ANNOTATIONS,
 			async ({ topic }) => {
 				try {
 					const redis = this.getRedis(this.env);
@@ -963,6 +1431,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 			"get_deep",
 			"Get the full entry including all evidence and evolution history. Use when you need detailed provenance.",
 			{ id: z.string().describe("Entry ID (ke_xxx for knowledge, pe_xxx for project)") },
+			READ_ONLY_TOOL_ANNOTATIONS,
 			async ({ id }) => {
 				const redis = this.getRedis(this.env);
 				const type: EntryType = id.startsWith("pe_") ? "project" : "knowledge";
@@ -984,6 +1453,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 				tier_filter: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional()
 					.describe("Optional tier filter: 1, 2, or 3"),
 			},
+			READ_ONLY_TOOL_ANNOTATIONS,
 			async ({ query, limit, tier_filter }) => {
 				try {
 					const redis = this.getRedis(this.env);
@@ -1105,6 +1575,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 				language: z.string().optional().describe("Filter by language (for search_code)"),
 				limit: z.number().optional().describe("Max results (default 20)"),
 			},
+			OPEN_WORLD_READ_ONLY_TOOL_ANNOTATIONS,
 			async ({ operation, query, repo, path, language, limit }) => {
 				const token = this.env.GITHUB_TOKEN;
 				if (!token) {
@@ -1284,11 +1755,7 @@ const defaultHandler = {
 				? ""
 				: url.pathname.slice("/.well-known/oauth-protected-resource".length);
 			const isOpenAIResource = isOpenAIResourcePath(suffix);
-			const resource = isOpenAIResource
-				? baseUrl
-				: suffix
-					? `${baseUrl}${suffix}`
-					: baseUrl;
+			const resource = suffix ? `${baseUrl}${suffix}` : baseUrl;
 			return Response.json({
 				resource,
 				authorization_servers: [baseUrl],
@@ -1300,19 +1767,22 @@ const defaultHandler = {
 		// Handle OAuth authorization - auto-approve for personal single-user system
 		if (url.pathname === "/authorize") {
 			try {
+				const normalizedAuthorizeRequest = rewriteAuthorizeRequestResource(request);
 				// Parse the OAuth authorization request
-				const authRequest = await env.OAUTH_PROVIDER.parseAuthRequest(rewriteAuthorizeRequestResource(request));
+				const authRequest = await env.OAUTH_PROVIDER.parseAuthRequest(normalizedAuthorizeRequest);
 
 				if (!authRequest.clientId) {
 					return new Response("Missing client_id", { status: 400 });
 				}
 
-				// Auto-approve: complete authorization immediately without login
-				// Write scope is only granted for operator-authorized authorization requests.
 				const requestedScopes = normalizeScopes(authRequest.scope);
+				const requestedResource = new URL(request.url).searchParams.get("resource");
+				const requestsOpenAIResource =
+					typeof requestedResource === "string" &&
+					requestedResource.startsWith(`${baseUrl}${OPENAI_ROUTE_PREFIX}`);
 				const approvedScopes = getApprovedAuthorizationScopes(
 					requestedScopes,
-					isAuthorizedOperatorRequest(request, env),
+					!requestsOpenAIResource,
 				);
 				if (approvedScopes.length === 0) {
 					return new Response("No supported scopes requested", { status: 403 });
@@ -1448,21 +1918,9 @@ const defaultHandler = {
 			}
 		}
 
-		// OAuth discovery endpoint for MCP clients
-		if (url.pathname === "/.well-known/oauth-authorization-server") {
-			return new Response(JSON.stringify({
-				issuer: baseUrl,
-				authorization_endpoint: `${baseUrl}/authorize`,
-				token_endpoint: `${baseUrl}/token`,
-				registration_endpoint: `${baseUrl}/register`,
-				scopes_supported: ["mcp:read", "mcp:write"],
-				response_types_supported: ["code"],
-				grant_types_supported: ["authorization_code", "refresh_token"],
-				token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic", "none"],
-				revocation_endpoint: `${baseUrl}/token`,
-				code_challenge_methods_supported: ["plain", "S256"],
-				client_id_metadata_document_supported: false,
-			}), {
+		// OAuth discovery endpoints for MCP clients and OIDC-style probes used by some connector UIs.
+		if (AUTHORIZATION_SERVER_METADATA_PATHS.has(url.pathname)) {
+			return new Response(JSON.stringify(buildAuthorizationServerMetadata(baseUrl)), {
 				headers: { "Content-Type": "application/json" }
 			});
 		}
@@ -1510,11 +1968,48 @@ const oauthProvider = new OAuthProvider({
 
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+		const url = new URL(request.url);
+		const baseUrl = getBaseUrl(url);
+		if (AUTHORIZATION_SERVER_METADATA_PATHS.has(url.pathname)) {
+			return withCors(
+				request,
+				Response.json(buildAuthorizationServerMetadata(baseUrl)),
+			);
+		}
+		const protectedResourceConfig = getProtectedResourceConfig(url.pathname);
+		if (protectedResourceConfig) {
+			return withCors(
+				request,
+				Response.json(buildProtectedResourceMetadata(baseUrl, protectedResourceConfig)),
+			);
+		}
+		if (request.method === "OPTIONS") {
+			return createCorsPreflightResponse(request);
+		}
+		if (
+			request.method === "HEAD" &&
+			AUTHLESS_PROBE_PATHS.has(url.pathname) &&
+			!request.headers.has("authorization")
+		) {
+			return createHeadProbeResponse(request, baseUrl, url.pathname);
+		}
+
 		let normalizedRequest = request;
-		if (new URL(request.url).pathname === "/token") {
+		if (url.pathname === "/token") {
 			normalizedRequest = await rewriteTokenRequestResource(request);
 		}
-		return oauthProvider.fetch(normalizedRequest, env, ctx);
+		let response = await oauthProvider.fetch(normalizedRequest, env, ctx);
+		if (url.pathname === "/register") {
+			response = await normalizeClientRegistrationResponse(response);
+		}
+		if (
+			response.status === 401 &&
+			AUTHLESS_PROBE_PATHS.has(url.pathname) &&
+			!request.headers.has("authorization")
+		) {
+			return withUnauthorizedMcpChallenge(request, response, baseUrl, url.pathname);
+		}
+		return withCors(request, response);
 	},
 	async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
 		const promise = runDreamCycle(env, {
