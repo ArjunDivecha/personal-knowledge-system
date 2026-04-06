@@ -109,6 +109,24 @@ GMAIL_SKIP_DOMAINS = {
     "facebook.com", "twitter.com", "linkedin.com", "instagram.com",
 }
 
+# -----------------------------------------------------------------------------
+# TWITTER / X CONFIGURATION
+# -----------------------------------------------------------------------------
+# Bearer Token from developer.twitter.com — used for all read API calls.
+# Set this in ingestion/.env as:  TWITTER_BEARER_TOKEN=<your token>
+TWITTER_BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN", "")
+
+# Your Twitter/X handle (without the @).  Used to look up your user ID.
+TWITTER_USERNAME = os.getenv("TWITTER_USERNAME", "arjundivecha")
+
+# Minimum tweet length (characters) worth sending to the LLM.
+TWITTER_MIN_TWEET_LENGTH = 30
+
+# On pay-per-use, the user timeline endpoint returns at most ~3,200 tweets
+# total (hard Twitter limit).  We paginate all the way back on the first run,
+# then on subsequent runs we only pull tweets newer than the last seen ID.
+TWITTER_MAX_RESULTS_PER_PAGE = 100   # Twitter API max per page for timelines
+
 
 # -----------------------------------------------------------------------------
 # VALIDATION
@@ -152,6 +170,21 @@ def validate_gmail_config() -> list[str]:
     if not GMAIL_MBOX_PATH.exists():
         errors.append(f"GMAIL_MBOX_PATH does not exist: {GMAIL_MBOX_PATH}")
     
+    return errors
+
+
+def validate_twitter_config() -> list[str]:
+    """Check Twitter API configuration."""
+    errors = validate_config()
+
+    if not TWITTER_BEARER_TOKEN:
+        errors.append(
+            "TWITTER_BEARER_TOKEN not set — add it to ingestion/.env or "
+            "as a secret in the Cursor Dashboard"
+        )
+    if not TWITTER_USERNAME:
+        errors.append("TWITTER_USERNAME not set")
+
     return errors
 
 
