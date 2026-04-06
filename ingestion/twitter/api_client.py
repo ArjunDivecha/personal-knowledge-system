@@ -232,26 +232,30 @@ class TwitterAPIClient:
         return results
 
     # -------------------------------------------------------------------------
-    # Core: paginate through the user's full timeline
+    # Core: paginate through the user's full timeline (streaming, page by page)
     # -------------------------------------------------------------------------
     def iter_user_tweets(
         self,
         username: str = "",
         since_id: str = None,
         min_length: int = 30,
+        max_tweets: int = None,
     ) -> Iterator[dict]:
         """
-        Yield tweet records from the user's timeline, oldest-first.
+        Yield tweet records from the user's timeline, newest-first per page
+        (Twitter returns newest first; each page is yielded as it arrives so
+        callers can break early without fetching the entire timeline).
 
         On the first (backfill) run, since_id should be None — we paginate
-        all the way back to the oldest tweet the API returns (~3,200 max).
+        all the way back through the timeline (~3,200 tweets max).
         On subsequent runs, pass the most-recently-seen tweet ID so we only
-        fetch new tweets.
+        fetch tweets posted after that point.
 
         Args:
             username:   Twitter handle (without @). Defaults to self.username.
             since_id:   Only return tweets newer than this ID (incremental).
             min_length: Skip tweets shorter than this many characters.
+            max_tweets: Stop after yielding this many tweets (None = no limit).
 
         Yields:
             TweetRecord dicts (see module docstring for schema).
@@ -260,28 +264,25 @@ class TwitterAPIClient:
         if not username:
             raise ValueError("username is required")
 
-        # Step 1: resolve to numeric ID
         user_id = self.get_user_id(username)
         print(f"  Resolved @{username} → user_id {user_id}")
 
         url = f"{_BASE}/users/{user_id}/tweets"
-
-        # Collect all raw tweets + referenced tweet data across pages
-        all_raw_tweets: list[dict] = []
-        all_referenced: dict[str, dict] = {}  # id → {text, author_username}
-        all_users: dict[str, str] = {}        # user_id → username
-
         next_token: Optional[str] = None
         page = 0
+        total_yielded = 0
 
         while True:
+            if max_tweets and total_yielded >= max_tweets:
+                break
+
             page += 1
             params: dict = {
                 "max_results": 100,
                 "tweet.fields": _TWEET_FIELDS,
                 "expansions": _EXPANSIONS,
                 "user.fields": _USER_FIELDS,
-                "exclude": "retweets",   # Never include retweets — not the user's voice
+                "exclude": "retweets",
             }
             if since_id:
                 params["since_id"] = since_id
@@ -290,119 +291,110 @@ class TwitterAPIClient:
 
             print(f"  Fetching page {page} …", end=" ", flush=True)
             data = self._get(url, params)
-            self.estimated_cost_usd += 0.005 * len(data.get("data", []))
 
             tweets_on_page = data.get("data", [])
+            self.estimated_cost_usd += 0.005 * len(tweets_on_page)
             print(f"{len(tweets_on_page)} tweets")
 
             if not tweets_on_page:
                 break
 
-            all_raw_tweets.extend(tweets_on_page)
+            # Build referenced-tweet map from this page's includes
+            page_referenced: dict[str, dict] = {}
+            page_users: dict[str, str] = {}
 
-            # Collect referenced tweet stubs from includes
+            for user in data.get("includes", {}).get("users", []):
+                page_users[user["id"]] = user.get("username", "")
+
             for ref_tweet in data.get("includes", {}).get("tweets", []):
                 tid = ref_tweet["id"]
-                all_referenced[tid] = {
+                author_id = ref_tweet.get("author_id", "")
+                page_referenced[tid] = {
                     "text": _clean_text(ref_tweet.get("text", "")),
-                    "author_username": "",  # fill below
+                    "author_username": page_users.get(author_id, ""),
                 }
-            for user in data.get("includes", {}).get("users", []):
-                all_users[user["id"]] = user.get("username", "")
+
+            # Find any referenced IDs missing from includes and batch-fetch them
+            missing_ids: set[str] = set()
+            for raw in tweets_on_page:
+                for ref in raw.get("referenced_tweets", []):
+                    if ref["id"] not in page_referenced:
+                        missing_ids.add(ref["id"])
+
+            if missing_ids:
+                print(f"    Fetching {len(missing_ids)} referenced tweets …")
+                extra = self.fetch_tweets_by_ids(list(missing_ids))
+                page_referenced.update(extra)
+
+            # Yield records for this page
+            for raw in tweets_on_page:
+                if max_tweets and total_yielded >= max_tweets:
+                    return
+
+                text = _clean_text(raw.get("text", ""))
+                if len(text) < min_length:
+                    continue
+
+                created_str, date_obj = _parse_twitter_date(raw.get("created_at", ""))
+                tweet_id = raw["id"]
+
+                is_reply = False
+                is_quote = False
+                reply_to_id: Optional[str] = None
+                reply_to_text: Optional[str] = None
+                reply_to_author: Optional[str] = None
+                quoted_id: Optional[str] = None
+                quoted_text: Optional[str] = None
+                quoted_author: Optional[str] = None
+
+                for ref in raw.get("referenced_tweets", []):
+                    ref_id = ref["id"]
+                    ref_info = page_referenced.get(ref_id, {})
+                    ref_text = ref_info.get("text", "")
+                    ref_author = ref_info.get("author_username", "")
+                    if ref_author:
+                        ref_author = f"@{ref_author}"
+
+                    if ref["type"] == "replied_to":
+                        is_reply = True
+                        reply_to_id = ref_id
+                        reply_to_text = ref_text or None
+                        reply_to_author = ref_author or None
+                    elif ref["type"] == "quoted":
+                        is_quote = True
+                        quoted_id = ref_id
+                        quoted_text = ref_text or None
+                        quoted_author = ref_author or None
+
+                source_url = f"https://x.com/{username}/status/{tweet_id}"
+                metrics = raw.get("public_metrics", {})
+
+                total_yielded += 1
+                yield {
+                    "id": tweet_id,
+                    "text": text,
+                    "created_at": created_str,
+                    "date_obj": date_obj,
+                    "is_reply": is_reply,
+                    "is_quote": is_quote,
+                    "reply_to_id": reply_to_id,
+                    "reply_to_text": reply_to_text,
+                    "reply_to_author": reply_to_author,
+                    "quoted_id": quoted_id,
+                    "quoted_text": quoted_text,
+                    "quoted_author": quoted_author,
+                    "source_url": source_url,
+                    "lang": raw.get("lang", ""),
+                    "like_count": int(metrics.get("like_count", 0)),
+                    "retweet_count": int(metrics.get("retweet_count", 0)),
+                    "reply_count": int(metrics.get("reply_count", 0)),
+                    "quote_count": int(metrics.get("quote_count", 0)),
+                }
 
             meta = data.get("meta", {})
             next_token = meta.get("next_token")
             if not next_token:
                 break
-
-        # Patch author usernames into referenced tweets using the users map
-        for ref_tweet in all_referenced.values():
-            pass  # author_id not available directly from includes stubs here;
-                  # we do a follow-up batch lookup below for missing authors
-
-        # Step 2: collect IDs of any referenced tweets not already in includes
-        included_ids = set(all_referenced.keys())
-        missing_ids: set[str] = set()
-        for raw in all_raw_tweets:
-            for ref in raw.get("referenced_tweets", []):
-                if ref["id"] not in included_ids:
-                    missing_ids.add(ref["id"])
-
-        if missing_ids:
-            print(f"  Fetching {len(missing_ids)} missing referenced tweets …")
-            extra = self.fetch_tweets_by_ids(list(missing_ids))
-            all_referenced.update(extra)
-
-        # Step 3: also need author usernames for referenced tweets from includes
-        # The includes.users list has all authors; map author_id from includes.tweets
-        # Re-read the raw include data from the last page isn't available, so we
-        # rely on the all_users map we built across all pages.
-
-        # Step 4: build and yield TweetRecord dicts, oldest-first
-        all_raw_tweets.sort(key=lambda t: t.get("created_at", ""))
-
-        for raw in all_raw_tweets:
-            text = _clean_text(raw.get("text", ""))
-            if len(text) < min_length:
-                continue
-
-            created_str, date_obj = _parse_twitter_date(raw.get("created_at", ""))
-            tweet_id = raw["id"]
-
-            # Classify: plain tweet, reply, or quote
-            is_reply = False
-            is_quote = False
-            reply_to_id: Optional[str] = None
-            reply_to_text: Optional[str] = None
-            reply_to_author: Optional[str] = None
-            quoted_id: Optional[str] = None
-            quoted_text: Optional[str] = None
-            quoted_author: Optional[str] = None
-
-            for ref in raw.get("referenced_tweets", []):
-                ref_id = ref["id"]
-                ref_info = all_referenced.get(ref_id, {})
-                ref_text = ref_info.get("text", "")
-                ref_author = ref_info.get("author_username", "")
-                if ref_author:
-                    ref_author = f"@{ref_author}"
-
-                if ref["type"] == "replied_to":
-                    is_reply = True
-                    reply_to_id = ref_id
-                    reply_to_text = ref_text or None
-                    reply_to_author = ref_author or None
-                elif ref["type"] == "quoted":
-                    is_quote = True
-                    quoted_id = ref_id
-                    quoted_text = ref_text or None
-                    quoted_author = ref_author or None
-
-            # Build the URL
-            source_url = f"https://x.com/{username}/status/{tweet_id}"
-
-            metrics = raw.get("public_metrics", {})
-
-            yield {
-                "id": tweet_id,
-                "text": text,
-                "created_at": created_str,
-                "date_obj": date_obj,
-                "is_reply": is_reply,
-                "is_quote": is_quote,
-                "reply_to_id": reply_to_id,
-                "reply_to_text": reply_to_text,
-                "reply_to_author": reply_to_author,
-                "quoted_id": quoted_id,
-                "quoted_text": quoted_text,
-                "quoted_author": quoted_author,
-                "source_url": source_url,
-                "lang": raw.get("lang", ""),
-                "like_count": int(metrics.get("like_count", 0)),
-                "retweet_count": int(metrics.get("retweet_count", 0)),
-                "reply_count": int(metrics.get("reply_count", 0)),
-                "quote_count": int(metrics.get("quote_count", 0)),
-            }
 
     # -------------------------------------------------------------------------
     # Count tweets (for progress display before full pull)

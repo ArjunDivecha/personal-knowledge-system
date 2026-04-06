@@ -219,6 +219,7 @@ def run_twitter_ingestion(
         username=TWITTER_USERNAME,
         since_id=state["last_seen_id"],
         min_length=TWITTER_MIN_TWEET_LENGTH,
+        max_tweets=max_tweets,
     ):
         total_seen += 1
 
@@ -231,11 +232,6 @@ def run_twitter_ingestion(
         if record["id"] in processed_ids:
             skipped_dedup += 1
             continue
-
-        if max_tweets and (
-            len(original_tweets) + len(reply_threads) + len(quote_tweets)
-        ) >= max_tweets:
-            break
 
         if record["is_reply"]:
             reply_threads.append({
