@@ -33,7 +33,7 @@ from typing import Optional
 
 import anthropic
 
-from ..core.config import ANTHROPIC_API_KEY, EXTRACTION_MODEL
+from core.config import ANTHROPIC_API_KEY, EXTRACTION_MODEL
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +63,7 @@ class TweetExtractor:
 
     def __init__(self):
         self.client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        self.last_error: Optional[str] = None
 
     # -------------------------------------------------------------------------
     # 1. Original tweets
@@ -281,6 +282,7 @@ JSON format:
             List of knowledge entry dicts.
         """
         try:
+            self.last_error = None
             response = self.client.messages.create(
                 model=EXTRACTION_MODEL,
                 max_tokens=2000,
@@ -290,10 +292,12 @@ JSON format:
             start = text.find("[")
             end = text.rfind("]") + 1
             if start == -1 or end == 0:
+                self.last_error = "Model response did not contain a JSON array"
                 return []
             raw_entries = json.loads(text[start:end])
 
         except Exception as e:
+            self.last_error = str(e)
             print(f"  LLM error: {e}")
             return []
 

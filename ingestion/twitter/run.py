@@ -72,9 +72,11 @@ import argparse
 import json
 import pickle
 import sys
+import time
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -94,6 +96,8 @@ from twitter.tweet_extractor import TweetExtractor
 # State file: persists the last-seen tweet ID between runs
 # ---------------------------------------------------------------------------
 _STATE_FILE = CHECKPOINT_DIR / "twitter_state.json"
+_PROGRESS_FILE = CHECKPOINT_DIR / "twitter_progress.pkl"
+_PHASE_ORDER = {"original": 0, "reply": 1, "quote": 2, "save": 3}
 
 
 def _load_state() -> dict:
@@ -127,6 +131,40 @@ def _load_checkpoint(name: str):
         with open(path, "rb") as f:
             return pickle.load(f)
     return None
+
+
+def _save_progress(progress: dict) -> None:
+    with open(_PROGRESS_FILE, "wb") as f:
+        pickle.dump(progress, f)
+
+
+def _load_progress() -> Optional[dict]:
+    if _PROGRESS_FILE.exists():
+        with open(_PROGRESS_FILE, "rb") as f:
+            return pickle.load(f)
+    return None
+
+
+def _clear_progress() -> None:
+    if _PROGRESS_FILE.exists():
+        _PROGRESS_FILE.unlink()
+
+
+def _progress_signature(
+    since_id: Optional[str],
+    max_tweets: Optional[int],
+    original_batch_size: int,
+    reply_batch_size: int,
+    quote_batch_size: int,
+) -> dict:
+    """Build the config signature that makes a checkpoint safe to resume."""
+    return {
+        "since_id": since_id,
+        "max_tweets": max_tweets,
+        "original_batch_size": original_batch_size,
+        "reply_batch_size": reply_batch_size,
+        "quote_batch_size": quote_batch_size,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -175,10 +213,37 @@ def run_twitter_ingestion(
     # Load run state
     # ------------------------------------------------------------------
     state = _load_state()
+    expected_signature = _progress_signature(
+        state.get("last_seen_id"),
+        max_tweets,
+        original_batch_size,
+        reply_batch_size,
+        quote_batch_size,
+    )
+    progress = None
     if reset_state:
         state["last_seen_id"] = None
+        _clear_progress()
         print("State reset — will perform full backfill.")
     else:
+        candidate_progress = _load_progress()
+        if (
+            not dry_run
+            and candidate_progress
+            and candidate_progress.get("mode") == "live"
+            and candidate_progress.get("signature") == expected_signature
+        ):
+            progress = candidate_progress
+        elif candidate_progress and not dry_run:
+            print("Ignoring stale extraction checkpoint (run settings do not match).")
+
+    if progress:
+        print("Found resumable extraction checkpoint.")
+        print(
+            f"Resuming from phase={progress['phase']} "
+            f"batch={progress['next_batch_index'] + 1}"
+        )
+    elif not reset_state:
         if state["last_seen_id"]:
             print(
                 f"Incremental run — fetching tweets newer than "
@@ -219,56 +284,112 @@ def run_twitter_ingestion(
     # ------------------------------------------------------------------
     # STEP 1: Fetch tweets from the API
     # ------------------------------------------------------------------
-    print("[1/4] FETCHING TWEETS FROM TWITTER API")
-    print("-" * 40)
-    print(f"Username: @{TWITTER_USERNAME}")
+    original_tweets: list[dict]
+    reply_threads: list[dict]
+    quote_tweets: list[dict]
+    total_seen: int
+    skipped_dedup: int
+    highest_id_seen: str
+    stats: dict
+    all_entries: list[dict]
+    sources_to_mark: list[dict]
+    resume_phase = "original"
+    resume_batch_index = 0
 
-    original_tweets: list[dict] = []
-    reply_threads: list[dict] = []
-    quote_tweets: list[dict] = []
-    total_seen = 0
-    skipped_dedup = 0
-    highest_id_seen: str = state.get("last_seen_id") or ""
+    if progress:
+        print("[1/4] FETCHING TWEETS FROM TWITTER API")
+        print("-" * 40)
+        print("Skipped fetch — using resumable checkpoint")
+        original_tweets = progress["original_tweets"]
+        reply_threads = progress["reply_threads"]
+        quote_tweets = progress["quote_tweets"]
+        total_seen = progress["total_seen"]
+        skipped_dedup = progress["skipped_dedup"]
+        highest_id_seen = progress["highest_id_seen"]
+        stats = progress["stats"]
+        all_entries = progress["all_entries"]
+        sources_to_mark = progress.get("sources_to_mark", [])
+        resume_phase = progress["phase"]
+        resume_batch_index = progress["next_batch_index"]
+    else:
+        print("[1/4] FETCHING TWEETS FROM TWITTER API")
+        print("-" * 40)
+        print(f"Username: @{TWITTER_USERNAME}")
 
-    for record in api.iter_user_tweets(
-        username=TWITTER_USERNAME,
-        since_id=state["last_seen_id"],
-        min_length=TWITTER_MIN_TWEET_LENGTH,
-        max_tweets=max_tweets,
-    ):
-        total_seen += 1
+        original_tweets = []
+        reply_threads = []
+        quote_tweets = []
+        total_seen = 0
+        skipped_dedup = 0
+        highest_id_seen = state.get("last_seen_id") or ""
 
-        # Track the highest tweet ID (for next run's since_id)
-        # Tweet IDs are time-ordered snowflake IDs — larger = newer
-        if not highest_id_seen or int(record["id"]) > int(highest_id_seen):
-            highest_id_seen = record["id"]
+        for record in api.iter_user_tweets(
+            username=TWITTER_USERNAME,
+            since_id=state["last_seen_id"],
+            min_length=TWITTER_MIN_TWEET_LENGTH,
+            max_tweets=max_tweets,
+        ):
+            total_seen += 1
 
-        # Skip if already in Redis dedup set
-        if record["id"] in processed_ids:
-            skipped_dedup += 1
-            continue
+            if not highest_id_seen or int(record["id"]) > int(highest_id_seen):
+                highest_id_seen = record["id"]
 
-        if record["is_reply"]:
-            reply_threads.append({
-                "reply": record,
-                "parent_text": record["reply_to_text"],
-                "parent_author": record["reply_to_author"],
+            if record["id"] in processed_ids:
+                skipped_dedup += 1
+                continue
+
+            if record["is_reply"]:
+                reply_threads.append({
+                    "reply": record,
+                    "parent_text": record["reply_to_text"],
+                    "parent_author": record["reply_to_author"],
+                })
+            elif record["is_quote"]:
+                quote_tweets.append({
+                    "tweet": record,
+                    "quoted_text": record["quoted_text"],
+                    "quoted_author": record["quoted_author"],
+                })
+            else:
+                original_tweets.append(record)
+
+        print(f"Fetched {total_seen} tweets total from API")
+        print(f"  Original:    {len(original_tweets)}")
+        print(f"  Replies:     {len(reply_threads)}")
+        print(f"  Quote-tweets:{len(quote_tweets)}")
+        print(f"  Skipped (already processed): {skipped_dedup}")
+        print("X API usage this fetch:")
+        print(f"  Timeline posts consumed: {api.usage['timeline_posts_consumed']}")
+        print(f"  Lookup posts consumed:   {api.usage['lookup_posts_consumed']}")
+        print(f"  Total posts consumed:    {api.usage['total_posts_consumed']}")
+        print(f"  User lookups:            {api.usage['user_lookups']}")
+
+        stats = {
+            "original_processed": 0,
+            "replies_processed": 0,
+            "quotes_processed": 0,
+            "entries_extracted": 0,
+            "errors": 0,
+            "by_year": defaultdict(int),
+        }
+        all_entries = []
+        sources_to_mark = []
+        if not dry_run:
+            _save_progress({
+                "mode": "live",
+                "signature": expected_signature,
+                "phase": "original",
+                "next_batch_index": 0,
+                "original_tweets": original_tweets,
+                "reply_threads": reply_threads,
+                "quote_tweets": quote_tweets,
+                "total_seen": total_seen,
+                "skipped_dedup": skipped_dedup,
+                "highest_id_seen": highest_id_seen,
+                "all_entries": all_entries,
+                "sources_to_mark": sources_to_mark,
+                "stats": stats,
             })
-        elif record["is_quote"]:
-            quote_tweets.append({
-                "tweet": record,
-                "quoted_text": record["quoted_text"],
-                "quoted_author": record["quoted_author"],
-            })
-        else:
-            original_tweets.append(record)
-
-    print(f"Fetched {total_seen} tweets total from API")
-    print(f"  Original:    {len(original_tweets)}")
-    print(f"  Replies:     {len(reply_threads)}")
-    print(f"  Quote-tweets:{len(quote_tweets)}")
-    print(f"  Skipped (already processed): {skipped_dedup}")
-    print(f"Estimated API fetch cost: ${api.estimated_cost_usd:.4f}")
 
     if not original_tweets and not reply_threads and not quote_tweets:
         print("\nNo new tweets to process.")
@@ -297,110 +418,178 @@ def run_twitter_ingestion(
     print("[3/4] EXTRACTING KNOWLEDGE")
     print("-" * 40)
 
-    all_entries: list[dict] = []
-    stats: dict = {
-        "original_processed": 0,
-        "replies_processed": 0,
-        "quotes_processed": 0,
-        "entries_extracted": 0,
-        "errors": 0,
-        "by_year": defaultdict(int),
-    }
-
-    def _mark_tweets_processed(records: list[dict], tweet_type: str, n_entries: int):
-        """Mark tweet IDs as processed in Redis."""
-        if not storage:
-            return
+    def _queue_tweets_processed(records: list[dict], tweet_type: str, n_entries: int):
+        """Queue tweet IDs to be marked processed after durable storage succeeds."""
         for rec in records:
-            storage.mark_source_processed(
-                "twitter",
-                rec["id"],
+            sources_to_mark.append(
                 {
-                    "date": rec["created_at"],
-                    "type": tweet_type,
-                    "entries_count": n_entries,
-                },
+                    "source_id": rec["id"],
+                    "metadata": {
+                        "date": rec["created_at"],
+                        "type": tweet_type,
+                        "entries_count": n_entries,
+                    },
+                }
+            )
+
+    def _checkpoint_progress(phase: str, next_batch_index: int) -> None:
+        if dry_run:
+            return
+        _save_progress({
+            "mode": "live",
+            "signature": expected_signature,
+            "phase": phase,
+            "next_batch_index": next_batch_index,
+            "original_tweets": original_tweets,
+            "reply_threads": reply_threads,
+            "quote_tweets": quote_tweets,
+            "total_seen": total_seen,
+            "skipped_dedup": skipped_dedup,
+            "highest_id_seen": highest_id_seen,
+            "all_entries": all_entries,
+            "sources_to_mark": sources_to_mark,
+            "stats": stats,
+        })
+
+    def _phase_should_run(phase: str) -> bool:
+        return _PHASE_ORDER[phase] >= _PHASE_ORDER[resume_phase]
+
+    def _extract_with_retry(kind: str, batch_num: int, total_batches: int, extract_fn):
+        """Retry transient/LLM parse failures; abort run if a batch cannot be extracted safely."""
+        max_attempts = 3
+        last_error = None
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                entries = extract_fn()
+            except Exception as e:
+                last_error = str(e)
+            else:
+                if not extractor.last_error:
+                    return entries
+                last_error = extractor.last_error
+
+            if attempt < max_attempts:
+                print(
+                    f"retry {attempt}/{max_attempts - 1} after error: {last_error}",
+                    end=" … ",
+                    flush=True,
+                )
+                time.sleep(min(10, attempt * 2))
+                continue
+
+            raise RuntimeError(
+                f"{kind} batch {batch_num}/{total_batches} failed after "
+                f"{max_attempts} attempts: {last_error}"
             )
 
     # ---- 3a: Original tweets ----
-    if original_tweets:
+    if original_tweets and _phase_should_run("original"):
         n_batches = (len(original_tweets) + original_batch_size - 1) // original_batch_size
         print(f"Original tweets: {len(original_tweets)} in {n_batches} batches")
-        for i in range(0, len(original_tweets), original_batch_size):
+        start_idx = resume_batch_index if resume_phase == "original" else 0
+        for i in range(start_idx * original_batch_size, len(original_tweets), original_batch_size):
             batch = original_tweets[i : i + original_batch_size]
             batch_num = i // original_batch_size + 1
             print(f"  Batch {batch_num}/{n_batches} ({len(batch)} tweets) … ", end="", flush=True)
             try:
-                entries = extractor.extract_from_original_tweets(batch)
+                entries = _extract_with_retry(
+                    "original",
+                    batch_num,
+                    n_batches,
+                    lambda: extractor.extract_from_original_tweets(batch),
+                )
                 all_entries.extend(entries)
                 stats["entries_extracted"] += len(entries)
                 stats["original_processed"] += len(batch)
                 for rec in batch:
                     stats["by_year"][rec["date_obj"].year] += 1
-                _mark_tweets_processed(batch, "original", len(entries))
+                _queue_tweets_processed(batch, "original", len(entries))
                 print(f"{len(entries)} entries")
             except Exception as e:
                 print(f"ERROR: {e}")
                 stats["errors"] += 1
+                _checkpoint_progress("original", batch_num - 1)
+                raise
 
+            _checkpoint_progress("original", batch_num)
             if batch_num % 5 == 0:
                 _save_checkpoint("entries", all_entries)
 
     # ---- 3b: Reply threads ----
-    if reply_threads:
+    if reply_threads and _phase_should_run("reply"):
         n_batches = (len(reply_threads) + reply_batch_size - 1) // reply_batch_size
         print(f"\nReply threads: {len(reply_threads)} in {n_batches} batches")
-        for i in range(0, len(reply_threads), reply_batch_size):
+        start_idx = resume_batch_index if resume_phase == "reply" else 0
+        for i in range(start_idx * reply_batch_size, len(reply_threads), reply_batch_size):
             batch = reply_threads[i : i + reply_batch_size]
             batch_num = i // reply_batch_size + 1
             print(f"  Batch {batch_num}/{n_batches} ({len(batch)} replies) … ", end="", flush=True)
             try:
-                entries = extractor.extract_from_reply_threads(batch)
+                entries = _extract_with_retry(
+                    "reply",
+                    batch_num,
+                    n_batches,
+                    lambda: extractor.extract_from_reply_threads(batch),
+                )
                 all_entries.extend(entries)
                 stats["entries_extracted"] += len(entries)
                 stats["replies_processed"] += len(batch)
                 for thread in batch:
                     rec = thread["reply"]
                     stats["by_year"][rec["date_obj"].year] += 1
-                _mark_tweets_processed(
+                _queue_tweets_processed(
                     [t["reply"] for t in batch], "reply", len(entries)
                 )
                 print(f"{len(entries)} entries")
             except Exception as e:
                 print(f"ERROR: {e}")
                 stats["errors"] += 1
+                _checkpoint_progress("reply", batch_num - 1)
+                raise
 
+            _checkpoint_progress("reply", batch_num)
             if batch_num % 5 == 0:
                 _save_checkpoint("entries", all_entries)
 
     # ---- 3c: Quote-tweets ----
-    if quote_tweets:
+    if quote_tweets and _phase_should_run("quote"):
         n_batches = (len(quote_tweets) + quote_batch_size - 1) // quote_batch_size
         print(f"\nQuote-tweets: {len(quote_tweets)} in {n_batches} batches")
-        for i in range(0, len(quote_tweets), quote_batch_size):
+        start_idx = resume_batch_index if resume_phase == "quote" else 0
+        for i in range(start_idx * quote_batch_size, len(quote_tweets), quote_batch_size):
             batch = quote_tweets[i : i + quote_batch_size]
             batch_num = i // quote_batch_size + 1
             print(f"  Batch {batch_num}/{n_batches} ({len(batch)} quotes) … ", end="", flush=True)
             try:
-                entries = extractor.extract_from_quote_tweets(batch)
+                entries = _extract_with_retry(
+                    "quote",
+                    batch_num,
+                    n_batches,
+                    lambda: extractor.extract_from_quote_tweets(batch),
+                )
                 all_entries.extend(entries)
                 stats["entries_extracted"] += len(entries)
                 stats["quotes_processed"] += len(batch)
                 for q in batch:
                     rec = q["tweet"]
                     stats["by_year"][rec["date_obj"].year] += 1
-                _mark_tweets_processed(
+                _queue_tweets_processed(
                     [q["tweet"] for q in batch], "quote", len(entries)
                 )
                 print(f"{len(entries)} entries")
             except Exception as e:
                 print(f"ERROR: {e}")
                 stats["errors"] += 1
+                _checkpoint_progress("quote", batch_num - 1)
+                raise
 
+            _checkpoint_progress("quote", batch_num)
             if batch_num % 5 == 0:
                 _save_checkpoint("entries", all_entries)
 
     # Final checkpoint
+    _checkpoint_progress("save", 0)
     _save_checkpoint("entries", all_entries)
     _save_checkpoint("stats", dict(stats))
     print()
@@ -430,6 +619,10 @@ def run_twitter_ingestion(
         print("Updating thin index …")
         storage.update_thin_index(all_entries)
         print("  ✓ Thin index updated")
+        print(f"Marking {len(sources_to_mark)} tweet IDs processed …")
+        for item in sources_to_mark:
+            storage.mark_source_processed("twitter", item["source_id"], item["metadata"])
+        print("  ✓ Dedup markers updated")
 
     else:
         print("No entries to save.")
@@ -446,6 +639,7 @@ def run_twitter_ingestion(
     if not dry_run:
         _save_state(state)
         print(f"State saved — next run will use since_id={highest_id_seen}")
+        _clear_progress()
     else:
         print(
             f"(Dry run — state NOT updated. Next run would use since_id={highest_id_seen})"
@@ -464,7 +658,12 @@ def run_twitter_ingestion(
     print(f"  Quote-tweets processed:       {stats['quotes_processed']}")
     print(f"Knowledge entries extracted:    {stats['entries_extracted']}")
     print(f"Extraction errors:              {stats['errors']}")
-    print(f"Estimated API cost this run:    ${api.estimated_cost_usd:.4f}")
+    print("X API usage this run:")
+    print(f"  Timeline posts consumed:      {api.usage['timeline_posts_consumed']}")
+    print(f"  Lookup posts consumed:        {api.usage['lookup_posts_consumed']}")
+    print(f"  Total posts consumed:         {api.usage['total_posts_consumed']}")
+    print(f"  User lookups:                 {api.usage['user_lookups']}")
+    print("  Billing note: check the X Developer Console or /2/usage/tweets")
 
     if stats["by_year"]:
         print("\nTweets by year:")

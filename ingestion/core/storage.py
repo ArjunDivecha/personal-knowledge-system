@@ -206,6 +206,92 @@ class StorageClient:
             vector_metadata["salience_score"] = metadata["salience_score"]
 
         return vector_metadata
+
+    def _merge_unique_items(self, items: list[Any]) -> list[Any]:
+        """Preserve order while removing duplicate JSON-serializable items."""
+        seen: set[str] = set()
+        merged: list[Any] = []
+        for item in items:
+            key = json.dumps(item, sort_keys=True, default=str)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+        return merged
+
+    def _merge_knowledge_entry_data(self, existing: Optional[dict], incoming: dict) -> dict:
+        """Merge repeated writes for the same knowledge entry id without losing provenance."""
+        if not existing:
+            merged = dict(incoming)
+            merged["metadata"] = self._normalize_knowledge_metadata(merged.get("metadata"))
+            return merged
+
+        existing_meta = self._normalize_knowledge_metadata(existing.get("metadata"))
+        incoming_meta = self._normalize_knowledge_metadata(incoming.get("metadata"))
+
+        confidence_rank = {"low": 0, "medium": 1, "high": 2}
+        existing_conf = existing.get("confidence", "medium")
+        incoming_conf = incoming.get("confidence", "medium")
+        merged_confidence = (
+            incoming_conf
+            if confidence_rank.get(incoming_conf, 1) >= confidence_rank.get(existing_conf, 1)
+            else existing_conf
+        )
+
+        merged = dict(existing)
+        merged.update({
+            "domain": incoming.get("domain") or existing.get("domain"),
+            "subdomain": incoming.get("subdomain") or existing.get("subdomain"),
+            "state": incoming.get("state") or existing.get("state", "active"),
+            "detail_level": incoming.get("detail_level") or existing.get("detail_level", "full"),
+            "current_view": incoming.get("current_view") or existing.get("current_view", ""),
+            "confidence": merged_confidence,
+            "full_content_ref": incoming.get("full_content_ref") or existing.get("full_content_ref"),
+        })
+        merged["positions"] = self._merge_unique_items(
+            list(existing.get("positions") or []) + list(incoming.get("positions") or [])
+        )
+        merged["key_insights"] = self._merge_unique_items(
+            list(existing.get("key_insights") or []) + list(incoming.get("key_insights") or [])
+        )
+        merged["knows_how_to"] = self._merge_unique_items(
+            list(existing.get("knows_how_to") or []) + list(incoming.get("knows_how_to") or [])
+        )
+        merged["open_questions"] = self._merge_unique_items(
+            list(existing.get("open_questions") or []) + list(incoming.get("open_questions") or [])
+        )
+        merged["related_repos"] = self._merge_unique_items(
+            list(existing.get("related_repos") or []) + list(incoming.get("related_repos") or [])
+        )
+        merged["related_knowledge"] = self._merge_unique_items(
+            list(existing.get("related_knowledge") or []) + list(incoming.get("related_knowledge") or [])
+        )
+        merged["evolution"] = self._merge_unique_items(
+            list(existing.get("evolution") or []) + list(incoming.get("evolution") or [])
+        )
+        merged["metadata"] = {
+            **existing_meta,
+            **incoming_meta,
+            "created_at": min(existing_meta["created_at"], incoming_meta["created_at"]),
+            "updated_at": max(existing_meta["updated_at"], incoming_meta["updated_at"]),
+            "source_conversations": self._merge_unique_items(
+                list(existing_meta.get("source_conversations") or [])
+                + list(incoming_meta.get("source_conversations") or [])
+            ),
+            "source_messages": self._merge_unique_items(
+                list(existing_meta.get("source_messages") or [])
+                + list(incoming_meta.get("source_messages") or [])
+            ),
+            "access_count": max(
+                int(existing_meta.get("access_count", 0) or 0),
+                int(incoming_meta.get("access_count", 0) or 0),
+            ),
+            "consolidation_notes": self._merge_unique_items(
+                list(existing_meta.get("consolidation_notes") or [])
+                + list(incoming_meta.get("consolidation_notes") or [])
+            ),
+        }
+        return merged
     
     # -------------------------------------------------------------------------
     # KNOWLEDGE ENTRY OPERATIONS
@@ -219,8 +305,7 @@ class StorageClient:
             embedding_text: Text to embed (defaults to domain + current_view)
         """
         entry_id = entry["id"]
-        entry = dict(entry)
-        entry["metadata"] = self._normalize_knowledge_metadata(entry.get("metadata"))
+        entry = self._merge_knowledge_entry_data(self.get_knowledge_entry(entry_id), dict(entry))
         
         # Save to Redis
         key = f"knowledge:{entry_id}"
@@ -260,16 +345,24 @@ class StorageClient:
         if not entries:
             return
 
-        entries = [dict(entry) for entry in entries]
+        merged_by_id: dict[str, dict] = {}
         for entry in entries:
-            entry["metadata"] = self._normalize_knowledge_metadata(entry.get("metadata"))
-        
+            entry_id = entry["id"]
+            current = merged_by_id.get(entry_id)
+            if current is not None:
+                merged_by_id[entry_id] = self._merge_knowledge_entry_data(current, dict(entry))
+                continue
+            merged_by_id[entry_id] = self._merge_knowledge_entry_data(
+                self.get_knowledge_entry(entry_id),
+                dict(entry),
+            )
+        entries = list(merged_by_id.values())
+
         # Generate all embeddings first
-        if embedding_texts is None:
-            embedding_texts = [
-                f"{e['domain']}: {e.get('current_view', '')}"
-                for e in entries
-            ]
+        embedding_texts = [
+            f"{e['domain']}: {e.get('current_view', '')}"
+            for e in entries
+        ]
         
         embeddings = self.generate_embeddings_batch(embedding_texts)
         
@@ -362,6 +455,7 @@ class StorageClient:
                     "top_repo": None,
                 }
                 current["topics"].append(topic_summary)
+                existing_ids.add(entry["id"])
         
         # Update metadata
         current["generated_at"] = datetime.utcnow().isoformat()

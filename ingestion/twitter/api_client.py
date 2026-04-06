@@ -2,7 +2,7 @@
 =============================================================================
 TWITTER / X API v2 CLIENT
 =============================================================================
-Version: 1.0.0
+Version: 1.1.0
 Last Updated: April 2026
 
 PURPOSE:
@@ -13,7 +13,7 @@ Thin wrapper around the Twitter/X API v2 that handles:
   - Fetching the parent tweet for every reply (so context is preserved)
   - Fetching the quoted tweet for every quote-tweet
   - Automatic rate-limit back-off (HTTP 429 → sleep until reset)
-  - Per-request cost tracking (pay-per-use: $0.005/read, $0.01/lookup)
+  - Usage tracking for billable X resources
 
 TWITTER API ENDPOINTS USED:
   GET /2/users/by/username/:username     — resolve handle to numeric user ID
@@ -56,7 +56,6 @@ TWEET RECORD SCHEMA:
 """
 
 import time
-import sys
 from datetime import datetime, timezone
 from typing import Iterator, Optional
 
@@ -139,8 +138,14 @@ class TwitterAPIClient:
             "Authorization": f"Bearer {self.bearer_token}",
             "User-Agent": "personal-knowledge-system/1.0",
         })
-        # Running cost tracker ($)
-        self.estimated_cost_usd: float = 0.0
+        # X pricing is credit-based and shown in the Developer Console.
+        # We track billable usage counts here instead of guessing dollars.
+        self.usage = {
+            "user_lookups": 0,
+            "timeline_posts_consumed": 0,
+            "lookup_posts_consumed": 0,
+            "total_posts_consumed": 0,
+        }
 
     # -------------------------------------------------------------------------
     # Internal: HTTP GET with automatic rate-limit sleep
@@ -178,11 +183,10 @@ class TwitterAPIClient:
     def get_user_id(self, username: str) -> str:
         """
         Resolve a Twitter username to its numeric user ID.
-        Costs $0.01 per call (user lookup).
         """
         url = f"{_BASE}/users/by/username/{username.lstrip('@')}"
         data = self._get(url, params={"user.fields": "id,username,name"})
-        self.estimated_cost_usd += 0.01
+        self.usage["user_lookups"] += 1
         user = data.get("data", {})
         if not user:
             raise RuntimeError(f"User @{username} not found: {data}")
@@ -195,7 +199,6 @@ class TwitterAPIClient:
         """
         Batch-fetch up to 100 tweets by ID.
         Returns {tweet_id: {text, author_username}} dict.
-        Costs $0.005 per tweet fetched.
         """
         if not tweet_ids:
             return {}
@@ -214,14 +217,16 @@ class TwitterAPIClient:
                     "user.fields": "username",
                 },
             )
-            self.estimated_cost_usd += len(batch) * 0.005
-
             # Build author_id → username map from includes
             author_map: dict[str, str] = {}
             for user in data.get("includes", {}).get("users", []):
                 author_map[user["id"]] = user.get("username", "")
 
-            for tweet in data.get("data", []):
+            tweets_returned = data.get("data", [])
+            self.usage["lookup_posts_consumed"] += len(tweets_returned)
+            self.usage["total_posts_consumed"] += len(tweets_returned)
+
+            for tweet in tweets_returned:
                 tid = tweet["id"]
                 author_username = author_map.get(tweet.get("author_id", ""), "")
                 results[tid] = {
@@ -293,7 +298,8 @@ class TwitterAPIClient:
             data = self._get(url, params)
 
             tweets_on_page = data.get("data", [])
-            self.estimated_cost_usd += 0.005 * len(tweets_on_page)
+            self.usage["timeline_posts_consumed"] += len(tweets_on_page)
+            self.usage["total_posts_consumed"] += len(tweets_on_page)
             print(f"{len(tweets_on_page)} tweets")
 
             if not tweets_on_page:
@@ -413,7 +419,9 @@ class TwitterAPIClient:
             "tweet.fields": "id",
             "exclude": "retweets",
         })
-        self.estimated_cost_usd += 0.005 * len(data.get("data", []))
+        tweets_returned = data.get("data", [])
+        self.usage["timeline_posts_consumed"] += len(tweets_returned)
+        self.usage["total_posts_consumed"] += len(tweets_returned)
         return data.get("meta", {}).get("result_count", 0)
 
 
@@ -445,4 +453,5 @@ if __name__ == "__main__":
         if i >= 2:
             break
 
-    print(f"\nEstimated API cost so far: ${client.estimated_cost_usd:.4f}")
+    print(f"\nPosts consumed so far: {client.usage['total_posts_consumed']}")
+    print(f"User lookups so far: {client.usage['user_lookups']}")
