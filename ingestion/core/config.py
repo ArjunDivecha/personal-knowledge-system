@@ -109,6 +109,28 @@ GMAIL_SKIP_DOMAINS = {
     "facebook.com", "twitter.com", "linkedin.com", "instagram.com",
 }
 
+# -----------------------------------------------------------------------------
+# TWITTER / X CONFIGURATION
+# -----------------------------------------------------------------------------
+# Path to the Twitter data archive (the folder you download from Twitter/X)
+# The archive contains a data/ subfolder with tweets.js, like.js, etc.
+TWITTER_ARCHIVE_PATH = Path(
+    os.getenv(
+        "TWITTER_ARCHIVE_PATH",
+        str(Path.home() / "Downloads" / "twitter-archive")
+    )
+)
+
+# Minimum number of characters a tweet must have to be worth extracting
+TWITTER_MIN_TWEET_LENGTH = 30
+
+# Only ingest tweets from this year onwards (0 = all years)
+TWITTER_SINCE_YEAR = int(os.getenv("TWITTER_SINCE_YEAR", "2015"))
+
+# Your Twitter/X username (without the @) — used to tell your tweets apart
+# from the original tweets you were replying to
+TWITTER_USERNAME = os.getenv("TWITTER_USERNAME", "")
+
 
 # -----------------------------------------------------------------------------
 # VALIDATION
@@ -152,6 +174,27 @@ def validate_gmail_config() -> list[str]:
     if not GMAIL_MBOX_PATH.exists():
         errors.append(f"GMAIL_MBOX_PATH does not exist: {GMAIL_MBOX_PATH}")
     
+    return errors
+
+
+def validate_twitter_config() -> list[str]:
+    """Check Twitter-specific configuration."""
+    errors = validate_config()
+
+    if not TWITTER_ARCHIVE_PATH.exists():
+        errors.append(f"TWITTER_ARCHIVE_PATH does not exist: {TWITTER_ARCHIVE_PATH}")
+    else:
+        tweets_js = TWITTER_ARCHIVE_PATH / "data" / "tweets.js"
+        tweets_js_alt = TWITTER_ARCHIVE_PATH / "tweets.js"
+        if not tweets_js.exists() and not tweets_js_alt.exists():
+            errors.append(
+                f"tweets.js not found inside {TWITTER_ARCHIVE_PATH}. "
+                "Expected at data/tweets.js or tweets.js"
+            )
+
+    if not TWITTER_USERNAME:
+        errors.append("TWITTER_USERNAME not set")
+
     return errors
 
 
