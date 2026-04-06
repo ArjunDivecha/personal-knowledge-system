@@ -112,24 +112,20 @@ GMAIL_SKIP_DOMAINS = {
 # -----------------------------------------------------------------------------
 # TWITTER / X CONFIGURATION
 # -----------------------------------------------------------------------------
-# Path to the Twitter data archive (the folder you download from Twitter/X)
-# The archive contains a data/ subfolder with tweets.js, like.js, etc.
-TWITTER_ARCHIVE_PATH = Path(
-    os.getenv(
-        "TWITTER_ARCHIVE_PATH",
-        str(Path.home() / "Downloads" / "twitter-archive")
-    )
-)
+# Bearer Token from developer.twitter.com — used for all read API calls.
+# Set this in ingestion/.env as:  TWITTER_BEARER_TOKEN=<your token>
+TWITTER_BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN", "")
 
-# Minimum number of characters a tweet must have to be worth extracting
+# Your Twitter/X handle (without the @).  Used to look up your user ID.
+TWITTER_USERNAME = os.getenv("TWITTER_USERNAME", "arjundivecha")
+
+# Minimum tweet length (characters) worth sending to the LLM.
 TWITTER_MIN_TWEET_LENGTH = 30
 
-# Only ingest tweets from this year onwards (0 = all years)
-TWITTER_SINCE_YEAR = int(os.getenv("TWITTER_SINCE_YEAR", "2015"))
-
-# Your Twitter/X username (without the @) — used to tell your tweets apart
-# from the original tweets you were replying to
-TWITTER_USERNAME = os.getenv("TWITTER_USERNAME", "")
+# On pay-per-use, the user timeline endpoint returns at most ~3,200 tweets
+# total (hard Twitter limit).  We paginate all the way back on the first run,
+# then on subsequent runs we only pull tweets newer than the last seen ID.
+TWITTER_MAX_RESULTS_PER_PAGE = 100   # Twitter API max per page for timelines
 
 
 # -----------------------------------------------------------------------------
@@ -178,20 +174,14 @@ def validate_gmail_config() -> list[str]:
 
 
 def validate_twitter_config() -> list[str]:
-    """Check Twitter-specific configuration."""
+    """Check Twitter API configuration."""
     errors = validate_config()
 
-    if not TWITTER_ARCHIVE_PATH.exists():
-        errors.append(f"TWITTER_ARCHIVE_PATH does not exist: {TWITTER_ARCHIVE_PATH}")
-    else:
-        tweets_js = TWITTER_ARCHIVE_PATH / "data" / "tweets.js"
-        tweets_js_alt = TWITTER_ARCHIVE_PATH / "tweets.js"
-        if not tweets_js.exists() and not tweets_js_alt.exists():
-            errors.append(
-                f"tweets.js not found inside {TWITTER_ARCHIVE_PATH}. "
-                "Expected at data/tweets.js or tweets.js"
-            )
-
+    if not TWITTER_BEARER_TOKEN:
+        errors.append(
+            "TWITTER_BEARER_TOKEN not set — add it to ingestion/.env or "
+            "as a secret in the Cursor Dashboard"
+        )
     if not TWITTER_USERNAME:
         errors.append("TWITTER_USERNAME not set")
 
