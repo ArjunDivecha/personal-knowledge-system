@@ -25,8 +25,9 @@ distills durable knowledge using Claude API, links to GitHub repos when
 the session was working in a git repository, and saves entries to the
 knowledge system via StorageClient.
 
-Designed for manual or remote-triggered ingestion. Uses byte-offset tracking
-so each run only processes new data since the last run.
+Designed for manual or scheduled local ingestion. A daily local launcher runs
+this pipeline one hour before the remote Dream job, and byte-offset tracking
+ensures each run only processes new data since the last run.
 
 DEPENDENCIES:
 - anthropic
@@ -101,6 +102,8 @@ logging.basicConfig(
     handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler()],
 )
 log = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 # ── State Management ─────────────────────────────────────────────────────────
@@ -404,9 +407,10 @@ def process_file(
         turns, new_offset, session_meta = parse_codex(path, offset)
 
     if not turns:
-        # Update state even if no turns (file was read)
-        state["files"][state_key] = {"offset": new_offset, "mtime": current_mtime}
-        save_state(state)
+        if not dry_run:
+            # Update state only for real runs; dry-runs must not advance checkpoints.
+            state["files"][state_key] = {"offset": new_offset, "mtime": current_mtime}
+            save_state(state)
         return 0
 
     log.info(f"[{source_type}] {len(turns)} new turns from {path.name}")
@@ -425,9 +429,9 @@ def process_file(
         saved = save_entries(entries, turns, storage, github_info, dry_run)
         log.info(f"  -> {saved}/{len(entries)} entries saved")
 
-    # Update state
-    state["files"][state_key] = {"offset": new_offset, "mtime": current_mtime}
-    save_state(state)
+    if not dry_run:
+        state["files"][state_key] = {"offset": new_offset, "mtime": current_mtime}
+        save_state(state)
 
     return saved
 
@@ -536,10 +540,10 @@ def main():
                 f"{total_saved} entries saved, {elapsed:.0f}s elapsed"
             )
 
-    # Update state metadata
-    state["last_run"] = datetime.now(timezone.utc).isoformat()
-    state["stats"]["total_saved"] = state["stats"].get("total_saved", 0) + total_saved
-    save_state(state)
+    if not args.dry_run:
+        state["last_run"] = datetime.now(timezone.utc).isoformat()
+        state["stats"]["total_saved"] = state["stats"].get("total_saved", 0) + total_saved
+        save_state(state)
 
     elapsed = time.time() - start_time
     log.info(

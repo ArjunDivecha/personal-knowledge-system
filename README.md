@@ -344,6 +344,24 @@ Dream is the long-horizon maintenance loop. The idea is:
 
 Dream is Phase 5 work. The live scheduler, audit output, reversible archive/restore path, and write-capable operator tools are implemented. The last recorded Dream run can still show `dry_run` if it predates the latest deploy, but the deployed scheduler is now set for full live runs of the currently implemented Dream path.
 
+### Current Scheduling Model
+
+The system currently uses two schedulers for two different jobs:
+
+- Cloudflare Workers runs the remote Dream job at `07:10 UTC`
+- this machine runs a local macOS `launchd` job for Claude Code and Codex session ingestion at `06:10 UTC`
+
+The local scheduler exists because the source files for agent-session ingestion
+live in `~/.claude/projects` and `~/.codex/sessions`. That LaunchAgent is
+managed from this repo at
+`ingestion/agent_sessions/com.arjun.knowledge-agent-sessions.plist`.
+
+macOS `launchd` schedules in local time rather than UTC, so the job is wired to
+fire at both `22:10` and `23:10` local time and the wrapper script
+`ingestion/agent_sessions/run_scheduled.sh` checks the current UTC hour before
+running. That keeps the actual ingestion pinned to `06:10 UTC` across PDT/PST
+without requiring manual DST edits.
+
 ## What Is Live Today
 
 As of March 27, 2026, the live system has:
@@ -368,6 +386,7 @@ Operationally, the following are live:
 - OAuth-enabled Cloudflare MCP server
 - background reconsolidation on retrieval
 - write-capable MCP tools for `restore_archived` and `set_context_type`
+- daily local Claude Code + Codex session ingestion one hour before Dream
 - nightly full-live Dream scheduler and audit records
 - reversible Dream archive snapshot and restore mechanics
 - deterministic duplicate merge and contradiction handling in Dream replay

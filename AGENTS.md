@@ -223,8 +223,16 @@ Start with:
 - `cloudflare-mcp/mcp-server/src/index.ts`
 - `cloudflare-mcp/mcp-server/src/dream.ts`
 
-The intended setup is remote scheduling on Cloudflare Workers. Do not install
-or rely on local macOS `launchd` jobs for this repo.
+The intended setup is:
+- remote scheduling on Cloudflare Workers for Dream at `07:10 UTC`
+- one local macOS `launchd` job for `ingestion/agent_sessions/run.py` at `06:10 UTC`
+
+Because macOS launchd schedules in local time, the repo-managed agent-session
+LaunchAgent fires at both `22:10` and `23:10` local time and uses a UTC guard
+wrapper so only the invocation that lands at `06:10 UTC` proceeds.
+
+Do not add local macOS `launchd` jobs for other ingestion pipelines unless the
+user explicitly asks for them.
 
 ## Commands That Are Usually Relevant
 
@@ -246,6 +254,7 @@ python agent_sessions/run.py --dry-run
 python agent_sessions/run.py --backfill
 python agent_sessions/run.py --source claude_code
 python agent_sessions/run.py --source codex_cli
+bash agent_sessions/run_scheduled.sh --ignore-utc-guard
 ```
 
 ### GitHub ingestion
