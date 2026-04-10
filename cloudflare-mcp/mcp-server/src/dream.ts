@@ -143,8 +143,14 @@ const DREAM_LAST_ATTEMPT_KEY = "dream:last_attempt";
 const DREAM_RUN_PREFIX = "dream:run:";
 const ARCHIVED_PREFIX = "archived";
 const DREAM_LOCK_TTL_SECONDS = 30 * 60;
+const DREAM_LOCK_STALE_AFTER_SECONDS = 5 * 60;
 const DREAM_SAMPLE_LIMIT = 25;
+const DREAM_STORAGE_SAMPLE_LIMIT = 10;
+const DREAM_STORAGE_FALLBACK_SAMPLE_LIMIT = 3;
+const DREAM_STORAGE_MAX_BYTES = 9 * 1024 * 1024;
+const DREAM_STORAGE_MAX_REQUEST_BYTES = 10 * 1024 * 1024 - 64 * 1024;
 const DREAM_SCAN_COUNT = 200;
+const DREAM_MGET_BATCH_SIZE = 25;
 const INDEX_REBUILD_LOCK_KEY = "index:rebuild:lock";
 const INDEX_REBUILD_LOCK_TTL_SECONDS = 5 * 60;
 const THIN_INDEX_STAGING_PREFIX = "index:staging:";
@@ -166,6 +172,36 @@ const CONTRADICTION_MARKER_PAIRS: Array<[string, string]> = [
 	["expand", "contract"],
 	["accelerating", "slowing"],
 ];
+
+const DREAM_STORAGE_SAMPLED_FIELDS = [
+	"duplicate_plans",
+	"contradiction_plans",
+	"merged_entries",
+	"contradiction_entries",
+	"archive_candidates",
+	"archived_entries",
+	"promoted_entries",
+	"archive_candidates_sample",
+] as const;
+
+const DREAM_REPLAY_DETAIL_FIELDS = [
+	"merged_entries",
+	"contradiction_entries",
+	"promoted_entries",
+] as const;
+
+interface DreamRunStorageOptions {
+	maxBytes?: number;
+	sampleLimit?: number;
+	fallbackSampleLimit?: number;
+}
+
+interface DreamLockState {
+	run_id?: string;
+	run_at?: string;
+	trigger?: string;
+	dry_run?: boolean;
+}
 
 function createRedisClient(env: Env): Redis {
 	return new Redis({
@@ -770,6 +806,20 @@ async function scanKeys(redis: Redis, match: string): Promise<string[]> {
 	return keys;
 }
 
+async function mgetBatched<T>(redis: Redis, keys: string[], batchSize = DREAM_MGET_BATCH_SIZE): Promise<T[]> {
+	if (keys.length === 0) {
+		return [];
+	}
+
+	const results: T[] = [];
+	for (let index = 0; index < keys.length; index += batchSize) {
+		const batch = keys.slice(index, index + batchSize);
+		const values = await redis.mget<T[]>(batch);
+		results.push(...values);
+	}
+	return results;
+}
+
 async function loadEntryBatchByType(
 	redis: Redis,
 	entryType: EntryType,
@@ -777,7 +827,7 @@ async function loadEntryBatchByType(
 	const keys = await scanKeys(redis, `${entryType}:*`);
 	if (keys.length === 0) return { entries: [], archivedCount: 0 };
 
-	const rawEntries = await redis.mget<unknown[]>(keys);
+	const rawEntries = await mgetBatched<unknown>(redis, keys);
 	const normalizedEntries = rawEntries
 		.map((rawEntry) => normalizeEntry(rawEntry, entryType))
 		.filter((entry): entry is Record<string, unknown> => entry !== null);
@@ -786,8 +836,8 @@ async function loadEntryBatchByType(
 		.filter((entryId): entryId is string => entryId !== null);
 
 	const [accessCounts, lastAccessedValues] = await Promise.all([
-		ids.length > 0 ? redis.mget<unknown[]>(ids.map(getEntryAccessKey)) : Promise.resolve([]),
-		ids.length > 0 ? redis.mget<unknown[]>(ids.map(getEntryLastAccessedKey)) : Promise.resolve([]),
+		ids.length > 0 ? mgetBatched<unknown>(redis, ids.map(getEntryAccessKey)) : Promise.resolve([]),
+		ids.length > 0 ? mgetBatched<unknown>(redis, ids.map(getEntryLastAccessedKey)) : Promise.resolve([]),
 	]);
 
 	const loadedEntries: LoadedEntry[] = [];
@@ -923,17 +973,254 @@ function summarizeArchiveCandidates(entries: LoadedEntry[]): Array<Record<string
 		}));
 }
 
+function jsonSizeBytes(value: unknown): number {
+	return new TextEncoder().encode(JSON.stringify(value)).length;
+}
+
+function estimateRedisSetRequestBytes(key: string, serializedValue: string): number {
+	return jsonSizeBytes(["set", key, serializedValue]);
+}
+
+function cloneJsonRecord<T extends Record<string, unknown>>(value: T): T {
+	return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function compactStoredValue(value: unknown, depth = 0): unknown {
+	if (typeof value === "string") {
+		return truncate(value, depth === 0 ? 280 : 180);
+	}
+	if (
+		value === null ||
+		typeof value === "number" ||
+		typeof value === "boolean"
+	) {
+		return value;
+	}
+	if (Array.isArray(value)) {
+		const nestedLimit = depth === 0 ? 5 : 3;
+		return value.slice(0, nestedLimit).map((item) => compactStoredValue(item, depth + 1));
+	}
+	if (value && typeof value === "object") {
+		const entries = Object.entries(value as Record<string, unknown>);
+		const compacted: Record<string, unknown> = {};
+		for (const [key, nestedValue] of entries.slice(0, 12)) {
+			compacted[key] = compactStoredValue(nestedValue, depth + 1);
+		}
+		if (entries.length > 12) {
+			compacted.__truncated_field_count = entries.length - 12;
+		}
+		return compacted;
+	}
+	return null;
+}
+
+function sampleStoredArray(values: unknown[], sampleLimit: number): unknown[] {
+	return values.slice(0, sampleLimit).map((item) => compactStoredValue(item));
+}
+
+function buildMinimalStoredPhases(phases: Record<string, unknown>): Record<string, unknown> {
+	const minimalPhases: Record<string, unknown> = {};
+	for (const [phaseName, phaseRaw] of Object.entries(phases)) {
+		const phase = parseStoredObject(phaseRaw);
+		if (!phase) continue;
+		const minimalPhase: Record<string, unknown> = {};
+		for (const [key, value] of Object.entries(phase)) {
+			if (typeof value === "number" || typeof value === "boolean" || value === null) {
+				minimalPhase[key] = value;
+				continue;
+			}
+			if (typeof value === "string") {
+				minimalPhase[key] = truncate(value, 220);
+			}
+		}
+		minimalPhases[phaseName] = minimalPhase;
+	}
+	return minimalPhases;
+}
+
+function buildMinimalStoredRunRecord(
+	runRecord: Record<string, unknown>,
+	compaction: Record<string, unknown>,
+	fallbackSampleLimit: number,
+): Record<string, unknown> {
+	const phases = parseStoredObject(runRecord.phases) ?? {};
+	const minimalRecord: Record<string, unknown> = {
+		schema_version: runRecord.schema_version ?? 1,
+		run_id: runRecord.run_id ?? null,
+		run_at: runRecord.run_at ?? null,
+		completed_at: runRecord.completed_at ?? null,
+		status: runRecord.status ?? null,
+		dry_run: runRecord.dry_run ?? null,
+		trigger: runRecord.trigger ?? null,
+		cron: runRecord.cron ?? null,
+		scheduled_time: runRecord.scheduled_time ?? null,
+		note: typeof runRecord.note === "string" ? truncate(runRecord.note, 280) : runRecord.note ?? null,
+		error: typeof runRecord.error === "string" ? truncate(runRecord.error, 360) : runRecord.error ?? null,
+		next_action:
+			typeof runRecord.next_action === "string"
+				? truncate(runRecord.next_action, 280)
+				: runRecord.next_action ?? null,
+		counts: parseStoredObject(runRecord.counts) ?? {},
+		phases: buildMinimalStoredPhases(phases),
+	};
+
+	for (const field of DREAM_STORAGE_SAMPLED_FIELDS) {
+		const raw = runRecord[field];
+		if (Array.isArray(raw) && raw.length > 0) {
+			minimalRecord[field] = sampleStoredArray(raw, fallbackSampleLimit);
+		}
+	}
+
+	minimalRecord.storage_compaction = {
+		...compaction,
+		mode: "minimal",
+		fallback_sample_limit: fallbackSampleLimit,
+	};
+	return minimalRecord;
+}
+
+export function compactDreamRunRecordForStorage(
+	runRecord: Record<string, unknown>,
+	options: DreamRunStorageOptions = {},
+): Record<string, unknown> {
+	const maxBytes = options.maxBytes ?? DREAM_STORAGE_MAX_BYTES;
+	const sampleLimit = options.sampleLimit ?? DREAM_STORAGE_SAMPLE_LIMIT;
+	const fallbackSampleLimit = options.fallbackSampleLimit ?? DREAM_STORAGE_FALLBACK_SAMPLE_LIMIT;
+	const originalSize = jsonSizeBytes(runRecord);
+
+	if (originalSize <= maxBytes) {
+		return runRecord;
+	}
+
+	const storedRecord = cloneJsonRecord(runRecord);
+	const compaction: Record<string, unknown> = {
+		mode: "sampled",
+		max_bytes: maxBytes,
+		original_size_bytes: originalSize,
+		sample_limit: sampleLimit,
+		sampled_fields: {} as Record<string, unknown>,
+		removed_fields: [] as string[],
+	};
+
+	const phases = parseStoredObject(storedRecord.phases);
+	const replay = phases ? parseStoredObject(phases.replay) : null;
+	if (phases && replay) {
+		for (const field of DREAM_REPLAY_DETAIL_FIELDS) {
+			if (Array.isArray(replay[field])) {
+				delete replay[field];
+				((compaction.removed_fields as string[]) ?? []).push(`phases.replay.${field}`);
+			}
+		}
+		phases.replay = replay;
+		storedRecord.phases = phases;
+	}
+
+	for (const field of DREAM_STORAGE_SAMPLED_FIELDS) {
+		const raw = storedRecord[field];
+		if (!Array.isArray(raw)) continue;
+		const sampled = sampleStoredArray(raw, sampleLimit);
+		storedRecord[field] = sampled;
+		((compaction.sampled_fields as Record<string, unknown>) ?? {})[field] = {
+			total_count: raw.length,
+			stored_count: sampled.length,
+		};
+	}
+
+	if (typeof storedRecord.next_action === "string") {
+		storedRecord.next_action = truncate(storedRecord.next_action, 280);
+	}
+
+	storedRecord.storage_compaction = compaction;
+	const sampledSize = jsonSizeBytes(storedRecord);
+	if (sampledSize <= maxBytes) {
+		(storedRecord.storage_compaction as Record<string, unknown>).stored_size_bytes = sampledSize;
+		return storedRecord;
+	}
+
+	const minimalRecord = buildMinimalStoredRunRecord(runRecord, compaction, fallbackSampleLimit);
+	const minimalSize = jsonSizeBytes(minimalRecord);
+	(minimalRecord.storage_compaction as Record<string, unknown>).stored_size_bytes = minimalSize;
+	return minimalRecord;
+}
+
 async function writeRunRecord(
 	redis: Redis,
 	runRecord: Record<string, unknown>,
 	setAsLatest: boolean,
 ): Promise<void> {
 	const runId = String(runRecord.run_id);
-	await redis.set(`${DREAM_RUN_PREFIX}${runId}`, JSON.stringify(runRecord));
-	await redis.set(DREAM_LAST_ATTEMPT_KEY, JSON.stringify(runRecord));
-	if (setAsLatest) {
-		await redis.set(DREAM_LAST_RUN_KEY, JSON.stringify(runRecord));
+	const keys = [
+		`${DREAM_RUN_PREFIX}${runId}`,
+		DREAM_LAST_ATTEMPT_KEY,
+		...(setAsLatest ? [DREAM_LAST_RUN_KEY] : []),
+	];
+
+	const storedRunRecord = compactDreamRunRecordForStorage(runRecord, {
+		maxBytes: 1,
+		sampleLimit: 1,
+		fallbackSampleLimit: 1,
+	});
+	const serialized = JSON.stringify(storedRunRecord);
+	const maxRequestBytes = Math.max(...keys.map((key) => estimateRedisSetRequestBytes(key, serialized)));
+
+	if (maxRequestBytes > DREAM_STORAGE_MAX_REQUEST_BYTES) {
+		throw new Error(
+			`Dream audit record still exceeds Redis request budget after compaction (${maxRequestBytes} bytes).`,
+		);
 	}
+
+	await redis.set(`${DREAM_RUN_PREFIX}${runId}`, serialized);
+	await redis.set(DREAM_LAST_ATTEMPT_KEY, serialized);
+	if (setAsLatest) {
+		await redis.set(DREAM_LAST_RUN_KEY, serialized);
+	}
+}
+
+function isDreamLockStale(lockState: DreamLockState | null, nowMs: number = Date.now()): boolean {
+	if (!lockState) {
+		return true;
+	}
+
+	const runAt = typeof lockState.run_at === "string" ? Date.parse(lockState.run_at) : Number.NaN;
+	if (!Number.isFinite(runAt)) {
+		return true;
+	}
+
+	return nowMs - runAt >= DREAM_LOCK_STALE_AFTER_SECONDS * 1000;
+}
+
+async function acquireDreamLock(
+	redis: Redis,
+	lockPayload: string,
+	nowMs: number,
+): Promise<{ acquired: boolean; existingLock: DreamLockState | null; reclaimedStaleLock: boolean }> {
+	const initialAttempt = await redis.set(DREAM_LOCK_KEY, lockPayload, {
+		nx: true,
+		ex: DREAM_LOCK_TTL_SECONDS,
+	});
+	if (initialAttempt) {
+		return { acquired: true, existingLock: null, reclaimedStaleLock: false };
+	}
+
+	const existingLock = parseStoredObject(await redis.get(DREAM_LOCK_KEY)) as DreamLockState | null;
+	if (!isDreamLockStale(existingLock, nowMs)) {
+		return { acquired: false, existingLock, reclaimedStaleLock: false };
+	}
+
+	await redis.del(DREAM_LOCK_KEY);
+	const retryAttempt = await redis.set(DREAM_LOCK_KEY, lockPayload, {
+		nx: true,
+		ex: DREAM_LOCK_TTL_SECONDS,
+	});
+	if (retryAttempt) {
+		return { acquired: true, existingLock, reclaimedStaleLock: true };
+	}
+
+	return {
+		acquired: false,
+		existingLock: (parseStoredObject(await redis.get(DREAM_LOCK_KEY)) as DreamLockState | null) ?? existingLock,
+		reclaimedStaleLock: false,
+	};
 }
 
 function buildBaseRunRecord(
@@ -3053,16 +3340,20 @@ export async function runDreamCycle(
 		trigger: options.trigger,
 		dry_run: options.dryRun,
 	});
-	const lockResult = await redis.set(DREAM_LOCK_KEY, lockPayload, {
-		nx: true,
-		ex: DREAM_LOCK_TTL_SECONDS,
-	});
-	if (!lockResult) {
+	const startedAtMs = Date.parse(startedAt);
+	const lockResult = await acquireDreamLock(redis, lockPayload, startedAtMs);
+	if (!lockResult.acquired) {
+		const blockedBy =
+			lockResult.existingLock && typeof lockResult.existingLock.run_id === "string"
+				? lockResult.existingLock.run_id
+				: null;
 		const skippedRecord = {
 			...baseRunRecord,
 			status: "skipped_locked",
 			completed_at: new Date().toISOString(),
-			next_action: "Wait for the active Dream run to finish before starting another.",
+			next_action: blockedBy
+				? `Wait for the active Dream run (${blockedBy}) to finish before starting another.`
+				: "Wait for the active Dream run to finish before starting another.",
 			phases: {
 				survey: { status: "skipped", reason: "dream_lock_held" },
 				replay: { status: "skipped", reason: "dream_lock_held" },

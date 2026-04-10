@@ -25,7 +25,7 @@ class CheckOvernightDreamRunTests(unittest.TestCase):
         boundary = most_recent_scheduled_boundary(now_utc, 7, 10)
         self.assertEqual(boundary, datetime(2026, 3, 27, 7, 10, tzinfo=UTC))
 
-    def test_validate_dream_run_passes_for_full_live_run(self) -> None:
+    def test_validate_dream_run_passes_for_bounded_live_run(self) -> None:
         now_utc = datetime(2026, 3, 28, 15, 0, tzinfo=UTC)
         run_at = "2026-03-28T07:10:41+00:00"
         health = {
@@ -38,8 +38,8 @@ class CheckOvernightDreamRunTests(unittest.TestCase):
             "trigger": "scheduled",
             "dry_run": False,
             "counts": {
-                "archive_limit": None,
-                "promotion_limit": None,
+                "archive_limit": 10,
+                "promotion_limit": 10,
                 "archived": 17,
                 "promoted": 4,
             },
@@ -52,6 +52,8 @@ class CheckOvernightDreamRunTests(unittest.TestCase):
             cron_hour_utc=7,
             cron_minute_utc=10,
             max_start_delay_minutes=45,
+            expected_archive_limit=10,
+            expected_promotion_limit=10,
         )
 
         self.assertTrue(result.passed)
@@ -70,8 +72,8 @@ class CheckOvernightDreamRunTests(unittest.TestCase):
             "trigger": "scheduled",
             "dry_run": True,
             "counts": {
-                "archive_limit": None,
-                "promotion_limit": None,
+                "archive_limit": 10,
+                "promotion_limit": 10,
                 "archived": 0,
                 "promoted": 0,
             },
@@ -84,6 +86,8 @@ class CheckOvernightDreamRunTests(unittest.TestCase):
             cron_hour_utc=7,
             cron_minute_utc=10,
             max_start_delay_minutes=45,
+            expected_archive_limit=10,
+            expected_promotion_limit=10,
         )
 
         self.assertFalse(result.passed)

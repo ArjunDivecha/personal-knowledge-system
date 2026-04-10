@@ -108,7 +108,7 @@ Agent session ingestion details:
 - Tracks byte offsets in `ingestion/checkpoints/agent_sessions_state.json`
 - Optionally links cwd to GitHub repo context via `agent_sessions/github_linker.py`
 - Distills sessions with Anthropic and stores durable knowledge only
-- Intended to run automatically every 6 hours via launchd
+- Intended for manual or remote-triggered ingestion only; do not schedule locally
 
 ### `mcp-server/`
 
@@ -220,9 +220,11 @@ Explicitly call out when the docs and code disagree.
 
 Start with:
 - `ingestion/agent_sessions/run.py`
-- `ingestion/agent_sessions/com.arjun.knowledge-agent-sessions.plist`
+- `cloudflare-mcp/mcp-server/src/index.ts`
+- `cloudflare-mcp/mcp-server/src/dream.ts`
 
-The intended setup is a macOS `launchd` job that runs agent-session ingestion every 6 hours.
+The intended setup is remote scheduling on Cloudflare Workers. Do not install
+or rely on local macOS `launchd` jobs for this repo.
 
 ## Commands That Are Usually Relevant
 
@@ -260,16 +262,6 @@ python run.py --repos "repo1,repo2"
 cd /Users/arjundivecha/Dropbox/AAA\ Backup/A\ Working/Memory/knowledge-system/ingestion/gmail
 python run.py --dry-run
 python run.py --since 2022
-```
-
-### launchd agent-session daemon
-
-```bash
-cd /Users/arjundivecha/Dropbox/AAA\ Backup/A\ Working/Memory/knowledge-system
-cp ingestion/agent_sessions/com.arjun.knowledge-agent-sessions.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.arjun.knowledge-agent-sessions.plist
-launchctl start com.arjun.knowledge-agent-sessions
-launchctl list | grep knowledge-agent
 ```
 
 ### Cloudflare MCP server

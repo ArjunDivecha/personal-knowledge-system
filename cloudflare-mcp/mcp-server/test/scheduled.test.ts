@@ -38,7 +38,7 @@ beforeEach(() => {
 });
 
 describe("Scheduled Dream runner", () => {
-	it("triggers the nightly full Dream cycle", async () => {
+	it("triggers the nightly Dream maintenance cycle", async () => {
 		const controller = createScheduledController({
 			cron: "10 7 * * *",
 			scheduledTime: Date.parse("2026-03-28T07:10:00.000Z"),
@@ -56,7 +56,9 @@ describe("Scheduled Dream runner", () => {
 				dryRun: false,
 				trigger: "scheduled",
 				cron: "10 7 * * *",
-				note: "Nightly full Dream run.",
+				archiveLimit: 10,
+				promotionLimit: 10,
+				note: "Nightly Dream maintenance run.",
 			}),
 		);
 	});

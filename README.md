@@ -558,7 +558,7 @@ The system is trying to enforce a few simple rules:
 - **1.2.0** (March 2026)
   Schema v2 migration, context-type backfill, tier-aware retrieval, shared salience policy, `/health` endpoint, OAuth-enabled Worker deployment.
 - **1.1.0** (March 2026)
-  Agent session ingestion, GitHub repo linking, launchd daemon, model upgrade to Claude Sonnet 4.6.
+  Agent session ingestion, GitHub repo linking, remote scheduling transition groundwork, model upgrade to Claude Sonnet 4.6.
 - **1.0.1** (March 2026)
   GitHub and Gmail ingestion pipelines, recency weighting, source-based scoring, thin-index compaction.
 - **1.0.0** (December 2024)

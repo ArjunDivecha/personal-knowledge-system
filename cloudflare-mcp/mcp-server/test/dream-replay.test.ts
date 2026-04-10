@@ -4,6 +4,9 @@ const mockState = vi.hoisted(() => ({
 	store: new Map<string, unknown>(),
 	vectorUpdates: [] as Array<Record<string, unknown>>,
 	vectorDeletes: [] as string[],
+	maxRequestBytes: null as number | null,
+	maxMgetKeys: null as number | null,
+	mgetCallSizes: [] as number[],
 }));
 
 function globToRegex(pattern: string): RegExp {
@@ -22,6 +25,14 @@ vi.mock("@upstash/redis/cloudflare", () => ({
 			value: unknown,
 			options?: { nx?: boolean; ex?: number },
 		): Promise<string | null> {
+			if (typeof mockState.maxRequestBytes === "number") {
+				const requestBytes = Buffer.byteLength(JSON.stringify(["set", key, value]), "utf8");
+				if (requestBytes > mockState.maxRequestBytes) {
+					throw new Error(
+						`ERR max request size exceeded. Limit: ${mockState.maxRequestBytes} bytes, Actual: ${requestBytes} bytes.`,
+					);
+				}
+			}
 			if (options?.nx && mockState.store.has(key)) {
 				return null;
 			}
@@ -42,6 +53,10 @@ vi.mock("@upstash/redis/cloudflare", () => ({
 		}
 
 		async mget<T>(keys: string[]): Promise<T[]> {
+			mockState.mgetCallSizes.push(keys.length);
+			if (typeof mockState.maxMgetKeys === "number" && keys.length > mockState.maxMgetKeys) {
+				throw new Error(`ERR mget batch too large. Limit: ${mockState.maxMgetKeys}, Actual: ${keys.length}`);
+			}
 			return keys.map((key) => (mockState.store.get(key) ?? null) as T);
 		}
 
@@ -76,7 +91,7 @@ vi.mock("@upstash/vector", () => ({
 	},
 }));
 
-import { runDreamCycle } from "../src/dream";
+import { compactDreamRunRecordForStorage, runDreamCycle } from "../src/dream";
 
 function buildKnowledgeEntry(params: {
 	id: string;
@@ -91,6 +106,7 @@ function buildKnowledgeEntry(params: {
 	confidence?: "high" | "medium" | "low";
 	state?: "active" | "contested" | "stale" | "deprecated";
 	positions?: Array<Record<string, unknown>>;
+	salienceScore?: number;
 }): Record<string, unknown> {
 	const updatedAt = params.updatedAt ?? "2026-03-28T07:00:00.000Z";
 	return {
@@ -124,7 +140,7 @@ function buildKnowledgeEntry(params: {
 			auto_inferred: true,
 			source_weights: {},
 			injection_tier: params.injectionTier ?? 2,
-			salience_score: 0.4,
+			salience_score: params.salienceScore ?? 0.4,
 			last_consolidated: null,
 			consolidation_notes: [],
 			archived: false,
@@ -145,6 +161,9 @@ describe("Dream replay logic", () => {
 		mockState.store.clear();
 		mockState.vectorUpdates.length = 0;
 		mockState.vectorDeletes.length = 0;
+		mockState.maxRequestBytes = null;
+		mockState.maxMgetKeys = null;
+		mockState.mgetCallSizes.length = 0;
 		mockState.store.set("migration:backfill_complete", "2026-03-27T05:29:20+00:00");
 
 		mockState.store.set(
@@ -265,4 +284,185 @@ describe("Dream replay logic", () => {
 			);
 			expect(mockState.vectorDeletes).toContain("ke_dup_secondary");
 		});
+
+	it("compacts oversized stored Dream audits below the Redis payload budget", () => {
+		const largeBlock = "x".repeat(1_200);
+		const largeItems = Array.from({ length: 24 }, (_, index) => ({
+			id: `ke_large_${index}`,
+			type: "knowledge",
+			label: `Large Dream item ${index}`,
+			current_view: largeBlock,
+			metadata: {
+				evidence: largeBlock,
+				source_conversations: [`conv_${index}`],
+				source_messages: [`msg_${index}`],
+			},
+		}));
+
+		const runRecord = {
+			schema_version: 1,
+			run_id: "dr_compaction_test",
+			run_at: "2026-04-09T07:10:00.000Z",
+			completed_at: "2026-04-09T07:11:00.000Z",
+			status: "completed",
+			dry_run: false,
+			trigger: "scheduled",
+			counts: {
+				archive_candidates: largeItems.length,
+				merged_duplicates: largeItems.length,
+			},
+			phases: {
+				replay: {
+					status: "completed",
+					duplicate_merge_count: largeItems.length,
+					merged_entries: largeItems,
+					contradiction_entries: largeItems,
+					promoted_entries: largeItems,
+				},
+				prune: {
+					status: "completed",
+					archive_candidate_count: largeItems.length,
+				},
+			},
+			duplicate_plans: largeItems,
+			contradiction_plans: largeItems,
+			merged_entries: largeItems,
+			contradiction_entries: largeItems,
+			archive_candidates: largeItems,
+			archived_entries: largeItems,
+			promoted_entries: largeItems,
+			archive_candidates_sample: largeItems,
+			next_action: largeBlock,
+		} satisfies Record<string, unknown>;
+
+		const compacted = compactDreamRunRecordForStorage(runRecord, {
+			maxBytes: 40_000,
+			sampleLimit: 4,
+			fallbackSampleLimit: 2,
+		});
+		const storageCompaction = compacted.storage_compaction as Record<string, unknown>;
+		const sampledFields = storageCompaction.sampled_fields as Record<string, unknown>;
+		const mergedEntriesSummary = sampledFields.merged_entries as Record<string, unknown>;
+
+		const compactedSize = Buffer.byteLength(JSON.stringify(compacted), "utf8");
+		expect(compactedSize).toBeLessThanOrEqual(40_000);
+		expect(storageCompaction.mode).toBe("sampled");
+		expect((compacted.merged_entries as unknown[]).length).toBe(4);
+		expect(
+			((compacted.phases as Record<string, unknown>).replay as Record<string, unknown>).merged_entries,
+		).toBeUndefined();
+		expect(mergedEntriesSummary.total_count).toBe(largeItems.length);
 	});
+
+	it("falls back to a minimal stored Dream audit when sampling alone is still too large", () => {
+		const largeBlock = "y".repeat(2_000);
+		const largeItems = Array.from({ length: 12 }, (_, index) => ({
+			id: `ke_min_${index}`,
+			label: `Minimal fallback ${index}`,
+			detail: largeBlock,
+		}));
+
+		const runRecord = {
+			schema_version: 1,
+			run_id: "dr_minimal_compaction_test",
+			run_at: "2026-04-09T07:10:00.000Z",
+			completed_at: "2026-04-09T07:11:00.000Z",
+			status: "completed",
+			dry_run: true,
+			trigger: "manual",
+			counts: {
+				archive_candidates: largeItems.length,
+			},
+			phases: {
+				replay: {
+					status: "dry_run",
+					merged_entries: largeItems,
+				},
+			},
+			archive_candidates: largeItems,
+			archived_entries: largeItems,
+			next_action: largeBlock,
+		} satisfies Record<string, unknown>;
+
+		const compacted = compactDreamRunRecordForStorage(runRecord, {
+			maxBytes: 1_500,
+			sampleLimit: 3,
+			fallbackSampleLimit: 1,
+		});
+
+		const compactedSize = Buffer.byteLength(JSON.stringify(compacted), "utf8");
+		expect(compactedSize).toBeLessThanOrEqual(1_500);
+		expect((compacted.storage_compaction as Record<string, unknown>).mode).toBe("minimal");
+		expect((compacted.archive_candidates as unknown[]).length).toBe(1);
+		expect((compacted.archived_entries as unknown[]).length).toBe(1);
+	});
+
+	it("batches Dream mget calls so large corpora stay under Redis request limits", async () => {
+		mockState.maxMgetKeys = 25;
+
+		for (let index = 0; index < 80; index += 1) {
+			mockState.store.set(
+				`knowledge:ke_batch_${index}`,
+				buildKnowledgeEntry({
+					id: `ke_batch_${index}`,
+					domain: `Batched load ${index}`,
+					currentView: `Corpus item ${index}`,
+					contextType: "task_query",
+					injectionTier: 3,
+					mentionCount: 1,
+					accessCount: 0,
+					sourceConversations: [`conv_batch_${index}`],
+					updatedAt: "2026-03-28T06:00:00.000Z",
+				}),
+			);
+		}
+
+		const result = await runDreamCycle(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{
+				dryRun: true,
+				trigger: "local_test",
+				note: "batched mget test",
+				setAsLatest: false,
+			},
+		);
+
+		expect((result.counts as Record<string, unknown>).knowledge_entries).toBeGreaterThanOrEqual(84);
+		expect(Math.max(...mockState.mgetCallSizes)).toBeLessThanOrEqual(25);
+	});
+
+	it("reclaims stale Dream locks before starting a new run", async () => {
+		mockState.store.set(
+			"dream:lock",
+			JSON.stringify({
+				run_id: "dr_stale_lock",
+				run_at: "2026-04-09T00:00:00.000Z",
+				trigger: "scheduled",
+				dry_run: false,
+			}),
+		);
+
+		const result = await runDreamCycle(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{
+				dryRun: true,
+				trigger: "local_test",
+				note: "stale lock recovery test",
+				setAsLatest: false,
+			},
+		);
+
+		expect(result.status).toBe("completed");
+		expect(mockState.store.get("dream:lock")).toBeUndefined();
+	});
+});

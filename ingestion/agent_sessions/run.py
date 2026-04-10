@@ -25,8 +25,8 @@ distills durable knowledge using Claude API, links to GitHub repos when
 the session was working in a git repository, and saves entries to the
 knowledge system via StorageClient.
 
-Designed to run daily (or every few hours) via launchd. Uses byte-offset
-tracking so each run only processes new data since the last run.
+Designed for manual or remote-triggered ingestion. Uses byte-offset tracking
+so each run only processes new data since the last run.
 
 DEPENDENCIES:
 - anthropic

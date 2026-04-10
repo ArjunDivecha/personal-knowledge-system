@@ -20,6 +20,8 @@ DEFAULT_BASE_URL = "https://mcp.dancing-ganesh.com"
 DEFAULT_CRON_HOUR_UTC = 7
 DEFAULT_CRON_MINUTE_UTC = 10
 DEFAULT_MAX_START_DELAY_MINUTES = 45
+DEFAULT_EXPECTED_ARCHIVE_LIMIT = 10
+DEFAULT_EXPECTED_PROMOTION_LIMIT = 10
 
 
 @dataclass
@@ -38,6 +40,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cron-hour-utc", type=int, default=DEFAULT_CRON_HOUR_UTC)
     parser.add_argument("--cron-minute-utc", type=int, default=DEFAULT_CRON_MINUTE_UTC)
     parser.add_argument("--max-start-delay-minutes", type=int, default=DEFAULT_MAX_START_DELAY_MINUTES)
+    parser.add_argument("--expected-archive-limit", type=int, default=DEFAULT_EXPECTED_ARCHIVE_LIMIT)
+    parser.add_argument("--expected-promotion-limit", type=int, default=DEFAULT_EXPECTED_PROMOTION_LIMIT)
     parser.add_argument(
         "--now-utc",
         help="Override current time for testing, in ISO 8601 UTC form such as 2026-03-28T15:00:00+00:00",
@@ -205,6 +209,8 @@ def validate_dream_run(
     cron_hour_utc: int,
     cron_minute_utc: int,
     max_start_delay_minutes: int,
+    expected_archive_limit: int,
+    expected_promotion_limit: int,
 ) -> ValidationResult:
     issues: list[str] = []
     expected_boundary = most_recent_scheduled_boundary(now_utc, cron_hour_utc, cron_minute_utc)
@@ -231,13 +237,13 @@ def validate_dream_run(
         issues.append("Dream summary is missing counts")
         counts = {}
 
-    if counts.get("archive_limit") is not None:
+    if counts.get("archive_limit") != expected_archive_limit:
         issues.append(
-            f"archive_limit is {counts.get('archive_limit')}, expected None for full nightly runs",
+            f"archive_limit is {counts.get('archive_limit')}, expected {expected_archive_limit} for nightly maintenance runs",
         )
-    if counts.get("promotion_limit") is not None:
+    if counts.get("promotion_limit") != expected_promotion_limit:
         issues.append(
-            f"promotion_limit is {counts.get('promotion_limit')}, expected None for full nightly runs",
+            f"promotion_limit is {counts.get('promotion_limit')}, expected {expected_promotion_limit} for nightly maintenance runs",
         )
 
     if run_at is not None:
@@ -283,6 +289,8 @@ def main() -> int:
         cron_hour_utc=args.cron_hour_utc,
         cron_minute_utc=args.cron_minute_utc,
         max_start_delay_minutes=args.max_start_delay_minutes,
+        expected_archive_limit=args.expected_archive_limit,
+        expected_promotion_limit=args.expected_promotion_limit,
     )
 
     report = {
@@ -306,10 +314,10 @@ def main() -> int:
     print(f"Report written to {report_path}")
 
     if validation.passed:
-        print("PASS: latest scheduled Dream run is present and in full live mode.")
+        print("PASS: latest scheduled Dream maintenance run is present and in live mode.")
         return 0
 
-    print("FAIL: latest scheduled Dream run does not yet satisfy the overnight full-run checks.")
+    print("FAIL: latest scheduled Dream run does not yet satisfy the overnight maintenance checks.")
     for issue in validation.issues:
         print(f"- {issue}")
     return 1

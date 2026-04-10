@@ -51,20 +51,10 @@ CONFIGURATION (in ingestion/.env or environment):
     TWITTER_BEARER_TOKEN=<your Bearer Token from developer.twitter.com>
     TWITTER_USERNAME=arjundivecha
 
-NIGHTLY AUTOMATION (macOS launchd):
-    A companion plist is provided at ingestion/twitter/com.arjun.knowledge-twitter.plist
-    It runs this script every night at 2:00 AM.
-
-    To install:
-        cp ingestion/twitter/com.arjun.knowledge-twitter.plist ~/Library/LaunchAgents/
-        launchctl load ~/Library/LaunchAgents/com.arjun.knowledge-twitter.plist
-
-    To test immediately:
-        launchctl start com.arjun.knowledge-twitter
-
-    Logs:
-        ~/.knowledge_twitter_stdout.log
-        ~/.knowledge_twitter_stderr.log
+SCHEDULING:
+    This runner is intended for manual execution only.
+    Nightly maintenance for the knowledge system runs remotely on Cloudflare
+    Workers; do not install local macOS launchd jobs for Twitter ingestion.
 =============================================================================
 """
 

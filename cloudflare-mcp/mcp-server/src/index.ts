@@ -32,6 +32,8 @@ const MAX_RECONSOLIDATION_SEARCH_RESULTS = 5;
 const MAX_RECONSOLIDATION_ERROR_LOGS = 100;
 const RECONSOLIDATION_PROMOTION_THRESHOLD = 3;
 const MAX_OPERATOR_DREAM_ARCHIVE_LIMIT = 10;
+const SCHEDULED_DREAM_ARCHIVE_LIMIT = 10;
+const SCHEDULED_DREAM_PROMOTION_LIMIT = 10;
 const RATE_LIMIT_WINDOW_SECONDS = 60 * 60;
 const WRITE_TOOL_RATE_LIMIT = 24;
 const OPERATOR_WRITE_RATE_LIMIT = 12;
@@ -2017,7 +2019,9 @@ export default {
 			trigger: "scheduled",
 			cron: controller.cron,
 			scheduledTime: controller.scheduledTime,
-			note: "Nightly full Dream run.",
+			archiveLimit: SCHEDULED_DREAM_ARCHIVE_LIMIT,
+			promotionLimit: SCHEDULED_DREAM_PROMOTION_LIMIT,
+			note: "Nightly Dream maintenance run.",
 		});
 		ctx.waitUntil(promise);
 		const result = await promise;
