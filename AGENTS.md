@@ -101,6 +101,7 @@ Source-specific runners:
 - `ingestion/github/run.py`: ingests README, commits, and code comments from GitHub repos.
 - `ingestion/gmail/run.py`: ingests substantive Gmail sent messages from an mbox export.
 - `ingestion/agent_sessions/run.py`: ingests Claude Code and Codex session logs incrementally.
+- `ingestion/twitter/run.py`: ingests Twitter/X timeline knowledge incrementally.
 
 Agent session ingestion details:
 - Reads `~/.claude/projects/**/*.jsonl`
@@ -108,7 +109,13 @@ Agent session ingestion details:
 - Tracks byte offsets in `ingestion/checkpoints/agent_sessions_state.json`
 - Optionally links cwd to GitHub repo context via `agent_sessions/github_linker.py`
 - Distills sessions with Anthropic and stores durable knowledge only
-- Intended for manual or remote-triggered ingestion only; do not schedule locally
+- Scheduled locally via the repo-managed LaunchAgent because the source logs live on this machine
+
+Twitter ingestion details:
+- Reads your X timeline through the API with `TWITTER_BEARER_TOKEN`
+- Persists incremental state in Upstash Redis under `ingestion:twitter:state`
+- Scheduled remotely via `.github/workflows/twitter-ingestion.yml`
+- Do not install a local LaunchAgent for Twitter ingestion
 
 ### `mcp-server/`
 

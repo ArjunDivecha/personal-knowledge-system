@@ -1,0 +1,83 @@
+name: Twitter Ingestion
+
+on:
+  schedule:
+    - cron: "40 5 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run without writing to storage"
+        required: false
+        default: false
+        type: boolean
+      reset_state:
+        description: "Ignore saved since_id and force a full refetch"
+        required: false
+        default: false
+        type: boolean
+      max_tweets:
+        description: "Optional max tweets to process"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: twitter-ingestion
+  cancel-in-progress: false
+
+jobs:
+  twitter-ingestion:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: ingestion/twitter
+
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+      UPSTASH_VECTOR_REST_URL: ${{ secrets.UPSTASH_VECTOR_REST_URL }}
+      UPSTASH_VECTOR_REST_TOKEN: ${{ secrets.UPSTASH_VECTOR_REST_TOKEN }}
+      TWITTER_BEARER_TOKEN: ${{ secrets.TWITTER_BEARER_TOKEN }}
+      TWITTER_USERNAME: ${{ secrets.TWITTER_USERNAME }}
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: distillation/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ../../distillation/requirements.txt
+
+      - name: Run Twitter ingestion
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+          RESET_STATE: ${{ github.event_name == 'workflow_dispatch' && inputs.reset_state || 'false' }}
+          MAX_TWEETS: ${{ github.event_name == 'workflow_dispatch' && inputs.max_tweets || '' }}
+        run: |
+          args=()
+          if [ "$DRY_RUN" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          if [ "$RESET_STATE" = "true" ]; then
+            args+=(--reset-state)
+          else
+            args+=(--require-redis-state)
+          fi
+          if [ -n "$MAX_TWEETS" ]; then
+            args+=(--max "$MAX_TWEETS")
+          fi
+          python run.py "${args[@]}"

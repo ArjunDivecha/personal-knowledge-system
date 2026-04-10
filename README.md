@@ -346,8 +346,9 @@ Dream is Phase 5 work. The live scheduler, audit output, reversible archive/rest
 
 ### Current Scheduling Model
 
-The system currently uses two schedulers for two different jobs:
+The system currently uses three schedulers for three different jobs:
 
+- GitHub Actions runs Twitter ingestion remotely at `05:40 UTC`
 - Cloudflare Workers runs the remote Dream job at `07:10 UTC`
 - this machine runs a local macOS `launchd` job for Claude Code and Codex session ingestion at `06:10 UTC`
 
@@ -355,6 +356,12 @@ The local scheduler exists because the source files for agent-session ingestion
 live in `~/.claude/projects` and `~/.codex/sessions`. That LaunchAgent is
 managed from this repo at
 `ingestion/agent_sessions/com.arjun.knowledge-agent-sessions.plist`.
+
+Twitter ingestion is scheduled remotely because the source data comes from the
+X API rather than local files. The workflow lives at
+`.github/workflows/twitter-ingestion.yml` and uses a Redis-backed checkpoint so
+scheduled runners do not lose incremental state when the GitHub Actions runner
+is destroyed.
 
 macOS `launchd` schedules in local time rather than UTC, so the job is wired to
 fire at both `22:10` and `23:10` local time and the wrapper script
@@ -386,6 +393,7 @@ Operationally, the following are live:
 - OAuth-enabled Cloudflare MCP server
 - background reconsolidation on retrieval
 - write-capable MCP tools for `restore_archived` and `set_context_type`
+- remote scheduled Twitter/X ingestion with Redis-backed incremental state
 - daily local Claude Code + Codex session ingestion one hour before Dream
 - nightly full-live Dream scheduler and audit records
 - reversible Dream archive snapshot and restore mechanics

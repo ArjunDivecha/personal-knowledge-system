@@ -13,7 +13,8 @@ Ingest knowledge from your Twitter/X timeline using the Twitter API v2
 On the FIRST run this does a full backfill — paginating back through as many
 tweets as the API returns (up to ~3,200, the hard Twitter timeline limit).
 On every SUBSEQUENT run it only fetches tweets posted since the last run by
-tracking the highest tweet ID seen in the state checkpoint.
+tracking the highest tweet ID seen in the state checkpoint. That state is also
+mirrored into Upstash Redis so remote scheduled runners can remain incremental.
 
 What gets ingested:
   1. Your original tweets (standalone posts)
@@ -52,9 +53,10 @@ CONFIGURATION (in ingestion/.env or environment):
     TWITTER_USERNAME=arjundivecha
 
 SCHEDULING:
-    This runner is intended for manual execution only.
-    Nightly maintenance for the knowledge system runs remotely on Cloudflare
-    Workers; do not install local macOS launchd jobs for Twitter ingestion.
+    This runner supports manual execution and remote GitHub Actions scheduling.
+    Nightly maintenance for the knowledge system still runs remotely on
+    Cloudflare Workers; do not install local macOS launchd jobs for Twitter
+    ingestion.
 =============================================================================
 """
 
@@ -64,7 +66,7 @@ import pickle
 import sys
 import time
 from collections import defaultdict
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Optional
 
@@ -75,11 +77,14 @@ from core.config import (
     TWITTER_BEARER_TOKEN,
     TWITTER_MIN_TWEET_LENGTH,
     TWITTER_USERNAME,
+    UPSTASH_REDIS_REST_TOKEN,
+    UPSTASH_REDIS_REST_URL,
     validate_twitter_config,
 )
 from core.storage import StorageClient
 from twitter.api_client import TwitterAPIClient
 from twitter.tweet_extractor import TweetExtractor
+from upstash_redis import Redis
 
 
 # ---------------------------------------------------------------------------
@@ -88,21 +93,72 @@ from twitter.tweet_extractor import TweetExtractor
 _STATE_FILE = CHECKPOINT_DIR / "twitter_state.json"
 _PROGRESS_FILE = CHECKPOINT_DIR / "twitter_progress.pkl"
 _PHASE_ORDER = {"original": 0, "reply": 1, "quote": 2, "save": 3}
+_STATE_REDIS_KEY = "ingestion:twitter:state"
+_state_redis_client: Optional[Redis] = None
 
 
-def _load_state() -> dict:
-    """Load run state (last_seen_id, run_count, etc.) from disk."""
-    if _STATE_FILE.exists():
-        with open(_STATE_FILE) as f:
-            return json.load(f)
+def _default_state() -> dict:
     return {"last_seen_id": None, "run_count": 0, "last_run_at": None}
 
 
+def _get_state_redis_client() -> Optional[Redis]:
+    global _state_redis_client
+    if _state_redis_client is not None:
+        return _state_redis_client
+
+    if not UPSTASH_REDIS_REST_URL or not UPSTASH_REDIS_REST_TOKEN:
+        return None
+
+    _state_redis_client = Redis(
+        url=UPSTASH_REDIS_REST_URL,
+        token=UPSTASH_REDIS_REST_TOKEN,
+    )
+    return _state_redis_client
+
+
+def _normalize_state(state: Optional[dict]) -> dict:
+    merged = _default_state()
+    if isinstance(state, dict):
+        merged.update(
+            {
+                "last_seen_id": state.get("last_seen_id"),
+                "run_count": state.get("run_count", 0),
+                "last_run_at": state.get("last_run_at"),
+            }
+        )
+    return merged
+
+
+def _load_state() -> tuple[dict, str]:
+    """Load run state from Redis when available, otherwise from the local checkpoint file."""
+    redis_client = _get_state_redis_client()
+    if redis_client is not None:
+        try:
+            raw_state = redis_client.get(_STATE_REDIS_KEY)
+            if raw_state:
+                if isinstance(raw_state, str):
+                    return _normalize_state(json.loads(raw_state)), "redis"
+                if isinstance(raw_state, dict):
+                    return _normalize_state(raw_state), "redis"
+        except Exception as exc:
+            print(f"Warning: could not load Twitter state from Redis: {exc}")
+
+    if _STATE_FILE.exists():
+        with open(_STATE_FILE) as f:
+            return _normalize_state(json.load(f)), "file"
+    return _default_state(), "default"
+
+
 def _save_state(state: dict) -> None:
-    """Persist run state to disk."""
+    """Persist run state to disk and Redis when configured."""
+    normalized = _normalize_state(state)
     _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(_STATE_FILE, "w") as f:
-        json.dump(state, f, indent=2)
+        json.dump(normalized, f, indent=2)
+
+    redis_client = _get_state_redis_client()
+    if redis_client is not None:
+        redis_client.set(_STATE_REDIS_KEY, json.dumps(normalized))
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +224,7 @@ def run_twitter_ingestion(
     quote_batch_size: int = 12,
     dry_run: bool = False,
     reset_state: bool = False,
+    require_redis_state: bool = False,
 ) -> list[dict]:
     """
     Run the Twitter ingestion pipeline.
@@ -179,6 +236,9 @@ def run_twitter_ingestion(
         quote_batch_size:    Quote-tweet threads per LLM call.
         dry_run:             If True, fetch + extract but do NOT write to storage.
         reset_state:         If True, ignore last_seen_id and do a full re-fetch.
+        require_redis_state: If True, abort unless the effective checkpoint came
+                             from Redis. Use this for remote incremental runs on
+                             ephemeral runners.
 
     Returns:
         List of all knowledge entry dicts that were extracted this run.
@@ -202,7 +262,12 @@ def run_twitter_ingestion(
     # ------------------------------------------------------------------
     # Load run state
     # ------------------------------------------------------------------
-    state = _load_state()
+    state, state_source = _load_state()
+    print(f"State source: {state_source}")
+    if require_redis_state and not reset_state and state_source != "redis":
+        print("  ✗ Remote incremental Twitter runs require Redis-backed state.")
+        print("    Refusing to fall back to local/default state on this runner.")
+        raise SystemExit(1)
     expected_signature = _progress_signature(
         state.get("last_seen_id"),
         max_tweets,
@@ -386,7 +451,7 @@ def run_twitter_ingestion(
         # Still update state so next run knows the right since_id
         if highest_id_seen:
             state["last_seen_id"] = highest_id_seen
-            state["last_run_at"] = datetime.utcnow().isoformat()
+            state["last_run_at"] = datetime.now(UTC).isoformat()
             state["run_count"] = state.get("run_count", 0) + 1
             if not dry_run:
                 _save_state(state)
@@ -624,7 +689,7 @@ def run_twitter_ingestion(
     # ------------------------------------------------------------------
     if highest_id_seen:
         state["last_seen_id"] = highest_id_seen
-    state["last_run_at"] = datetime.utcnow().isoformat()
+    state["last_run_at"] = datetime.now(UTC).isoformat()
     state["run_count"] = state.get("run_count", 0) + 1
     if not dry_run:
         _save_state(state)
@@ -715,8 +780,30 @@ if __name__ == "__main__":
         action="store_true",
         help="Ignore saved since_id and do a full re-fetch",
     )
+    ap.add_argument(
+        "--sync-state-only",
+        action="store_true",
+        help="Load the effective Twitter state and mirror it to all configured backends, then exit",
+    )
+    ap.add_argument(
+        "--require-redis-state",
+        action="store_true",
+        help="Abort unless the effective Twitter checkpoint was loaded from Redis",
+    )
 
     args = ap.parse_args()
+
+    if args.sync_state_only:
+        state, source = _load_state()
+        if args.require_redis_state and not args.reset_state and source != "redis":
+            print("  ✗ Twitter state was not loaded from Redis.")
+            raise SystemExit(1)
+        if args.reset_state:
+            state = _default_state()
+        _save_state(state)
+        print(f"Twitter state synced from {source}:")
+        print(json.dumps(state, indent=2))
+        raise SystemExit(0)
 
     run_twitter_ingestion(
         max_tweets=args.max,
@@ -725,4 +812,5 @@ if __name__ == "__main__":
         quote_batch_size=args.quote_batch,
         dry_run=args.dry_run,
         reset_state=args.reset_state,
+        require_redis_state=args.require_redis_state,
     )
