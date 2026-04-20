@@ -138,6 +138,30 @@ def _normalize_state(state: Optional[dict] = None) -> dict:
     return merged
 
 
+def _parse_json_array_response(raw_text: str) -> list[dict]:
+    """Parse a model response that should contain a JSON array."""
+    candidate = raw_text.strip()
+
+    # Strip accidental markdown fences.
+    if candidate.startswith("```"):
+        candidate = candidate.split("```")[1]
+        if candidate.startswith("json"):
+            candidate = candidate[4:]
+        candidate = candidate.strip()
+
+    try:
+        parsed = json.loads(candidate)
+        return parsed if isinstance(parsed, list) else []
+    except json.JSONDecodeError:
+        start = candidate.find("[")
+        end = candidate.rfind("]")
+        if start == -1 or end == -1 or end < start:
+            raise
+
+        parsed = json.loads(candidate[start:end + 1])
+        return parsed if isinstance(parsed, list) else []
+
+
 def _get_state_redis_client() -> Optional[Redis]:
     """Create a Redis client for mirrored checkpoint state when configured."""
     global _state_redis_client
@@ -276,18 +300,8 @@ def distill(
                 ),
             }],
         )
-        raw = resp.content[0].text.strip()
-
-        # Strip accidental markdown fences
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        entries = json.loads(raw.strip())
-
-        if not isinstance(entries, list):
-            return []
-        return entries
+        raw = resp.content[0].text
+        return _parse_json_array_response(raw)
 
     except Exception as e:
         log.warning(f"Distillation error: {e}")
