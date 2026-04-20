@@ -1,0 +1,104 @@
+name: Agent Session Ingestion
+
+on:
+  schedule:
+    - cron: "10 6 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run without writing to storage"
+        required: false
+        default: false
+        type: boolean
+      backfill:
+        description: "Ignore existing checkpoint and process all history"
+        required: false
+        default: false
+        type: boolean
+      sync_state_only:
+        description: "Mirror the current checkpoint into Redis/file and exit"
+        required: false
+        default: false
+        type: boolean
+      source:
+        description: "Optional source filter (claude_code or codex_cli)"
+        required: false
+        type: choice
+        options:
+          - ""
+          - claude_code
+          - codex_cli
+      limit:
+        description: "Optional max number of files to process"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-session-ingestion
+  cancel-in-progress: false
+
+jobs:
+  agent-session-ingestion:
+    runs-on: [self-hosted, macOS, knowledge-agent-sessions]
+    timeout-minutes: 180
+    defaults:
+      run:
+        working-directory: ingestion
+
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+      UPSTASH_VECTOR_REST_URL: ${{ secrets.UPSTASH_VECTOR_REST_URL }}
+      UPSTASH_VECTOR_REST_TOKEN: ${{ secrets.UPSTASH_VECTOR_REST_TOKEN }}
+      GITHUB_API_KEY: ${{ secrets.GITHUB_API_KEY }}
+      GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: distillation/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ../distillation/requirements.txt
+
+      - name: Run agent session ingestion
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+          BACKFILL: ${{ github.event_name == 'workflow_dispatch' && inputs.backfill || 'false' }}
+          SYNC_STATE_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.sync_state_only || 'false' }}
+          SOURCE: ${{ github.event_name == 'workflow_dispatch' && inputs.source || '' }}
+          LIMIT: ${{ github.event_name == 'workflow_dispatch' && inputs.limit || '' }}
+        run: |
+          args=()
+          if [ "$DRY_RUN" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          if [ "$BACKFILL" = "true" ]; then
+            args+=(--backfill)
+          elif [ "$SYNC_STATE_ONLY" != "true" ]; then
+            args+=(--require-redis-state)
+          fi
+          if [ "$SYNC_STATE_ONLY" = "true" ]; then
+            args+=(--sync-state-only)
+          fi
+          if [ -n "$SOURCE" ]; then
+            args+=(--source "$SOURCE")
+          fi
+          if [ -n "$LIMIT" ]; then
+            args+=(--limit "$LIMIT")
+          fi
+          python agent_sessions/run.py "${args[@]}"

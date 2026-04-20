@@ -107,9 +107,10 @@ Agent session ingestion details:
 - Reads `~/.claude/projects/**/*.jsonl`
 - Reads `~/.codex/sessions/**/*.jsonl`
 - Tracks byte offsets in `ingestion/checkpoints/agent_sessions_state.json`
+- Mirrors checkpoint state into Upstash Redis under `ingestion:agent_sessions:state`
 - Optionally links cwd to GitHub repo context via `agent_sessions/github_linker.py`
 - Distills sessions with Anthropic and stores durable knowledge only
-- Scheduled locally via the repo-managed LaunchAgent because the source logs live on this machine
+- Scheduled remotely via `.github/workflows/agent-session-ingestion.yml` on a self-hosted macOS runner with the label `knowledge-agent-sessions`
 
 Twitter ingestion details:
 - Reads your X timeline through the API with `TWITTER_BEARER_TOKEN`
@@ -231,15 +232,13 @@ Start with:
 - `cloudflare-mcp/mcp-server/src/dream.ts`
 
 The intended setup is:
+- remote scheduling on GitHub Actions for `ingestion/agent_sessions/run.py` at `06:10 UTC`
 - remote scheduling on Cloudflare Workers for Dream at `07:10 UTC`
-- one local macOS `launchd` job for `ingestion/agent_sessions/run.py` at `06:10 UTC`
+- remote scheduling on GitHub Actions for Twitter at `05:40 UTC`
 
-Because macOS launchd schedules in local time, the repo-managed agent-session
-LaunchAgent fires at both `22:10` and `23:10` local time and uses a UTC guard
-wrapper so only the invocation that lands at `06:10 UTC` proceeds.
-
-Do not add local macOS `launchd` jobs for other ingestion pipelines unless the
-user explicitly asks for them.
+Do not add local macOS `launchd` jobs for ingestion. If the source files must
+be read from this machine, use a self-hosted runner and keep the scheduler
+itself remote.
 
 ## Commands That Are Usually Relevant
 
@@ -261,7 +260,8 @@ python agent_sessions/run.py --dry-run
 python agent_sessions/run.py --backfill
 python agent_sessions/run.py --source claude_code
 python agent_sessions/run.py --source codex_cli
-bash agent_sessions/run_scheduled.sh --ignore-utc-guard
+python agent_sessions/run.py --sync-state-only
+python agent_sessions/run.py --require-redis-state --limit 1
 ```
 
 ### GitHub ingestion

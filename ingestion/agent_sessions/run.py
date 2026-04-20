@@ -67,6 +67,7 @@ import logging
 import argparse
 from pathlib import Path
 from datetime import datetime, timezone
+from typing import Optional
 
 # Bootstrap: add ingestion/ to path and load .env
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -74,10 +75,12 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / ".env")
 
 import anthropic
+from upstash_redis import Redis
 from core.storage import StorageClient
 from github.client import GitHubClient
 from agent_sessions.parsers import parse_claude_code, parse_codex
 from agent_sessions.github_linker import GitHubLinker
+from core.config import UPSTASH_REDIS_REST_TOKEN, UPSTASH_REDIS_REST_URL
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -85,6 +88,8 @@ CLAUDE_CODE_DIR = Path.home() / ".claude" / "projects"
 CODEX_DIR = Path.home() / ".codex" / "sessions"
 STATE_FILE = Path(__file__).parent.parent / "checkpoints" / "agent_sessions_state.json"
 LOG_FILE = Path(__file__).parent.parent / "logs" / "agent_sessions.log"
+STATE_REDIS_KEY = "ingestion:agent_sessions:state"
+_state_redis_client: Optional[Redis] = None
 
 # Filtering thresholds
 MIN_USER_CHARS = 300    # Skip trivial sessions (just cd/ls)
@@ -108,19 +113,77 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # ── State Management ─────────────────────────────────────────────────────────
 
-def load_state() -> dict:
-    """Load processing state (byte offsets per file)."""
-    STATE_FILE.parent.mkdir(exist_ok=True)
-    if STATE_FILE.exists():
-        return json.loads(STATE_FILE.read_text())
+def _default_state() -> dict:
+    """Default processing state for byte-offset tracking."""
     return {"files": {}, "last_run": None, "stats": {"total_saved": 0, "total_skipped": 0}}
 
 
+def _normalize_state(state: dict | None) -> dict:
+    """Normalize checkpoint payloads loaded from disk or Redis."""
+    merged = _default_state()
+    if not isinstance(state, dict):
+        return merged
+
+    files = state.get("files")
+    if isinstance(files, dict):
+        merged["files"] = files
+
+    merged["last_run"] = state.get("last_run")
+
+    stats = state.get("stats")
+    if isinstance(stats, dict):
+        merged["stats"]["total_saved"] = int(stats.get("total_saved", 0) or 0)
+        merged["stats"]["total_skipped"] = int(stats.get("total_skipped", 0) or 0)
+
+    return merged
+
+
+def _get_state_redis_client() -> Optional[Redis]:
+    """Create a Redis client for mirrored checkpoint state when configured."""
+    global _state_redis_client
+    if _state_redis_client is not None:
+        return _state_redis_client
+
+    if not UPSTASH_REDIS_REST_URL or not UPSTASH_REDIS_REST_TOKEN:
+        return None
+
+    _state_redis_client = Redis(
+        url=UPSTASH_REDIS_REST_URL,
+        token=UPSTASH_REDIS_REST_TOKEN,
+    )
+    return _state_redis_client
+
+
+def load_state() -> tuple[dict, str]:
+    """Load processing state from Redis when available, otherwise local disk."""
+    STATE_FILE.parent.mkdir(exist_ok=True)
+    redis_client = _get_state_redis_client()
+    if redis_client is not None:
+        try:
+            raw_state = redis_client.get(STATE_REDIS_KEY)
+            if raw_state:
+                if isinstance(raw_state, str):
+                    return _normalize_state(json.loads(raw_state)), "redis"
+                if isinstance(raw_state, dict):
+                    return _normalize_state(raw_state), "redis"
+        except Exception as exc:
+            log.warning(f"Could not load agent session state from Redis: {exc}")
+
+    if STATE_FILE.exists():
+        return _normalize_state(json.loads(STATE_FILE.read_text())), "file"
+    return _default_state(), "default"
+
+
 def save_state(state: dict):
-    """Persist processing state atomically."""
+    """Persist processing state atomically to disk and, when configured, Redis."""
+    normalized = _normalize_state(state)
     tmp = STATE_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state, indent=2))
+    tmp.write_text(json.dumps(normalized, indent=2))
     tmp.rename(STATE_FILE)
+
+    redis_client = _get_state_redis_client()
+    if redis_client is not None:
+        redis_client.set(STATE_REDIS_KEY, json.dumps(normalized))
 
 
 # ── Distillation ──────────────────────────────────────────────────────────────
@@ -464,14 +527,41 @@ def main():
         default=None,
         help="Max number of files to process (useful for testing)",
     )
+    parser.add_argument(
+        "--require-redis-state",
+        action="store_true",
+        help="Abort unless the effective checkpoint was loaded from Redis.",
+    )
+    parser.add_argument(
+        "--sync-state-only",
+        action="store_true",
+        help="Mirror the current checkpoint state to Redis/file and exit.",
+    )
     args = parser.parse_args()
 
     # Load or reset state
     if args.backfill:
-        state = {"files": {}, "last_run": None, "stats": {"total_saved": 0, "total_skipped": 0}}
+        state = _default_state()
+        state_source = "reset"
         log.info("Backfill mode: processing all history")
     else:
-        state = load_state()
+        state, state_source = load_state()
+
+    log.info(f"Agent session checkpoint source: {state_source}")
+
+    if args.sync_state_only:
+        save_state(state)
+        tracked_files = len(state.get("files", {}))
+        log.info(
+            "Synced agent session checkpoint to configured backends "
+            f"(source={state_source}, tracked_files={tracked_files})"
+        )
+        return
+
+    if args.require_redis_state and not args.backfill and state_source != "redis":
+        log.error("Remote agent-session runs require Redis-backed checkpoint state.")
+        log.error("Refusing to fall back to local/default state on this runner.")
+        sys.exit(1)
 
     # Initialize clients
     anthropic_client = anthropic.Anthropic()  # Uses ANTHROPIC_API_KEY from env

@@ -37,6 +37,9 @@ Thumbs.db
 *.swp
 *.swo
 
+# Local GitHub Actions runner
+.github-runner/
+
 # Archives (potentially large)
 archive/
 distillation/backups/
