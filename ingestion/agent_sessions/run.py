@@ -113,6 +113,11 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # ── State Management ─────────────────────────────────────────────────────────
 
+
+class DistillationFailure(RuntimeError):
+    """Raised when a session should be retried instead of checkpointed forward."""
+
+
 def _default_state() -> dict:
     """Default processing state for byte-offset tracking."""
     return {"files": {}, "last_run": None, "stats": {"total_saved": 0, "total_skipped": 0}}
@@ -300,12 +305,14 @@ def distill(
                 ),
             }],
         )
+    except Exception as e:
+        raise DistillationFailure(f"Anthropic request failed: {e}") from e
+
+    try:
         raw = resp.content[0].text
         return _parse_json_array_response(raw)
-
     except Exception as e:
-        log.warning(f"Distillation error: {e}")
-        return []
+        raise DistillationFailure(f"JSON parse failed: {e}") from e
 
 
 # ── Storage ───────────────────────────────────────────────────────────────────
@@ -498,8 +505,16 @@ def process_file(
     if github_info:
         log.info(f"  Linked to GitHub: {github_info['url']}")
 
-    # Distill knowledge
-    entries = distill(turns, anthropic_client, github_info)
+    # Distill knowledge. If distillation itself fails, leave the checkpoint
+    # unchanged so the next run can retry the same session window.
+    try:
+        entries = distill(turns, anthropic_client, github_info)
+    except DistillationFailure as exc:
+        log.warning(
+            "  Distillation failed; leaving checkpoint unchanged for retry: "
+            f"{exc}"
+        )
+        return 0
 
     saved = 0
     if entries:

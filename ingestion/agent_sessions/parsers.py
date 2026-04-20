@@ -175,8 +175,9 @@ def parse_codex(path: Path, from_offset: int = 0) -> tuple[list[dict], int, dict
                         continue
 
                     role = payload.get("role", "")
-                    # Codex uses "developer" for user messages
-                    if role == "developer":
+                    # Codex rollout files may use either "user" or "developer"
+                    # for human-authored turns depending on the client/runtime.
+                    if role in ("developer", "user"):
                         role = "user"
                     elif role != "assistant":
                         continue
