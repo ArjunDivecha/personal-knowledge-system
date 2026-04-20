@@ -118,7 +118,7 @@ def _default_state() -> dict:
     return {"files": {}, "last_run": None, "stats": {"total_saved": 0, "total_skipped": 0}}
 
 
-def _normalize_state(state: dict | None) -> dict:
+def _normalize_state(state: Optional[dict] = None) -> dict:
     """Normalize checkpoint payloads loaded from disk or Redis."""
     merged = _default_state()
     if not isinstance(state, dict):
@@ -222,7 +222,7 @@ Session conversation:
 def distill(
     turns: list[dict],
     client: anthropic.Anthropic,
-    github_info: dict | None = None,
+    github_info: Optional[dict] = None,
 ) -> list[dict]:
     """
     Call Claude to extract knowledge entries from a session's turns.
@@ -300,7 +300,7 @@ def save_entries(
     entries: list[dict],
     turns: list[dict],
     storage: StorageClient,
-    github_info: dict | None = None,
+    github_info: Optional[dict] = None,
     dry_run: bool = False,
 ) -> int:
     """
