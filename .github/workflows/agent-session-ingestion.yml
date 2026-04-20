@@ -68,8 +68,10 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install -r ../distillation/requirements.txt
+          python3 -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install -r ../distillation/requirements.txt
 
       - name: Run agent session ingestion
         env:
@@ -97,4 +99,4 @@ jobs:
           if [ -n "$LIMIT" ]; then
             args+=(--limit "$LIMIT")
           fi
-          python3 agent_sessions/run.py "${args[@]}"
+          .venv/bin/python agent_sessions/run.py "${args[@]}"
