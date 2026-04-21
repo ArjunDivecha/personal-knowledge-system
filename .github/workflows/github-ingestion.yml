@@ -55,8 +55,8 @@ jobs:
       UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
       UPSTASH_VECTOR_REST_URL: ${{ secrets.UPSTASH_VECTOR_REST_URL }}
       UPSTASH_VECTOR_REST_TOKEN: ${{ secrets.UPSTASH_VECTOR_REST_TOKEN }}
-      GITHUB_API_KEY: ${{ secrets.GITHUB_API_KEY }}
-      GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
+      GITHUB_API_KEY: ${{ secrets.PKS_GITHUB_API_KEY || github.token }}
+      GITHUB_USERNAME: ${{ github.repository_owner }}
       PYTHONUNBUFFERED: "1"
 
     steps:
