@@ -2,9 +2,10 @@
 """
 Export repo-attached AI agent context artifacts under .pks/agent-context/.
 
-V1 supports:
+Supported surfaces:
 - Claude Code
 - Codex CLI
+- Cursor agent transcripts
 
 Artifacts are committed into the repository so PKS can ingest repo-linked
 agent context remotely through GitHub without depending on raw local logs.
@@ -24,10 +25,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
+CURSOR_PROJECTS_DIR = Path.home() / ".cursor" / "projects"
 DEFAULT_OUTPUT_SUBDIR = ".pks/agent-context"
 SURFACE_PREFIXES = {
     "claude_code": "claude-code",
     "codex_cli": "codex-cli",
+    "cursor": "cursor",
 }
 MAX_TRANSCRIPT_CHARS = 24000
 TURN_CAP = 800
@@ -175,6 +178,60 @@ def parse_codex(path: Path, from_offset: int = 0) -> Tuple[List[Dict], int, Dict
     return turns, new_offset, session_meta
 
 
+def parse_cursor(path: Path, from_offset: int = 0) -> Tuple[List[Dict], int, Dict]:
+    """Parse Cursor agent transcript user/assistant turns from a JSONL file."""
+    turns: List[Dict] = []
+    new_offset = from_offset
+    session_meta = {"cwd": None, "project": path.parents[2].name if len(path.parents) >= 3 else path.parent.name}
+
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(from_offset)
+            for raw in handle:
+                new_offset = handle.tell()
+                try:
+                    line = raw.decode("utf-8", errors="replace").strip()
+                    if not line:
+                        continue
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                role = event.get("role", "")
+                if role not in {"user", "assistant"}:
+                    continue
+
+                message = event.get("message", {})
+                content = message.get("content", "")
+                if isinstance(content, list):
+                    text_parts = []
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            text = block.get("text", "")
+                            if text:
+                                text_parts.append(text)
+                    content = "\n".join(text_parts)
+
+                if not content or not content.strip():
+                    continue
+
+                turns.append(
+                    {
+                        "role": role,
+                        "content": content.strip()[:TURN_CAP],
+                        "timestamp": event.get("timestamp", ""),
+                        "session_id": path.stem,
+                        "source": "cursor",
+                        "project": session_meta["project"],
+                        "cwd": session_meta.get("cwd", ""),
+                    }
+                )
+    except Exception:
+        return [], from_offset, session_meta
+
+    return turns, new_offset, session_meta
+
+
 def run_git(repo_dir: Path, *args: str) -> str:
     result = subprocess.run(
         ["git", "-C", str(repo_dir), *args],
@@ -296,6 +353,10 @@ def normalize_turn_cwd(turn: Dict) -> Optional[Path]:
     cwd = turn.get("cwd")
     if not cwd:
         return None
+    try:
+        return Path(cwd).resolve()
+    except Exception:
+        return None
 
 
 def path_matches_repo(candidate_path: str, repo_root: Path) -> bool:
@@ -356,10 +417,43 @@ def codex_jsonl_mentions_repo(path: Path, repo_root: Path) -> bool:
         return False
 
     return False
+
+
+def cursor_jsonl_mentions_repo(path: Path, repo_root: Path) -> bool:
+    """Check Cursor transcript content and tool inputs for repo paths."""
+    repo_root_str = str(repo_root)
     try:
-        return Path(cwd).resolve()
+        with open(path, "rb") as handle:
+            for raw in handle:
+                try:
+                    line = raw.decode("utf-8", errors="replace").strip()
+                    if not line:
+                        continue
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                message = event.get("message", {})
+                content = message.get("content", [])
+                if not isinstance(content, list):
+                    continue
+
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") == "text":
+                        text = block.get("text", "")
+                        if isinstance(text, str) and repo_root_str in text:
+                            return True
+                    elif block.get("type") == "tool_use":
+                        tool_input = block.get("input")
+                        serialized = json.dumps(tool_input, sort_keys=True) if isinstance(tool_input, (dict, list)) else str(tool_input or "")
+                        if repo_root_str in serialized:
+                            return True
     except Exception:
-        return None
+        return False
+
+    return False
 
 
 def find_claude_session_file(repo_root: Path) -> Optional[Path]:
@@ -427,6 +521,21 @@ def find_codex_session_file(repo_root: Path, max_candidates: int = 120) -> Optio
     return None
 
 
+def find_cursor_session_file(repo_root: Path, max_candidates: int = 160) -> Optional[Path]:
+    if not CURSOR_PROJECTS_DIR.exists():
+        return None
+
+    candidates = sorted(
+        CURSOR_PROJECTS_DIR.glob("**/agent-transcripts/**/*.jsonl"),
+        key=lambda p: ("/subagents/" in str(p), -p.stat().st_mtime),
+    )[:max_candidates]
+
+    for candidate in candidates:
+        if cursor_jsonl_mentions_repo(candidate, repo_root):
+            return candidate
+    return None
+
+
 def load_session_artifact(
     repo_root: Path,
     surface: str,
@@ -444,6 +553,11 @@ def load_session_artifact(
         if not source_path:
             return None
         turns, _offset, _meta = parse_codex(source_path, from_offset=0)
+    elif surface == "cursor":
+        source_path = find_cursor_session_file(repo_root)
+        if not source_path:
+            return None
+        turns, _offset, _meta = parse_cursor(source_path, from_offset=0)
     else:
         raise ValueError(f"Unsupported surface: {surface}")
 
@@ -490,7 +604,7 @@ def main() -> int:
     parser.add_argument("--repo-dir", default=".", help="Repository directory to export for.")
     parser.add_argument(
         "--surface",
-        choices=["claude_code", "codex_cli", "all"],
+        choices=["claude_code", "codex_cli", "cursor", "all"],
         default="all",
         help="Surface to export.",
     )
@@ -518,7 +632,7 @@ def main() -> int:
 
     output_dir = Path(args.output_dir).resolve() if args.output_dir else repo_root / DEFAULT_OUTPUT_SUBDIR
 
-    surfaces = ["claude_code", "codex_cli"] if args.surface == "all" else [args.surface]
+    surfaces = ["claude_code", "codex_cli", "cursor"] if args.surface == "all" else [args.surface]
     changed_any = False
     for surface in surfaces:
         changed_any = export_surface(repo_root, output_dir, surface, args.stage) or changed_any

@@ -12,9 +12,9 @@ The repo is partly historical and partly active. There are design docs describin
 
 1. Raw sources are ingested locally:
    - Claude / ChatGPT export files via `distillation/`
-   - Claude Code and Codex session logs via `ingestion/agent_sessions/`
-   - GitHub repos via `ingestion/github/`
+   - GitHub repos via `ingestion/github/`, including repo-attached AI context under `.pks/agent-context/`
    - Gmail mbox exports via `ingestion/gmail/`
+   - Legacy manual backfill of Claude Code / Codex raw logs via `ingestion/agent_sessions/`
 2. Python ingestion/distillation code writes entries into:
    - Upstash Redis for canonical entry storage and indexes
    - Upstash Vector for embeddings and semantic search
@@ -100,7 +100,7 @@ Shared code:
 Source-specific runners:
 - `ingestion/github/run.py`: ingests README, commits, and code comments from GitHub repos.
 - `ingestion/gmail/run.py`: ingests substantive Gmail sent messages from an mbox export.
-- `ingestion/agent_sessions/run.py`: ingests Claude Code and Codex session logs incrementally.
+- `ingestion/agent_sessions/run.py`: legacy manual backfill for Claude Code and Codex raw session logs.
 - `ingestion/twitter/run.py`: ingests Twitter/X timeline knowledge incrementally.
 
 Agent session ingestion details:
@@ -110,7 +110,12 @@ Agent session ingestion details:
 - Mirrors checkpoint state into Upstash Redis under `ingestion:agent_sessions:state`
 - Optionally links cwd to GitHub repo context via `agent_sessions/github_linker.py`
 - Distills sessions with Anthropic and stores durable knowledge only
-- Scheduled remotely via `.github/workflows/agent-session-ingestion.yml` on a self-hosted macOS runner with the label `knowledge-agent-sessions`
+- Manual backfill only via `.github/workflows/agent-session-ingestion.yml` on the self-hosted macOS runner labeled `knowledge-agent-sessions`
+
+Repo-attached agent context details:
+- Exported into `.pks/agent-context/` by the shared pre-commit hook
+- Current supported surfaces: Claude Code, Codex CLI, and Cursor
+- Ingested remotely through `.github/workflows/github-ingestion.yml`
 
 Twitter ingestion details:
 - Reads your X timeline through the API with `TWITTER_BEARER_TOKEN`

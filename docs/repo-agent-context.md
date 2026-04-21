@@ -16,12 +16,14 @@ Current surfaces:
 
 - `claude_code`
 - `codex_cli`
+- `cursor`
 
 Artifacts are session-scoped filenames such as:
 
 ```text
 .pks/agent-context/claude-code-<session-id>.md
 .pks/agent-context/codex-cli-<session-id>.md
+.pks/agent-context/cursor-<session-id>.md
 ```
 
 That avoids overwriting all history into a single file when multiple sessions
@@ -80,7 +82,7 @@ Processed artifact versions are deduplicated by Git blob SHA.
 
 ## Current limitations
 
-- Cursor, Windsurf, and Antigravity adapters are not implemented yet.
+- Windsurf and Antigravity adapters are not implemented yet.
 - The per-repo installer depends on the `knowledge-system` checkout staying at
   the same absolute path. The global installer avoids that by copying the
   exporter into your home directory.

@@ -195,9 +195,9 @@ Current high-level schema:
 Raw Sources
   Claude exports
   ChatGPT exports
-  Claude Code sessions
-  Codex CLI sessions
   GitHub repos
+    README / commits / code comments
+    repo-attached Claude Code / Codex CLI / Cursor context
   Gmail
 
         |
@@ -349,15 +349,14 @@ Dream is Phase 5 work. The live scheduler, audit output, reversible archive/rest
 The system currently uses three schedulers for three different jobs:
 
 - GitHub Actions runs Twitter ingestion remotely at `05:40 UTC`
-- GitHub Actions runs Claude Code + Codex agent-session ingestion at `06:10 UTC`
+- GitHub Actions runs GitHub ingestion, including repo-attached agent context, at `06:10 UTC`
 - Cloudflare Workers runs the remote Dream job at `07:10 UTC`
 
-Agent-session ingestion still reads local source files from
-`~/.claude/projects` and `~/.codex/sessions`, but the schedule is now cloud
-managed through GitHub Actions on a self-hosted runner labeled
-`knowledge-agent-sessions`. The workflow lives at
-`.github/workflows/agent-session-ingestion.yml` and uses a Redis-backed
-checkpoint so scheduled runs fail closed if remote state is missing.
+Repo-attached AI context is exported locally at commit time into
+`.pks/agent-context/` and then picked up by the nightly GitHub ingestion job.
+That keeps the automated nightly path remote while still associating the chat
+history with the repository itself. The workflow lives at
+`.github/workflows/github-ingestion.yml`.
 
 Twitter ingestion is scheduled remotely because the source data comes from the
 X API rather than local files. The workflow lives at
@@ -390,7 +389,7 @@ Operationally, the following are live:
 - background reconsolidation on retrieval
 - write-capable MCP tools for `restore_archived` and `set_context_type`
 - remote scheduled Twitter/X ingestion with Redis-backed incremental state
-- remote scheduled Claude Code + Codex session ingestion on a self-hosted runner with Redis-backed incremental state
+- remote scheduled GitHub ingestion with repo-attached Claude Code, Codex CLI, and Cursor context
 - nightly full-live Dream scheduler and audit records
 - reversible Dream archive snapshot and restore mechanics
 - deterministic duplicate merge and contradiction handling in Dream replay

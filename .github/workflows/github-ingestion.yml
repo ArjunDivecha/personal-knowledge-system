@@ -1,0 +1,102 @@
+name: GitHub Ingestion
+
+on:
+  schedule:
+    - cron: "10 6 * * *"
+  repository_dispatch:
+    types:
+      - github-ingestion-manual
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run without writing to storage"
+        required: false
+        default: false
+        type: boolean
+      no_resume:
+        description: "Ignore processed-source checkpoints and rescan all repos"
+        required: false
+        default: false
+        type: boolean
+      repos:
+        description: "Optional comma-separated repo list"
+        required: false
+        type: string
+      skip_code:
+        description: "Skip code comment extraction"
+        required: false
+        default: false
+        type: boolean
+      skip_commits:
+        description: "Skip commit extraction"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-ingestion
+  cancel-in-progress: false
+
+jobs:
+  github-ingestion:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: ingestion/github
+
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+      UPSTASH_VECTOR_REST_URL: ${{ secrets.UPSTASH_VECTOR_REST_URL }}
+      UPSTASH_VECTOR_REST_TOKEN: ${{ secrets.UPSTASH_VECTOR_REST_TOKEN }}
+      GITHUB_API_KEY: ${{ secrets.GITHUB_API_KEY }}
+      GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: distillation/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ../../distillation/requirements.txt
+
+      - name: Run GitHub ingestion
+        env:
+          DRY_RUN: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.dry_run || github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+          NO_RESUME: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.no_resume || github.event_name == 'workflow_dispatch' && inputs.no_resume || 'false' }}
+          REPOS: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.repos || github.event_name == 'workflow_dispatch' && inputs.repos || '' }}
+          SKIP_CODE: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.skip_code || github.event_name == 'workflow_dispatch' && inputs.skip_code || 'false' }}
+          SKIP_COMMITS: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.skip_commits || github.event_name == 'workflow_dispatch' && inputs.skip_commits || 'false' }}
+        run: |
+          args=()
+          if [ "$DRY_RUN" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          if [ "$NO_RESUME" = "true" ]; then
+            args+=(--no-resume)
+          fi
+          if [ "$SKIP_CODE" = "true" ]; then
+            args+=(--skip-code)
+          fi
+          if [ "$SKIP_COMMITS" = "true" ]; then
+            args+=(--skip-commits)
+          fi
+          if [ -n "$REPOS" ]; then
+            args+=(--repos "$REPOS")
+          fi
+          python run.py "${args[@]}"

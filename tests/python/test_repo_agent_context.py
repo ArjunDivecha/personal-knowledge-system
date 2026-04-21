@@ -90,6 +90,29 @@ class RepoAgentContextExporterTests(unittest.TestCase):
 
             self.assertTrue(exporter.codex_jsonl_mentions_repo(rollout, repo_root))
 
+    def test_cursor_jsonl_mentions_repo_via_tool_use_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir) / "repo"
+            repo_root.mkdir()
+            transcript = Path(tmpdir) / "cursor-test.jsonl"
+            events = [
+                {
+                    "role": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Read",
+                                "input": {"path": str(repo_root / "README.md")},
+                            }
+                        ]
+                    },
+                }
+            ]
+            transcript.write_text("\n".join(json.dumps(event) for event in events) + "\n")
+
+            self.assertTrue(exporter.cursor_jsonl_mentions_repo(transcript, repo_root))
+
 
 class RepoAgentContextThinIndexTests(unittest.TestCase):
     def test_update_thin_index_refreshes_existing_entry(self) -> None:
