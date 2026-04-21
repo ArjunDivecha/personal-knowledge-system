@@ -914,7 +914,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 			async () => {
 				const redis = this.getRedis(this.env);
 				const rawIndex = await redis.get("index:current") as {
-					topics?: Array<{ id: string; domain: string; current_view_summary?: string; state?: string; confidence?: string; last_updated?: string; context_type?: string; injection_tier?: number; salience_score?: number; mention_count?: number; archived?: boolean }>;
+					topics?: Array<{ id: string; domain: string; current_view_summary?: string; state?: string; confidence?: string; last_updated?: string; context_type?: string; injection_tier?: number; salience_score?: number; mention_count?: number; archived?: boolean; top_repo?: string }>;
 					projects?: Array<{ id: string; name: string; goal_summary?: string; status?: string; current_phase?: string; last_touched?: string; context_type?: string; injection_tier?: number; salience_score?: number; mention_count?: number; archived?: boolean }>;
 					generated_at?: string;
 					token_count?: number;
@@ -956,6 +956,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 					context_type: t.context_type || null,
 					salience_score: typeof t.salience_score === "number" ? t.salience_score : null,
 					mention_count: typeof t.mention_count === "number" ? t.mention_count : null,
+					top_repo: t.top_repo || null,
 				}));
 
 				const sortedProjects = [...projects].sort((a, b) => {
@@ -1510,6 +1511,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 							type: entryType,
 							label: getEntryLabel(entry),
 							summary: getEntrySummary(entry),
+							top_repo: typeof entryMetadata.github_repo === "string" ? entryMetadata.github_repo : null,
 							state: getEntryState(entry),
 							context_type: typeof entryMetadata.context_type === "string" ? entryMetadata.context_type : null,
 							injection_tier: effectiveTier,
@@ -1529,6 +1531,8 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 								injection_tier: effectiveTier,
 								salience_score: salienceScore,
 								mention_count: entryMetadata.mention_count,
+								github_repo: typeof entryMetadata.github_repo === "string" ? entryMetadata.github_repo : null,
+								artifact_path: typeof entryMetadata.artifact_path === "string" ? entryMetadata.artifact_path : null,
 								archived: false,
 							},
 						};

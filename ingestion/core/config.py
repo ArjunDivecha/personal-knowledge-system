@@ -95,6 +95,9 @@ MAX_WORKERS = 8
 GITHUB_MAX_COMMITS_PER_REPO = 100       # Last N commits to analyze
 GITHUB_MAX_CODE_FILES_PER_REPO = 50     # Max code files to scan for comments
 GITHUB_CODE_EXTENSIONS = {".py", ".ts", ".tsx", ".js", ".jsx", ".rs", ".go", ".swift"}
+GITHUB_AGENT_CONTEXT_DIR = ".pks/agent-context"
+GITHUB_AGENT_CONTEXT_EXTENSIONS = {".md", ".markdown", ".json"}
+GITHUB_MAX_AGENT_CONTEXT_FILES_PER_REPO = 20
 
 # Gmail extraction settings
 GMAIL_MIN_CONTENT_LENGTH = 150          # Skip emails shorter than this
@@ -221,4 +224,3 @@ if __name__ == "__main__":
             print(f"  ✗ {error}")
     else:
         print(f"✓ Gmail configuration OK ({GMAIL_MBOX_PATH})")
-

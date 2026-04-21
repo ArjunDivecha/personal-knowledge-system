@@ -186,6 +186,17 @@ class StorageClient:
     def _build_vector_metadata(self, entry: dict) -> dict:
         """Build Phase 1-safe vector metadata for new ingestion writes."""
         metadata = entry.get("metadata", {}) or {}
+        top_repo = (
+            metadata.get("github_repo")
+            or next(
+                (
+                    repo.get("repo")
+                    for repo in entry.get("related_repos", [])
+                    if isinstance(repo, dict) and repo.get("repo")
+                ),
+                None,
+            )
+        )
         vector_metadata = {
             "type": "knowledge",
             "domain": entry["domain"],
@@ -204,6 +215,10 @@ class StorageClient:
             vector_metadata["injection_tier"] = metadata["injection_tier"]
         if metadata.get("salience_score") is not None:
             vector_metadata["salience_score"] = metadata["salience_score"]
+        if top_repo:
+            vector_metadata["github_repo"] = top_repo
+        if metadata.get("artifact_path"):
+            vector_metadata["artifact_path"] = metadata["artifact_path"]
 
         return vector_metadata
 
@@ -322,7 +337,10 @@ class StorageClient:
         
         # Generate and save embedding
         if embedding_text is None:
-            embedding_text = f"{entry['domain']}: {entry.get('current_view', '')}"
+            metadata = entry.get("metadata", {}) or {}
+            repo_hint = metadata.get("github_repo")
+            base_text = f"{entry['domain']}: {entry.get('current_view', '')}"
+            embedding_text = f"{repo_hint}: {base_text}" if repo_hint else base_text
         
         embedding = self.generate_embedding(embedding_text)
         
@@ -359,10 +377,13 @@ class StorageClient:
         entries = list(merged_by_id.values())
 
         # Generate all embeddings first
-        embedding_texts = [
-            f"{e['domain']}: {e.get('current_view', '')}"
-            for e in entries
-        ]
+        if embedding_texts is None:
+            embedding_texts = []
+            for e in entries:
+                metadata = e.get("metadata", {}) or {}
+                repo_hint = metadata.get("github_repo")
+                base_text = f"{e['domain']}: {e.get('current_view', '')}"
+                embedding_texts.append(f"{repo_hint}: {base_text}" if repo_hint else base_text)
         
         embeddings = self.generate_embeddings_batch(embedding_texts)
         
@@ -440,22 +461,37 @@ class StorageClient:
                 "contested_count": 0,
             }
         
-        # Add new topics
-        existing_ids = {t["id"] for t in current.get("topics", [])}
-        
+        # Upsert topics so stable IDs can refresh existing summaries.
+        topics_by_id = {t["id"]: t for t in current.get("topics", [])}
+
         for entry in new_entries:
-            if entry["id"] not in existing_ids:
-                topic_summary = {
-                    "id": entry["id"],
-                    "domain": entry["domain"],
-                    "current_view_summary": entry.get("current_view", "")[:200] + "..." if len(entry.get("current_view", "")) > 200 else entry.get("current_view", ""),
-                    "state": entry.get("state", "active"),
-                    "confidence": entry.get("confidence", "medium"),
-                    "last_updated": entry.get("metadata", {}).get("updated_at", datetime.utcnow().isoformat()),
-                    "top_repo": None,
-                }
-                current["topics"].append(topic_summary)
-                existing_ids.add(entry["id"])
+            metadata = entry.get("metadata", {}) or {}
+            top_repo = (
+                metadata.get("github_repo")
+                or next(
+                    (
+                        repo.get("repo")
+                        for repo in entry.get("related_repos", [])
+                        if isinstance(repo, dict) and repo.get("repo")
+                    ),
+                    None,
+                )
+            )
+            topic_summary = {
+                "id": entry["id"],
+                "domain": entry["domain"],
+                "current_view_summary": entry.get("current_view", "")[:200] + "..." if len(entry.get("current_view", "")) > 200 else entry.get("current_view", ""),
+                "state": entry.get("state", "active"),
+                "confidence": entry.get("confidence", "medium"),
+                "last_updated": metadata.get("updated_at", datetime.utcnow().isoformat()),
+                "context_type": metadata.get("context_type"),
+                "mention_count": metadata.get("mention_count"),
+                "archived": metadata.get("archived", False),
+                "top_repo": top_repo,
+            }
+            topics_by_id[entry["id"]] = topic_summary
+
+        current["topics"] = list(topics_by_id.values())
         
         # Update metadata
         current["generated_at"] = datetime.utcnow().isoformat()

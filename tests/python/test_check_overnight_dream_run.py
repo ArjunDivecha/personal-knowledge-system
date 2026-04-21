@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 import unittest
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -97,3 +97,4 @@ class CheckOvernightDreamRunTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+UTC = timezone.utc

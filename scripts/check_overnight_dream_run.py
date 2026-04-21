@@ -7,7 +7,7 @@ import sys
 import urllib.parse
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -325,3 +325,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+UTC = timezone.utc

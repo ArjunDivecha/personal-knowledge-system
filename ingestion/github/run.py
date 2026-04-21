@@ -123,12 +123,14 @@ def run_github_ingestion(
         all_repos = github.list_repos(include_forks=False)
         print(f"Found {len(all_repos)} repositories (excluding forks)")
     
-    # Check for already processed repos
+    # Check for already processed repo baselines. Agent-context artifacts are
+    # rescanned for every repo and deduplicated by artifact blob SHA instead.
     if resume and storage:
         processed = set(storage.get_processed_sources("github"))
-        repos_to_process = [r for r in all_repos if r["name"] not in processed]
-        print(f"Already processed: {len(all_repos) - len(repos_to_process)}")
-        print(f"To process: {len(repos_to_process)}")
+        repos_to_process = all_repos
+        already_processed = sum(1 for r in all_repos if r["name"] in processed)
+        print(f"Repo baselines already processed: {already_processed}")
+        print(f"Repos to scan for agent-context artifacts: {len(repos_to_process)}")
     else:
         repos_to_process = all_repos
         processed = set()
@@ -147,62 +149,118 @@ def run_github_ingestion(
         "readme_entries": 0,
         "commit_entries": 0,
         "code_entries": 0,
+        "agent_context_entries": 0,
+        "agent_context_files": 0,
         "errors": 0,
     }
     
     for i, repo in enumerate(repos_to_process, 1):
         repo_name = repo["name"]
+        repo_full_name = repo.get("full_name", f"ArjunDivecha/{repo_name}")
+        repo_url = repo.get("url", f"https://github.com/{repo_full_name}")
+        repo_processed = repo_name in processed
         print(f"\n[{i}/{len(repos_to_process)}] {repo_name}")
         
         repo_entries = []
         
         try:
-            # Extract from README
-            print("  → README...", end=" ", flush=True)
-            readme = github.get_readme(repo_name)
-            if readme:
-                entries = extractor.extract_from_readme(
-                    readme_content=readme,
-                    repo_name=repo_name,
-                    repo_url=repo.get("url", f"https://github.com/ArjunDivecha/{repo_name}")
-                )
-                repo_entries.extend(entries)
-                stats["readme_entries"] += len(entries)
-                print(f"{len(entries)} entries")
+            readme = None
+            baseline_entry_count = 0
+            if repo_processed and resume:
+                print("  → Repo baseline already processed, skipping README/commits/code")
             else:
-                print("not found")
-            
-            # Extract from commits
-            if not skip_commits:
-                print("  → Commits...", end=" ", flush=True)
-                commits = github.get_commits(repo_name, max_commits=50)
-                if commits:
-                    entries = extractor.extract_from_commits(commits, repo_name)
+                # Extract from README
+                print("  → README...", end=" ", flush=True)
+                readme = github.get_readme(repo_name)
+                if readme:
+                    entries = extractor.extract_from_readme(
+                        readme_content=readme,
+                        repo_name=repo_name,
+                        repo_url=repo_url,
+                    )
                     repo_entries.extend(entries)
-                    stats["commit_entries"] += len(entries)
-                    print(f"{len(entries)} entries from {len(commits)} commits")
+                    baseline_entry_count += len(entries)
+                    stats["readme_entries"] += len(entries)
+                    print(f"{len(entries)} entries")
                 else:
-                    print("none found")
-            
-            # Extract from code comments
-            if not skip_code:
-                print("  → Code comments...", end=" ", flush=True)
-                code_files = github.get_code_files(repo_name, max_files=20)
-                if code_files:
-                    entries = extractor.extract_from_code_comments(code_files, repo_name)
+                    print("not found")
+
+                # Extract from commits
+                if not skip_commits:
+                    print("  → Commits...", end=" ", flush=True)
+                    commits = github.get_commits(repo_name, max_commits=50)
+                    if commits:
+                        entries = extractor.extract_from_commits(commits, repo_name)
+                        repo_entries.extend(entries)
+                        baseline_entry_count += len(entries)
+                        stats["commit_entries"] += len(entries)
+                        print(f"{len(entries)} entries from {len(commits)} commits")
+                    else:
+                        print("none found")
+
+                # Extract from code comments
+                if not skip_code:
+                    print("  → Code comments...", end=" ", flush=True)
+                    code_files = github.get_code_files(repo_name, max_files=20)
+                    if code_files:
+                        entries = extractor.extract_from_code_comments(code_files, repo_name)
+                        repo_entries.extend(entries)
+                        baseline_entry_count += len(entries)
+                        stats["code_entries"] += len(entries)
+                        print(f"{len(entries)} entries from {len(code_files)} files")
+                    else:
+                        print("no code files")
+
+            print("  → Agent context...", end=" ", flush=True)
+            agent_context_files = github.get_agent_context_files(repo_name)
+            if agent_context_files:
+                processed_artifacts = 0
+                skipped_artifacts = 0
+                agent_entries = 0
+                for artifact in agent_context_files:
+                    artifact_source_id = (
+                        f"{repo_full_name}:{artifact['path']}:{artifact.get('sha') or 'no-sha'}"
+                    )
+                    if storage and resume and storage.is_source_processed("github_agent_context", artifact_source_id):
+                        skipped_artifacts += 1
+                        continue
+
+                    entries = extractor.extract_from_agent_context_artifact(
+                        artifact_content=artifact["content"],
+                        repo_name=repo_name,
+                        repo_full_name=repo_full_name,
+                        repo_url=repo_url,
+                        artifact_path=artifact["path"],
+                        artifact_sha=artifact.get("sha"),
+                    )
                     repo_entries.extend(entries)
-                    stats["code_entries"] += len(entries)
-                    print(f"{len(entries)} entries from {len(code_files)} files")
-                else:
-                    print("no code files")
+                    agent_entries += len(entries)
+                    processed_artifacts += 1
+
+                    if storage:
+                        storage.mark_source_processed("github_agent_context", artifact_source_id, {
+                            "repo": repo_full_name,
+                            "path": artifact["path"],
+                            "sha": artifact.get("sha"),
+                            "entries_count": len(entries),
+                        })
+
+                stats["agent_context_files"] += processed_artifacts
+                stats["agent_context_entries"] += agent_entries
+                print(
+                    f"{agent_entries} entries from {processed_artifacts} files"
+                    + (f" ({skipped_artifacts} unchanged)" if skipped_artifacts else "")
+                )
+            else:
+                print("none found")
             
             all_entries.extend(repo_entries)
             stats["repos_processed"] += 1
             
             # Mark as processed
-            if storage and repo_entries:
+            if storage and not repo_processed and baseline_entry_count:
                 storage.mark_source_processed("github", repo_name, {
-                    "entries_count": len(repo_entries),
+                    "entries_count": baseline_entry_count,
                     "has_readme": readme is not None,
                 })
             
@@ -262,6 +320,8 @@ def run_github_ingestion(
     print(f"Entries from READMEs:   {stats['readme_entries']}")
     print(f"Entries from commits:   {stats['commit_entries']}")
     print(f"Entries from code:      {stats['code_entries']}")
+    print(f"Agent context files:    {stats['agent_context_files']}")
+    print(f"Agent context entries:  {stats['agent_context_entries']}")
     print(f"Total entries:          {len(all_entries)}")
     print(f"Errors:                 {stats['errors']}")
     
@@ -321,4 +381,3 @@ if __name__ == "__main__":
         dry_run=args.dry_run,
         resume=not args.no_resume,
     )
-

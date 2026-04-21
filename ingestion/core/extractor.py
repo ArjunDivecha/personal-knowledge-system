@@ -19,6 +19,7 @@ OUTPUT FILES:
 
 import json
 import hashlib
+import re
 from typing import Optional
 from datetime import datetime
 
@@ -44,6 +45,39 @@ class Extractor:
         hash_input = f"{source_type}:{content[:500]}"
         hash_value = hashlib.sha256(hash_input.encode()).hexdigest()[:12]
         return f"ke_{hash_value}"
+
+    def _generate_repo_scoped_id(self, repo_full_name: str, domain: str, source_type: str) -> str:
+        """Generate a stable repo-scoped ID so repeated repo updates merge."""
+        hash_input = f"{source_type}:{repo_full_name.lower()}:{domain.strip().lower()}"
+        hash_value = hashlib.sha256(hash_input.encode()).hexdigest()[:12]
+        return f"ke_{hash_value}"
+
+    def _extract_json_array(self, text: str) -> list[dict]:
+        """Extract a JSON array from a model response."""
+        start = text.find("[")
+        end = text.rfind("]") + 1
+        if start == -1 or end == 0:
+            return []
+        parsed = json.loads(text[start:end])
+        return parsed if isinstance(parsed, list) else []
+
+    def _parse_frontmatter(self, content: str) -> tuple[dict, str]:
+        """Parse a minimal YAML-style frontmatter block from markdown."""
+        if not content.startswith("---\n"):
+            return {}, content
+
+        match = re.match(r"^---\n(.*?)\n---\n?(.*)$", content, flags=re.DOTALL)
+        if not match:
+            return {}, content
+
+        raw_frontmatter, body = match.groups()
+        metadata: dict[str, str] = {}
+        for line in raw_frontmatter.splitlines():
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            metadata[key.strip()] = value.strip().strip('"').strip("'")
+        return metadata, body
     
     # -------------------------------------------------------------------------
     # GITHUB EXTRACTION
@@ -308,6 +342,177 @@ JSON format:
             
         except Exception as e:
             print(f"  Error extracting from commits: {e}")
+            return []
+
+    def extract_from_agent_context_artifact(
+        self,
+        artifact_content: str,
+        repo_name: str,
+        repo_full_name: str,
+        repo_url: str,
+        artifact_path: str,
+        artifact_sha: Optional[str] = None,
+    ) -> list[dict]:
+        """
+        Extract repo-specific knowledge from a committed AI agent artifact.
+
+        The artifact belongs to the repository itself, so entries should merge
+        by repo + domain rather than by individual session.
+        """
+        if not artifact_content or len(artifact_content) < 80:
+            return []
+
+        artifact_meta, artifact_body = self._parse_frontmatter(artifact_content)
+        artifact_body = artifact_body.strip()
+        if len(artifact_body) < 80:
+            return []
+
+        surface = artifact_meta.get("surface", "unknown")
+        session_id = artifact_meta.get("session_id", "")
+        exported_at = artifact_meta.get("exported_at", "")
+        commit_sha = artifact_meta.get("commit_sha", "")
+
+        prompt = f"""Analyze this repo-attached AI coding session artifact for the repository "{repo_full_name}".
+
+This file was committed into the repository itself and should be treated as evidence about how this specific repo evolved, not as a separate standalone chat.
+
+Artifact metadata:
+- Repository: {repo_full_name}
+- Surface: {surface}
+- Artifact path: {artifact_path}
+- Session id: {session_id or "unknown"}
+- Exported at: {exported_at or "unknown"}
+- Commit sha: {commit_sha or "unknown"}
+
+ARTIFACT CONTENT:
+{artifact_body[:8000]}
+
+Extract durable repo-specific knowledge entries for:
+1. Technical decisions made in this repo
+2. Architecture or workflow changes for this repo
+3. Debugging lessons or implementation constraints discovered while working in this repo
+4. TODOs, risks, or active project context that future work on this repo should remember
+
+Return a JSON array. Return empty [] if the artifact has no substantive repo-specific knowledge.
+
+JSON format:
+[
+  {{
+    "domain": "specific repo topic",
+    "current_view": "1-3 sentence summary of the durable repo-specific knowledge",
+    "confidence": "high|medium|low",
+    "key_insights": [
+      {{"insight": "...", "evidence_snippet": "quote from artifact"}}
+    ],
+    "capabilities": ["optional repo capability or workflow shown"],
+    "open_questions": ["optional unresolved repo question or risk"]
+  }}
+]"""
+
+        try:
+            response = self.client.messages.create(
+                model=EXTRACTION_MODEL,
+                max_tokens=3000,
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            raw_entries = self._extract_json_array(response.content[0].text)
+            entries = []
+            now = datetime.utcnow().isoformat()
+            conversation_id = f"github:{repo_full_name}:agent-context:{artifact_path}"
+
+            for raw in raw_entries:
+                domain = raw.get("domain", "").strip()
+                current_view = raw.get("current_view", "").strip()
+                if not domain or not current_view:
+                    continue
+
+                entry_id = self._generate_repo_scoped_id(
+                    repo_full_name=repo_full_name,
+                    domain=domain,
+                    source_type="github_agent_context",
+                )
+
+                entry = {
+                    "id": entry_id,
+                    "type": "knowledge",
+                    "domain": domain,
+                    "subdomain": None,
+                    "state": "active",
+                    "detail_level": "full",
+                    "current_view": current_view,
+                    "confidence": raw.get("confidence", "medium"),
+                    "positions": [],
+                    "key_insights": [
+                        {
+                            "insight": item.get("insight", ""),
+                            "evidence": {
+                                "conversation_id": conversation_id,
+                                "message_ids": [],
+                                "snippet": item.get("evidence_snippet", "")[:240],
+                            },
+                        }
+                        for item in raw.get("key_insights", [])
+                        if isinstance(item, dict) and item.get("insight")
+                    ],
+                    "knows_how_to": [
+                        {
+                            "capability": capability,
+                            "evidence": {
+                                "conversation_id": conversation_id,
+                                "message_ids": [],
+                                "snippet": f"Demonstrated in repo-attached {surface} context",
+                            },
+                        }
+                        for capability in raw.get("capabilities", [])
+                        if capability
+                    ],
+                    "open_questions": [
+                        {
+                            "question": question,
+                            "status": "open",
+                        }
+                        for question in raw.get("open_questions", [])
+                        if question
+                    ],
+                    "related_repos": [
+                        {
+                            "repo": repo_full_name,
+                            "path": artifact_path,
+                            "link_type": "explicit",
+                            "confidence": 1.0,
+                            "evidence": f"Committed {surface} artifact attached to repo",
+                        }
+                    ],
+                    "related_knowledge": [],
+                    "evolution": [],
+                    "metadata": {
+                        "created_at": now,
+                        "updated_at": now,
+                        "source_conversations": [conversation_id],
+                        "source_messages": [],
+                        "access_count": 0,
+                        "last_accessed": None,
+                        "project": repo_name,
+                        "source_type": "github_agent_context",
+                        "context_type": "active_project",
+                        "github_repo": repo_full_name,
+                        "github_url": repo_url,
+                        "artifact_path": artifact_path,
+                        "artifact_sha": artifact_sha,
+                        "artifact_surface": surface,
+                        "session_id": session_id or None,
+                        "commit_sha": commit_sha or None,
+                    },
+                    "full_content_ref": f"{repo_url}/blob/HEAD/{artifact_path}",
+                }
+
+                entries.append(entry)
+
+            return entries
+
+        except Exception as e:
+            print(f"  Error extracting from agent context artifact: {e}")
             return []
     
     # -------------------------------------------------------------------------
@@ -589,4 +794,3 @@ JSON format:
         except Exception as e:
             print(f"  Error extracting from code: {e}")
             return []
-

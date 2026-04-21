@@ -33,6 +33,9 @@ from core.config import (
     GITHUB_MAX_COMMITS_PER_REPO,
     GITHUB_MAX_CODE_FILES_PER_REPO,
     GITHUB_CODE_EXTENSIONS,
+    GITHUB_AGENT_CONTEXT_DIR,
+    GITHUB_AGENT_CONTEXT_EXTENSIONS,
+    GITHUB_MAX_AGENT_CONTEXT_FILES_PER_REPO,
 )
 
 
@@ -319,6 +322,47 @@ class GitHubClient:
                 })
         
         return files_with_content
+
+    def get_agent_context_files(
+        self,
+        repo_name: str,
+        prefix: str = None,
+        max_files: int = None,
+    ) -> list[dict]:
+        """
+        Get repo-attached AI agent context artifacts.
+
+        Returns list of {path, content, sha} for files under the configured
+        agent-context directory.
+        """
+        prefix = (prefix or GITHUB_AGENT_CONTEXT_DIR).strip("/")
+        max_files = max_files or GITHUB_MAX_AGENT_CONTEXT_FILES_PER_REPO
+
+        tree = self.get_repo_tree(repo_name)
+        if not tree:
+            return []
+
+        artifact_files = [
+            f for f in tree
+            if f["path"].startswith(f"{prefix}/")
+            and any(f["path"].lower().endswith(ext) for ext in GITHUB_AGENT_CONTEXT_EXTENSIONS)
+            and f.get("size", 0) < 500000
+        ]
+
+        artifact_files.sort(key=lambda f: f["path"])
+        artifact_files = artifact_files[:max_files]
+
+        files_with_content = []
+        for f in artifact_files:
+            content = self.get_file_content(repo_name, f["path"])
+            if content:
+                files_with_content.append({
+                    "path": f["path"],
+                    "content": content,
+                    "sha": f.get("sha"),
+                })
+
+        return files_with_content
     
     # -------------------------------------------------------------------------
     # STATISTICS
@@ -359,4 +403,3 @@ if __name__ == "__main__":
         first_repo = repos[0]["name"]
         readme = client.get_readme(first_repo)
         print(f"\nREADME from {first_repo}: {len(readme) if readme else 0} chars")
-

@@ -66,7 +66,7 @@ import pickle
 import sys
 import time
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -814,3 +814,4 @@ if __name__ == "__main__":
         reset_state=args.reset_state,
         require_redis_state=args.require_redis_state,
     )
+UTC = timezone.utc
