@@ -370,7 +370,10 @@ JSON format:
         surface = artifact_meta.get("surface", "unknown")
         session_id = artifact_meta.get("session_id", "")
         exported_at = artifact_meta.get("exported_at", "")
-        commit_sha = artifact_meta.get("commit_sha", "")
+        export_base_commit_sha = (
+            artifact_meta.get("export_base_commit_sha", "")
+            or artifact_meta.get("commit_sha", "")
+        )
 
         prompt = f"""Analyze this repo-attached AI coding session artifact for the repository "{repo_full_name}".
 
@@ -382,7 +385,7 @@ Artifact metadata:
 - Artifact path: {artifact_path}
 - Session id: {session_id or "unknown"}
 - Exported at: {exported_at or "unknown"}
-- Commit sha: {commit_sha or "unknown"}
+- Export base commit sha: {export_base_commit_sha or "unknown"}
 
 ARTIFACT CONTENT:
 {artifact_body[:8000]}
@@ -502,7 +505,7 @@ JSON format:
                         "artifact_sha": artifact_sha,
                         "artifact_surface": surface,
                         "session_id": session_id or None,
-                        "commit_sha": commit_sha or None,
+                        "export_base_commit_sha": export_base_commit_sha or None,
                     },
                     "full_content_ref": f"{repo_url}/blob/HEAD/{artifact_path}",
                 }

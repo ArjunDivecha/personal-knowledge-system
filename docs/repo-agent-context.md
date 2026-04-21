@@ -29,6 +29,14 @@ Artifacts are session-scoped filenames such as:
 That avoids overwriting all history into a single file when multiple sessions
 touch the same repo.
 
+Frontmatter note:
+
+- `export_base_commit_sha` is the repo `HEAD` seen by the exporter during
+  `pre-commit`.
+- It is intentionally not labeled as the containing commit SHA, because a file
+  committed in a given commit cannot also embed that same commit's hash without
+  becoming self-referential.
+
 ## Preferred install: global machine hook
 
 From `knowledge-system/`, run:

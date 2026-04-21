@@ -42,7 +42,7 @@ class SessionArtifact:
     source_path: Path
     session_id: str
     exported_at: str
-    commit_sha: Optional[str]
+    export_base_commit_sha: Optional[str]
     github_repo: Optional[str]
     repo_root: Path
     turns: List[Dict]
@@ -264,11 +264,11 @@ def get_repo_identity(repo_dir: Path) -> Tuple[Optional[str], Optional[str]]:
                 break
 
     try:
-        commit_sha = run_git(repo_dir, "rev-parse", "HEAD")
+        export_base_commit_sha = run_git(repo_dir, "rev-parse", "HEAD")
     except Exception:
-        commit_sha = None
+        export_base_commit_sha = None
 
-    return github_repo, commit_sha
+    return github_repo, export_base_commit_sha
 
 
 def redact_text(text: str) -> str:
@@ -310,7 +310,7 @@ def render_markdown(artifact: SessionArtifact) -> str:
         f"session_id: {artifact.session_id}",
         f"source_file: {artifact.source_path.name}",
         f"exported_at: {artifact.exported_at}",
-        f"commit_sha: {artifact.commit_sha or ''}",
+        f"export_base_commit_sha: {artifact.export_base_commit_sha or ''}",
         "redacted: true",
         "---",
         "",
@@ -540,7 +540,7 @@ def load_session_artifact(
     repo_root: Path,
     surface: str,
 ) -> Optional[SessionArtifact]:
-    github_repo, commit_sha = get_repo_identity(repo_root)
+    github_repo, export_base_commit_sha = get_repo_identity(repo_root)
     exported_at = datetime.now(timezone.utc).isoformat()
 
     if surface == "claude_code":
@@ -569,7 +569,7 @@ def load_session_artifact(
         source_path=source_path,
         session_id=turns[0].get("session_id", source_path.stem),
         exported_at=exported_at,
-        commit_sha=commit_sha,
+        export_base_commit_sha=export_base_commit_sha,
         github_repo=github_repo,
         repo_root=repo_root,
         turns=turns,

@@ -36,7 +36,7 @@ class RepoAgentContextExporterTests(unittest.TestCase):
             source_path=Path("/Users/arjun/.claude/projects/demo/session.jsonl"),
             session_id="session/with spaces:42",
             exported_at="2026-04-21T08:00:00+00:00",
-            commit_sha="abc123",
+            export_base_commit_sha="abc123",
             github_repo="ArjunDivecha/demo",
             repo_root=Path("/tmp/demo"),
             turns=[],
@@ -52,7 +52,7 @@ class RepoAgentContextExporterTests(unittest.TestCase):
             source_path=Path("/Users/arjun/.codex/sessions/2026/rollout-123.jsonl"),
             session_id="rollout-123",
             exported_at="2026-04-21T08:00:00+00:00",
-            commit_sha="abc123",
+            export_base_commit_sha="abc123",
             github_repo="ArjunDivecha/demo",
             repo_root=Path("/tmp/demo"),
             turns=[{"role": "user", "content": "Ship the repo context hook."}],
@@ -63,6 +63,23 @@ class RepoAgentContextExporterTests(unittest.TestCase):
         self.assertIn("source_file: rollout-123.jsonl", rendered)
         self.assertNotIn("/Users/arjun/.codex", rendered)
         self.assertIn("_Session:_ `rollout-123`", rendered)
+
+    def test_render_markdown_uses_truthful_export_base_commit_field(self) -> None:
+        artifact = exporter.SessionArtifact(
+            surface="claude_code",
+            source_path=Path("/Users/arjun/.claude/projects/demo/session.jsonl"),
+            session_id="session-123",
+            exported_at="2026-04-21T08:00:00+00:00",
+            export_base_commit_sha="deadbeef",
+            github_repo="ArjunDivecha/demo",
+            repo_root=Path("/tmp/demo"),
+            turns=[{"role": "user", "content": "Update the exporter."}],
+        )
+
+        rendered = exporter.render_markdown(artifact)
+
+        self.assertIn("export_base_commit_sha: deadbeef", rendered)
+        self.assertNotIn("\ncommit_sha:", rendered)
 
     def test_codex_jsonl_mentions_repo_via_function_call_workdir(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
