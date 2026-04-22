@@ -32,6 +32,7 @@ import pickle
 import sys
 from pathlib import Path
 from datetime import datetime
+from typing import Optional, Tuple
 
 # Setup path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -57,6 +58,42 @@ def load_checkpoint(name: str) -> any:
         with open(path, "rb") as f:
             return pickle.load(f)
     return None
+
+
+def build_repo_baseline_signature(repo: dict) -> str:
+    """Build a stable signature for deciding when repo baseline extraction must rerun."""
+    default_branch = repo.get("default_branch") or "main"
+    pushed_at = repo.get("pushed_at") or repo.get("updated_at") or "unknown"
+    return f"{default_branch}:{pushed_at}"
+
+
+def should_process_repo_baseline(repo: dict, stored_metadata: Optional[dict]) -> Tuple[bool, str]:
+    """
+    Decide whether README/commit/code extraction should run for a repo.
+
+    Baselines should rerun whenever the repo's pushed state changes. This keeps
+    PKS aligned with repo updates instead of treating README/commit/code
+    extraction as a one-time bootstrap.
+    """
+    if not stored_metadata:
+        return True, "new repo"
+
+    current_signature = build_repo_baseline_signature(repo)
+    stored_signature = stored_metadata.get("baseline_signature")
+    if not stored_signature:
+        legacy_branch = stored_metadata.get("default_branch") or repo.get("default_branch") or "main"
+        legacy_pushed_at = (
+            stored_metadata.get("pushed_at")
+            or stored_metadata.get("last_pushed_at")
+            or stored_metadata.get("updated_at")
+        )
+        if legacy_pushed_at:
+            stored_signature = f"{legacy_branch}:{legacy_pushed_at}"
+
+    if stored_signature != current_signature:
+        return True, "repo pushed since last baseline"
+
+    return False, "unchanged since last push"
 
 
 def run_github_ingestion(
@@ -116,24 +153,51 @@ def run_github_ingestion(
     
     if repos:
         # Use specified repos
-        all_repos = [{"name": r.strip(), "full_name": f"ArjunDivecha/{r.strip()}"} for r in repos]
+        all_repos = []
+        for repo_name in repos:
+            normalized_name = repo_name.strip()
+            repo_info = github.get_repo_info(normalized_name) or {}
+            all_repos.append({
+                "name": normalized_name,
+                "full_name": repo_info.get("full_name", f"ArjunDivecha/{normalized_name}"),
+                "description": repo_info.get("description"),
+                "language": repo_info.get("language"),
+                "stars": repo_info.get("stars", 0),
+                "url": repo_info.get("url", f"https://github.com/ArjunDivecha/{normalized_name}"),
+                "size": repo_info.get("size", 0),
+                "archived": repo_info.get("archived", False),
+                "default_branch": repo_info.get("default_branch", "main"),
+                "updated_at": repo_info.get("updated_at"),
+                "pushed_at": repo_info.get("pushed_at"),
+            })
         print(f"Using {len(all_repos)} specified repositories")
     else:
         # Fetch all repos
         all_repos = github.list_repos(include_forks=False)
         print(f"Found {len(all_repos)} repositories (excluding forks)")
     
-    # Check for already processed repo baselines. Agent-context artifacts are
-    # rescanned for every repo and deduplicated by artifact blob SHA instead.
+    # Baseline extraction now reruns whenever a repo has been pushed since the
+    # last saved baseline. Agent-context artifacts are still rescanned for
+    # every repo and deduplicated by artifact blob SHA instead.
+    repo_baseline_decisions: dict[str, tuple[bool, str]] = {}
+    processed: set[str] = set()
     if resume and storage:
         processed = set(storage.get_processed_sources("github"))
         repos_to_process = all_repos
-        already_processed = sum(1 for r in all_repos if r["name"] in processed)
-        print(f"Repo baselines already processed: {already_processed}")
+        baselines_to_refresh = 0
+        for repo in all_repos:
+            stored_metadata = storage.get_source_metadata("github", repo["name"])
+            decision = should_process_repo_baseline(repo, stored_metadata)
+            repo_baseline_decisions[repo["name"]] = decision
+            if decision[0]:
+                baselines_to_refresh += 1
+        print(f"Repo baselines unchanged: {len(all_repos) - baselines_to_refresh}")
+        print(f"Repo baselines to refresh: {baselines_to_refresh}")
         print(f"Repos to scan for agent-context artifacts: {len(repos_to_process)}")
     else:
         repos_to_process = all_repos
-        processed = set()
+        for repo in all_repos:
+            repo_baseline_decisions[repo["name"]] = (True, "resume disabled")
     
     print()
     
@@ -158,7 +222,10 @@ def run_github_ingestion(
         repo_name = repo["name"]
         repo_full_name = repo.get("full_name", f"ArjunDivecha/{repo_name}")
         repo_url = repo.get("url", f"https://github.com/{repo_full_name}")
-        repo_processed = repo_name in processed
+        should_process_baseline, baseline_reason = repo_baseline_decisions.get(
+            repo_name,
+            (True, "missing decision"),
+        )
         print(f"\n[{i}/{len(repos_to_process)}] {repo_name}")
         
         repo_entries = []
@@ -166,9 +233,14 @@ def run_github_ingestion(
         try:
             readme = None
             baseline_entry_count = 0
-            if repo_processed and resume:
-                print("  → Repo baseline already processed, skipping README/commits/code")
+            baseline_attempted = False
+            if resume and not should_process_baseline:
+                print(f"  → Repo baseline unchanged ({baseline_reason}), skipping README/commits/code")
             else:
+                baseline_attempted = True
+                if resume and repo_name in processed:
+                    print(f"  → Repo baseline refresh triggered ({baseline_reason})")
+
                 # Extract from README
                 print("  → README...", end=" ", flush=True)
                 readme = github.get_readme(repo_name)
@@ -258,10 +330,15 @@ def run_github_ingestion(
             stats["repos_processed"] += 1
             
             # Mark as processed
-            if storage and not repo_processed and baseline_entry_count:
+            if storage and baseline_attempted:
                 storage.mark_source_processed("github", repo_name, {
                     "entries_count": baseline_entry_count,
                     "has_readme": readme is not None,
+                    "repo_full_name": repo_full_name,
+                    "default_branch": repo.get("default_branch", "main"),
+                    "pushed_at": repo.get("pushed_at"),
+                    "updated_at": repo.get("updated_at"),
+                    "baseline_signature": build_repo_baseline_signature(repo),
                 })
             
             # Checkpoint every 5 repos

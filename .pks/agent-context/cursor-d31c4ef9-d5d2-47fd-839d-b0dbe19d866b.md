@@ -6,8 +6,8 @@ repo_name: knowledge-system
 github_repo: ArjunDivecha/personal-knowledge-system
 session_id: d31c4ef9-d5d2-47fd-839d-b0dbe19d866b
 source_file: d31c4ef9-d5d2-47fd-839d-b0dbe19d866b.jsonl
-exported_at: 2026-04-22T21:07:26.056262+00:00
-export_base_commit_sha: 3bce3a2530a001aefcd6a00a3a44b11f18406c41
+exported_at: 2026-04-22T21:18:34.726323+00:00
+export_base_commit_sha: b5489f55f0979e3c8148a25cde0caa9c59882bb1
 redacted: true
 ---
 

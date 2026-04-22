@@ -147,6 +147,7 @@ class GitHubClient:
                     "archived": repo.get("archived", False),
                     "default_branch": repo.get("default_branch", "main"),
                     "updated_at": repo.get("updated_at"),
+                    "pushed_at": repo.get("pushed_at"),
                 })
             
             if len(data) < 100:
@@ -176,6 +177,7 @@ class GitHubClient:
             "topics": data.get("topics", []),
             "created_at": data.get("created_at"),
             "updated_at": data.get("updated_at"),
+            "pushed_at": data.get("pushed_at"),
         }
     
     # -------------------------------------------------------------------------

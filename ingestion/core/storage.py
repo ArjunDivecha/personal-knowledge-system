@@ -115,6 +115,20 @@ class StorageClient:
                 break
         
         return sources
+
+    def get_source_metadata(self, source_type: str, source_id: str) -> Optional[dict]:
+        """Get stored metadata for a processed source."""
+        data = self.redis.get(self._source_key(source_type, source_id))
+        if data is None:
+            return None
+        if isinstance(data, str):
+            try:
+                return json.loads(data)
+            except json.JSONDecodeError:
+                return None
+        if isinstance(data, dict):
+            return data
+        return None
     
     # -------------------------------------------------------------------------
     # EMBEDDING GENERATION
