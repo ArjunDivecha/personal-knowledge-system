@@ -86,6 +86,8 @@ from twitter.api_client import TwitterAPIClient
 from twitter.tweet_extractor import TweetExtractor
 from upstash_redis import Redis
 
+UTC = timezone.utc
+
 
 # ---------------------------------------------------------------------------
 # State file: persists the last-seen tweet ID between runs
@@ -814,4 +816,3 @@ if __name__ == "__main__":
         reset_state=args.reset_state,
         require_redis_state=args.require_redis_state,
     )
-UTC = timezone.utc

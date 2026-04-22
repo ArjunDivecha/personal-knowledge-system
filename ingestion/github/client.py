@@ -77,6 +77,15 @@ class GitHubClient:
             
             if response.status_code == 404:
                 return None
+            elif response.status_code == 409:
+                try:
+                    message = response.json().get("message", "")
+                except Exception:
+                    message = ""
+                if "empty" in message.lower():
+                    return None
+                print(f"    Conflict response from GitHub API for {endpoint}: {message or response.text[:200]}")
+                return None
             elif response.status_code == 403:
                 # Rate limited
                 reset_time = int(response.headers.get("X-RateLimit-Reset", 0))
@@ -103,7 +112,10 @@ class GitHubClient:
         """
         List all repositories for the configured user.
         
-        Returns list of {name, full_name, description, language, stars, url, is_fork}
+        Returns list of active repositories suitable for ingestion.
+
+        Empty repositories are skipped because the commits/tree endpoints return
+        409 Conflict and there is nothing meaningful to ingest from them.
         """
         repos = []
         page = 1
@@ -120,6 +132,8 @@ class GitHubClient:
             for repo in data:
                 if repo.get("fork") and not include_forks:
                     continue
+                if repo.get("size", 0) == 0:
+                    continue
                 
                 repos.append({
                     "name": repo["name"],
@@ -129,6 +143,8 @@ class GitHubClient:
                     "stars": repo.get("stargazers_count", 0),
                     "url": repo.get("html_url"),
                     "is_fork": repo.get("fork", False),
+                    "size": repo.get("size", 0),
+                    "archived": repo.get("archived", False),
                     "default_branch": repo.get("default_branch", "main"),
                     "updated_at": repo.get("updated_at"),
                 })
@@ -154,6 +170,8 @@ class GitHubClient:
             "language": data.get("language"),
             "stars": data.get("stargazers_count", 0),
             "url": data.get("html_url"),
+            "size": data.get("size", 0),
+            "archived": data.get("archived", False),
             "default_branch": data.get("default_branch", "main"),
             "topics": data.get("topics", []),
             "created_at": data.get("created_at"),
