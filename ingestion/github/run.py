@@ -249,6 +249,7 @@ def run_github_ingestion(
                         readme_content=readme,
                         repo_name=repo_name,
                         repo_url=repo_url,
+                        repo_full_name=repo_full_name,
                     )
                     repo_entries.extend(entries)
                     baseline_entry_count += len(entries)
@@ -262,7 +263,12 @@ def run_github_ingestion(
                     print("  → Commits...", end=" ", flush=True)
                     commits = github.get_commits(repo_name, max_commits=50)
                     if commits:
-                        entries = extractor.extract_from_commits(commits, repo_name)
+                        entries = extractor.extract_from_commits(
+                            commits,
+                            repo_name,
+                            repo_url=repo_url,
+                            repo_full_name=repo_full_name,
+                        )
                         repo_entries.extend(entries)
                         baseline_entry_count += len(entries)
                         stats["commit_entries"] += len(entries)
@@ -275,7 +281,12 @@ def run_github_ingestion(
                     print("  → Code comments...", end=" ", flush=True)
                     code_files = github.get_code_files(repo_name, max_files=20)
                     if code_files:
-                        entries = extractor.extract_from_code_comments(code_files, repo_name)
+                        entries = extractor.extract_from_code_comments(
+                            code_files,
+                            repo_name,
+                            repo_url=repo_url,
+                            repo_full_name=repo_full_name,
+                        )
                         repo_entries.extend(entries)
                         baseline_entry_count += len(entries)
                         stats["code_entries"] += len(entries)

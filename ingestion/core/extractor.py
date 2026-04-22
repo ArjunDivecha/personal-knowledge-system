@@ -87,6 +87,7 @@ class Extractor:
         readme_content: str,
         repo_name: str,
         repo_url: str,
+        repo_full_name: Optional[str] = None,
     ) -> list[dict]:
         """
         Extract knowledge from a README file.
@@ -95,6 +96,7 @@ class Extractor:
         """
         if not readme_content or len(readme_content) < 100:
             return []
+        repo_full_name = repo_full_name or repo_name
         
         prompt = f"""Analyze this README from the repository "{repo_name}" and extract knowledge entries.
 
@@ -190,7 +192,7 @@ JSON format:
                     "open_questions": [],
                     "related_repos": [
                         {
-                            "repo": repo_name,
+                            "repo": repo_full_name,
                             "path": "README.md",
                             "link_type": "explicit",
                             "confidence": 1.0,
@@ -206,6 +208,11 @@ JSON format:
                         "source_messages": [],
                         "access_count": 0,
                         "last_accessed": None,
+                        "project": repo_name,
+                        "source_type": "github_readme",
+                        "context_type": "active_project",
+                        "github_repo": repo_full_name,
+                        "github_url": repo_url,
                     },
                     "full_content_ref": None,
                 }
@@ -223,6 +230,8 @@ JSON format:
         self,
         commits: list[dict],
         repo_name: str,
+        repo_url: Optional[str] = None,
+        repo_full_name: Optional[str] = None,
     ) -> list[dict]:
         """
         Extract knowledge from commit messages.
@@ -232,6 +241,9 @@ JSON format:
         
         Returns list of knowledge entry dicts.
         """
+        repo_full_name = repo_full_name or repo_name
+        repo_url = repo_url or f"https://github.com/{repo_full_name}"
+
         # Filter to substantive commits (long messages, not just "fix" or "update")
         substantive_commits = [
             c for c in commits
@@ -315,7 +327,7 @@ JSON format:
                     "open_questions": [],
                     "related_repos": [
                         {
-                            "repo": repo_name,
+                            "repo": repo_full_name,
                             "path": None,
                             "link_type": "explicit",
                             "confidence": 1.0,
@@ -331,6 +343,11 @@ JSON format:
                         "source_messages": [],
                         "access_count": 0,
                         "last_accessed": None,
+                        "project": repo_name,
+                        "source_type": "github_commits",
+                        "context_type": "active_project",
+                        "github_repo": repo_full_name,
+                        "github_url": repo_url,
                     },
                     "full_content_ref": None,
                 }
@@ -656,6 +673,8 @@ JSON format:
         self,
         files: list[dict],
         repo_name: str,
+        repo_url: Optional[str] = None,
+        repo_full_name: Optional[str] = None,
     ) -> list[dict]:
         """
         Extract knowledge from code comments that explain "why".
@@ -665,6 +684,9 @@ JSON format:
         
         Returns list of knowledge entry dicts.
         """
+        repo_full_name = repo_full_name or repo_name
+        repo_url = repo_url or f"https://github.com/{repo_full_name}"
+
         # Extract comments that explain rationale
         rationale_comments = []
         
@@ -769,7 +791,7 @@ JSON format:
                     "open_questions": [],
                     "related_repos": [
                         {
-                            "repo": repo_name,
+                            "repo": repo_full_name,
                             "path": raw.get("source_file"),
                             "link_type": "explicit",
                             "confidence": 1.0,
@@ -785,6 +807,11 @@ JSON format:
                         "source_messages": [],
                         "access_count": 0,
                         "last_accessed": None,
+                        "project": repo_name,
+                        "source_type": "github_code",
+                        "context_type": "active_project",
+                        "github_repo": repo_full_name,
+                        "github_url": repo_url,
                     },
                     "full_content_ref": None,
                 }

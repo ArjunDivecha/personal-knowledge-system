@@ -88,7 +88,13 @@ class _FakeGitHubClient:
 
 
 class _FakeExtractor:
-    def extract_from_readme(self, readme_content: str, repo_name: str, repo_url: str) -> list[dict]:
+    def extract_from_readme(
+        self,
+        readme_content: str,
+        repo_name: str,
+        repo_url: str,
+        repo_full_name: Optional[str] = None,
+    ) -> list[dict]:
         return [
             {
                 "id": "ke_demo",
@@ -98,16 +104,28 @@ class _FakeExtractor:
                 "confidence": "high",
                 "metadata": {
                     "updated_at": "2026-04-22T00:00:00Z",
-                    "github_repo": f"ArjunDivecha/{repo_name}",
+                    "github_repo": repo_full_name or f"ArjunDivecha/{repo_name}",
                 },
                 "related_repos": [],
             }
         ]
 
-    def extract_from_commits(self, commits: list[dict], repo_name: str) -> list[dict]:
+    def extract_from_commits(
+        self,
+        commits: list[dict],
+        repo_name: str,
+        repo_url: Optional[str] = None,
+        repo_full_name: Optional[str] = None,
+    ) -> list[dict]:
         return []
 
-    def extract_from_code_comments(self, files: list[dict], repo_name: str) -> list[dict]:
+    def extract_from_code_comments(
+        self,
+        files: list[dict],
+        repo_name: str,
+        repo_url: Optional[str] = None,
+        repo_full_name: Optional[str] = None,
+    ) -> list[dict]:
         return []
 
     def extract_from_agent_context_artifact(self, **kwargs) -> list[dict]:
