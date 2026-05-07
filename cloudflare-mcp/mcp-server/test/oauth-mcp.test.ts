@@ -498,6 +498,7 @@ describe("OAuth and MCP integration", () => {
 					"get_dream_run",
 					"get_dream_events",
 					"run_dream_proposal",
+					"apply_dream_proposal",
 					"add_insight",
 					"archive_entry",
 					"consolidate_entries",

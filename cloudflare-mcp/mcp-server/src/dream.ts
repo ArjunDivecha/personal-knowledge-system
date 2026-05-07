@@ -36,6 +36,14 @@ interface RunDreamProposalOptions {
 	promotionLimit?: number | null;
 }
 
+interface ApplyDreamProposalOptions {
+	proposalId: string;
+	mutationId: string;
+	actorId: string;
+	reason: string;
+	operationIds?: string[] | null;
+}
+
 interface LoadedEntry {
 	id: string;
 	type: EntryType;
@@ -264,6 +272,14 @@ function toOptionalInteger(value: unknown): number | null {
 function toStringArray(value: unknown): string[] {
 	if (!Array.isArray(value)) return [];
 	return value.filter((item): item is string => typeof item === "string");
+}
+
+function toObjectArray(value: unknown): Record<string, unknown>[] {
+	if (!Array.isArray(value)) return [];
+	return value.filter(
+		(item): item is Record<string, unknown> =>
+			Boolean(item) && typeof item === "object" && !Array.isArray(item),
+	);
 }
 
 function latestIsoTimestamp(...values: Array<string | null | undefined>): string | null {
@@ -1995,6 +2011,392 @@ export async function runDreamProposal(
 	await redis.set(DREAM_LAST_PROPOSAL_KEY, JSON.stringify(proposal));
 	await updateDreamRunIndex(redis, runId);
 	return proposal;
+}
+
+function getEntryTypeFromId(entryId: string): EntryType {
+	return entryId.startsWith("pe_") ? "project" : "knowledge";
+}
+
+function getOperationTouchedIds(operation: Record<string, unknown>): string[] {
+	const ids = new Set<string>();
+	const entryId = typeof operation.entry_id === "string" ? operation.entry_id : null;
+	const keepId = typeof operation.keep_id === "string" ? operation.keep_id : null;
+	if (entryId) ids.add(entryId);
+	if (keepId) ids.add(keepId);
+	for (const value of toStringArray(operation.entry_ids)) ids.add(value);
+	for (const value of toStringArray(operation.archive_ids)) ids.add(value);
+	return [...ids];
+}
+
+function getOperationExpectedRevisions(operation: Record<string, unknown>): Record<string, number> {
+	const expectedRevisions: Record<string, number> = {};
+	const expectedRevisionMap = parseStoredObject(operation.expected_revisions);
+	if (expectedRevisionMap) {
+		for (const [entryId, rawRevision] of Object.entries(expectedRevisionMap)) {
+			const revision = toOptionalInteger(rawRevision);
+			if (revision !== null) {
+				expectedRevisions[entryId] = revision;
+			}
+		}
+	}
+	const entryId = typeof operation.entry_id === "string" ? operation.entry_id : null;
+	const expectedRevision = toOptionalInteger(operation.expected_revision);
+	if (entryId && expectedRevision !== null) {
+		expectedRevisions[entryId] = expectedRevision;
+	}
+	return expectedRevisions;
+}
+
+async function loadTouchedEntries(
+	redis: Redis,
+	entryIds: string[],
+): Promise<Map<string, LoadedEntry>> {
+	const entries = new Map<string, LoadedEntry>();
+	for (const entryId of entryIds) {
+		const loadedEntry = await loadLoadedEntry(redis, getEntryTypeFromId(entryId), entryId);
+		if (loadedEntry) {
+			entries.set(entryId, loadedEntry);
+		}
+	}
+	return entries;
+}
+
+function validateOperationRevisions(
+	operation: Record<string, unknown>,
+	entriesById: Map<string, LoadedEntry>,
+): Record<string, unknown> | null {
+	const operationId = typeof operation.operation_id === "string" ? operation.operation_id : "unknown_operation";
+	for (const entryId of getOperationTouchedIds(operation)) {
+		const entry = entriesById.get(entryId);
+		if (!entry) {
+			return {
+				ok: false,
+				error: "entry_not_found",
+				operation_id: operationId,
+				id: entryId,
+			};
+		}
+		if (entry.metadata.archived === true) {
+			return {
+				ok: false,
+				error: "entry_archived",
+				operation_id: operationId,
+				id: entryId,
+			};
+		}
+	}
+
+	const expectedRevisions = getOperationExpectedRevisions(operation);
+	for (const [entryId, expectedRevision] of Object.entries(expectedRevisions)) {
+		const entry = entriesById.get(entryId);
+		if (!entry) {
+			return {
+				ok: false,
+				error: "entry_not_found",
+				operation_id: operationId,
+				id: entryId,
+			};
+		}
+		const actualRevision = getExpectedRevision(entry);
+		if (actualRevision !== expectedRevision) {
+			return {
+				ok: false,
+				error: "conflict",
+				operation_id: operationId,
+				id: entryId,
+				expected_revision: expectedRevision,
+				actual_revision: actualRevision,
+			};
+		}
+	}
+	return null;
+}
+
+function getOperationReason(operation: Record<string, unknown>, fallback: string): string {
+	return typeof operation.reason === "string" && operation.reason.length > 0
+		? operation.reason
+		: fallback;
+}
+
+async function applyDreamProposalOperation(
+	redis: Redis,
+	vector: Index,
+	operation: Record<string, unknown>,
+	entriesById: Map<string, LoadedEntry>,
+	applyRunId: string,
+	timestamp: string,
+): Promise<Record<string, unknown>> {
+	const operationId = typeof operation.operation_id === "string" ? operation.operation_id : "unknown_operation";
+	const operationType = typeof operation.type === "string" ? operation.type : "unknown";
+
+	if (operationType === "duplicate_merge") {
+		const keepId = typeof operation.keep_id === "string" ? operation.keep_id : null;
+		const archiveIds = toStringArray(operation.archive_ids);
+		if (!keepId || archiveIds.length === 0) {
+			return { ok: false, operation_id: operationId, error: "invalid_duplicate_merge_operation" };
+		}
+		const canonical = entriesById.get(keepId);
+		const duplicates = archiveIds
+			.map((entryId) => entriesById.get(entryId))
+			.filter((entry): entry is LoadedEntry => Boolean(entry));
+		if (!canonical || duplicates.length !== archiveIds.length) {
+			return { ok: false, operation_id: operationId, error: "entry_not_found" };
+		}
+		const result = await applyDuplicateMergePlan(
+			redis,
+			vector,
+			{
+				fingerprint:
+					typeof parseStoredObject(operation.evidence)?.fingerprint === "string"
+						? String(parseStoredObject(operation.evidence)?.fingerprint)
+						: canonical.id,
+				canonical,
+				duplicates,
+			},
+			applyRunId,
+			timestamp,
+		);
+		return { ok: true, operation_id: operationId, type: operationType, result };
+	}
+
+	if (operationType === "mark_contested") {
+		const entryIds = toStringArray(operation.entry_ids);
+		const reasons = toStringArray(parseStoredObject(operation.evidence)?.reasons);
+		const results: Array<Record<string, unknown>> = [];
+		for (const entryId of entryIds) {
+			const entry = entriesById.get(entryId);
+			if (!entry) {
+				return { ok: false, operation_id: operationId, error: "entry_not_found", id: entryId };
+			}
+			results.push(
+				await markEntryContested(
+					redis,
+					vector,
+					entry,
+					reasons.length > 0 ? reasons : [getOperationReason(operation, "Dream proposal contested marker")],
+					entryIds.filter((candidateId) => candidateId !== entryId),
+					applyRunId,
+					timestamp,
+				),
+			);
+		}
+		return { ok: true, operation_id: operationId, type: operationType, results };
+	}
+
+	if (operationType === "promote_context_type") {
+		const entryId = typeof operation.entry_id === "string" ? operation.entry_id : null;
+		const entry = entryId ? entriesById.get(entryId) : null;
+		if (!entry) {
+			return { ok: false, operation_id: operationId, error: "entry_not_found", id: entryId };
+		}
+		const result = await promoteEntry(redis, vector, entry, applyRunId, timestamp);
+		return { ok: true, operation_id: operationId, type: operationType, result };
+	}
+
+	if (operationType === "archive_entry") {
+		const entryId = typeof operation.entry_id === "string" ? operation.entry_id : null;
+		const entry = entryId ? entriesById.get(entryId) : null;
+		if (!entry) {
+			return { ok: false, operation_id: operationId, error: "entry_not_found", id: entryId };
+		}
+		const result = await archiveEntry(
+			redis,
+			vector,
+			entry,
+			applyRunId,
+			timestamp,
+			getOperationReason(operation, "applied Dream proposal archive operation"),
+		);
+		return { ok: true, operation_id: operationId, type: operationType, result };
+	}
+
+	return {
+		ok: false,
+		operation_id: operationId,
+		error: "unsupported_operation_type",
+		type: operationType,
+	};
+}
+
+export async function applyDreamProposal(
+	env: Env,
+	options: ApplyDreamProposalOptions,
+): Promise<Record<string, unknown>> {
+	const redis = createRedisClient(env);
+	const vector = createVectorClient(env);
+	const storedMutation = parseStoredObject(await redis.get(getMutationResultKey(options.mutationId)));
+	if (storedMutation) {
+		return storedMutation;
+	}
+
+	const proposal = parseStoredObject(await redis.get(`${DREAM_RUN_PREFIX}${options.proposalId}:proposal`)) ??
+		parseStoredObject(await redis.get(`${DREAM_RUN_PREFIX}${options.proposalId}`));
+	if (!proposal) {
+		const result = {
+			ok: false,
+			error: "proposal_not_found",
+			proposal_id: options.proposalId,
+			mutation_id: options.mutationId,
+		};
+		await storeMutationResult(redis, options.mutationId, result);
+		return result;
+	}
+
+	if (proposal.status !== "proposal_ready") {
+		const result = {
+			ok: false,
+			error: "proposal_not_applicable",
+			proposal_id: options.proposalId,
+			status: proposal.status ?? null,
+			mutation_id: options.mutationId,
+		};
+		await storeMutationResult(redis, options.mutationId, result);
+		return result;
+	}
+
+	const allOperations = toObjectArray(proposal.operations);
+	const selectedIds = options.operationIds && options.operationIds.length > 0
+		? new Set(options.operationIds)
+		: null;
+	const operations = selectedIds
+		? allOperations.filter((operation) => {
+			const operationId = typeof operation.operation_id === "string" ? operation.operation_id : null;
+			return operationId ? selectedIds.has(operationId) : false;
+		})
+		: allOperations;
+	if (selectedIds && operations.length !== selectedIds.size) {
+		const foundIds = new Set(
+			operations
+				.map((operation) => operation.operation_id)
+				.filter((operationId): operationId is string => typeof operationId === "string"),
+		);
+		const result = {
+			ok: false,
+			error: "operation_not_found",
+			proposal_id: options.proposalId,
+			missing_operation_ids: [...selectedIds].filter((operationId) => !foundIds.has(operationId)),
+			mutation_id: options.mutationId,
+		};
+		await storeMutationResult(redis, options.mutationId, result);
+		return result;
+	}
+	if (operations.length === 0) {
+		const result = {
+			ok: true,
+			proposal_id: options.proposalId,
+			mutation_id: options.mutationId,
+			applied_count: 0,
+			results: [],
+			no_op: true,
+		};
+		await storeMutationResult(redis, options.mutationId, result);
+		return result;
+	}
+
+	const touchedIds = [...new Set(operations.flatMap(getOperationTouchedIds))];
+	const entriesById = await loadTouchedEntries(redis, touchedIds);
+	for (const operation of operations) {
+		const validationError = validateOperationRevisions(operation, entriesById);
+		if (validationError) {
+			const result = {
+				...validationError,
+				proposal_id: options.proposalId,
+				mutation_id: options.mutationId,
+			};
+			await storeMutationResult(redis, options.mutationId, result);
+			return result;
+		}
+	}
+
+	const timestamp = new Date().toISOString();
+	const applyRunId = `apply_${options.proposalId}_${timestamp.replace(/[:.]/g, "-")}`;
+	const beforeRevisions = Object.fromEntries(
+		touchedIds.map((entryId) => [entryId, getExpectedRevision(entriesById.get(entryId)!)]),
+	);
+	const operationResults: Array<Record<string, unknown>> = [];
+
+	for (const operation of operations) {
+		operationResults.push(
+			await applyDreamProposalOperation(
+				redis,
+				vector,
+				operation,
+				entriesById,
+				applyRunId,
+				timestamp,
+			),
+		);
+	}
+
+	if (operationResults.some((result) => result.ok === false)) {
+		const failedResult = {
+			ok: false,
+			error: "operation_failed",
+			proposal_id: options.proposalId,
+			mutation_id: options.mutationId,
+			results: operationResults,
+		};
+		await storeMutationResult(redis, options.mutationId, failedResult);
+		return failedResult;
+	}
+
+	if (operationResults.length > 0) {
+		await rebuildThinIndexSafely(redis, applyRunId);
+	}
+
+	const refreshedEntriesById = await loadTouchedEntries(redis, touchedIds);
+	const afterRevisions = Object.fromEntries(
+		touchedIds.map((entryId) => [
+			entryId,
+			refreshedEntriesById.has(entryId)
+				? getExpectedRevision(refreshedEntriesById.get(entryId)!)
+				: null,
+		]),
+	);
+	const result = {
+		ok: true,
+		proposal_id: options.proposalId,
+		apply_run_id: applyRunId,
+		mutation_id: options.mutationId,
+		applied_at: timestamp,
+		applied_by: options.actorId,
+		applied_count: operationResults.length,
+		operation_ids: operations.map((operation) => operation.operation_id),
+		results: operationResults,
+		before_revisions: beforeRevisions,
+		after_revisions: afterRevisions,
+		side_effects: {
+			index: "rebuilt",
+		},
+	};
+
+	await redis.set(`${DREAM_RUN_PREFIX}${options.proposalId}:apply:${options.mutationId}`, JSON.stringify(result));
+	await redis.set(`${DREAM_RUN_PREFIX}${options.proposalId}:events`, JSON.stringify([
+		{
+			ts: timestamp,
+			event: "proposal_applied",
+			mutation_id: options.mutationId,
+			actor_id: options.actorId,
+			reason: options.reason,
+			operation_ids: result.operation_ids,
+			ids_affected: touchedIds,
+		},
+	]));
+	await appendMutationLog(redis, {
+		ts: timestamp,
+		mutation_id: options.mutationId,
+		tool: "apply_dream_proposal",
+		client: "mcp",
+		actor_id: options.actorId,
+		request_id: options.mutationId,
+		ids_affected: touchedIds,
+		before_revisions: beforeRevisions,
+		after_revisions: afterRevisions,
+		reason: options.reason,
+		proposal_id: options.proposalId,
+	});
+	await storeMutationResult(redis, options.mutationId, result);
+	return result;
 }
 
 async function syncEntryAccessSignals(redis: Redis, entry: LoadedEntry): Promise<void> {

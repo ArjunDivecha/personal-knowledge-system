@@ -15,6 +15,7 @@ import {
 } from "./salience";
 import {
 	addInsight,
+	applyDreamProposal,
 	archiveExistingEntry,
 	consolidateEntries,
 	createEntry,
@@ -1218,6 +1219,39 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 							archiveLimit: archive_limit,
 							promotionLimit: promotion_limit,
 							note,
+						});
+						return {
+							content: [{ type: "text", text: JSON.stringify(result) }],
+						};
+					} catch (error) {
+						const errMsg = error instanceof Error ? error.message : String(error);
+						return {
+							content: [{ type: "text", text: JSON.stringify({ error: errMsg }) }],
+						};
+					}
+				},
+			);
+
+			// Tool: apply_dream_proposal
+			this.server.tool(
+				"apply_dream_proposal",
+				"Apply an approved Dream governance proposal after rechecking expected revisions. Requires mcp:write scope.",
+				{
+					proposal_id: z.string().min(1).max(200).describe("Dream proposal run ID, usually dpr_..."),
+					mutation_id: z.string().min(1).max(200).describe("Client-generated idempotency key for this apply request"),
+					reason: z.string().min(1).max(500).describe("Why this proposal is approved for application"),
+					operation_ids: z.array(z.string().min(1).max(300)).max(100).optional().describe("Optional subset of proposal operation IDs to apply"),
+				},
+				MUTATING_TOOL_ANNOTATIONS,
+				async ({ proposal_id, mutation_id, reason, operation_ids }) => {
+					try {
+						const actorId = await this.requireWriteAccess("apply_dream_proposal");
+						const result = await applyDreamProposal(this.env, {
+							proposalId: proposal_id,
+							mutationId: mutation_id,
+							reason,
+							actorId,
+							operationIds: operation_ids,
 						});
 						return {
 							content: [{ type: "text", text: JSON.stringify(result) }],
