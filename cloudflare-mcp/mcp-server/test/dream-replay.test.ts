@@ -374,6 +374,55 @@ describe("Dream replay logic", () => {
 		expect(mockState.store.get("dream:proposal:last")).toBeTruthy();
 	});
 
+	it("does not mark broad same-label memories contested just because narratives differ", async () => {
+		mockState.store.clear();
+		mockState.vectorUpdates.length = 0;
+		mockState.vectorDeletes.length = 0;
+		mockState.store.set("migration:backfill_complete", "2026-03-27T05:29:20+00:00");
+		mockState.store.set(
+			"knowledge:ke_broad_a",
+			buildKnowledgeEntry({
+				id: "ke_broad_a",
+				domain: "documentation practices",
+				currentView: "Keep release notes short and focused on user-visible changes.",
+				sourceConversations: ["conv_doc_a"],
+				updatedAt: "2026-03-28T06:55:00.000Z",
+			}),
+		);
+		mockState.store.set(
+			"knowledge:ke_broad_b",
+			buildKnowledgeEntry({
+				id: "ke_broad_b",
+				domain: "documentation practices",
+				currentView: "Architecture docs should record durable decisions and open questions.",
+				sourceConversations: ["conv_doc_b"],
+				updatedAt: "2026-03-28T06:56:00.000Z",
+			}),
+		);
+
+		const proposal = await runDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{
+				trigger: "local_test",
+				actorId: "test-operator",
+				archiveLimit: 0,
+				promotionLimit: 0,
+			},
+		);
+
+		expect(proposal.counts).toEqual(
+			expect.objectContaining({ contradictions_detected: 0 }),
+		);
+		expect(proposal.operations as Array<Record<string, unknown>>).not.toEqual(
+			expect.arrayContaining([expect.objectContaining({ type: "mark_contested" })]),
+		);
+	});
+
 	it("applies selected proposal operations after revision preflight", async () => {
 		const proposal = await runDreamProposal(
 			{

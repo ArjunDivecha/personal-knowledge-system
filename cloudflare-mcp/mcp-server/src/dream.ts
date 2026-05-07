@@ -583,14 +583,7 @@ function detectPairContradictionReason(left: LoadedEntry, right: LoadedEntry): s
 		return opposingMarkerReason;
 	}
 
-	if (getEntryConfidence(left) === "low" || getEntryConfidence(right) === "low") {
-		return null;
-	}
-
-	const similarity = computeTokenSimilarity(leftNarrative, rightNarrative);
-	return similarity <= 0.12
-		? `same topic has materially different views (similarity=${similarity.toFixed(2)})`
-		: null;
+	return null;
 }
 
 function detectInternalContradictionReason(entry: LoadedEntry): string | null {
