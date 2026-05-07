@@ -27,6 +27,15 @@ interface RunDreamOptions {
 	setAsLatest?: boolean;
 }
 
+interface RunDreamProposalOptions {
+	trigger: "manual" | "local_test";
+	actorId: string;
+	note?: string | null;
+	candidateIds?: string[] | null;
+	archiveLimit?: number | null;
+	promotionLimit?: number | null;
+}
+
 interface LoadedEntry {
 	id: string;
 	type: EntryType;
@@ -141,6 +150,8 @@ const DREAM_LOCK_KEY = "dream:lock";
 const DREAM_LAST_RUN_KEY = "dream:last_run";
 const DREAM_LAST_ATTEMPT_KEY = "dream:last_attempt";
 const DREAM_RUN_PREFIX = "dream:run:";
+const DREAM_RUN_INDEX_KEY = "dream:runs:index";
+const DREAM_LAST_PROPOSAL_KEY = "dream:proposal:last";
 const ARCHIVED_PREFIX = "archived";
 const DREAM_LOCK_TTL_SECONDS = 30 * 60;
 const DREAM_LOCK_STALE_AFTER_SECONDS = 5 * 60;
@@ -1176,6 +1187,27 @@ async function writeRunRecord(
 	}
 }
 
+async function updateDreamRunIndex(redis: Redis, runId: string, maxRuns = 50): Promise<void> {
+	const rawIndex = await redis.get(DREAM_RUN_INDEX_KEY);
+	const existing = Array.isArray(rawIndex)
+		? rawIndex
+		: typeof rawIndex === "string"
+			? (() => {
+				try {
+					const parsed = JSON.parse(rawIndex);
+					return Array.isArray(parsed) ? parsed : [];
+				} catch {
+					return [];
+				}
+			})()
+			: [];
+	const nextIndex = [
+		runId,
+		...existing.filter((value): value is string => typeof value === "string" && value !== runId),
+	].slice(0, maxRuns);
+	await redis.set(DREAM_RUN_INDEX_KEY, JSON.stringify(nextIndex));
+}
+
 function isDreamLockStale(lockState: DreamLockState | null, nowMs: number = Date.now()): boolean {
 	if (!lockState) {
 		return true;
@@ -1714,6 +1746,255 @@ async function storeMutationResult(
 	await redis.set(getMutationResultKey(mutationId), JSON.stringify(result), {
 		ex: MUTATION_RESULT_TTL_SECONDS,
 	});
+}
+
+function getExpectedRevision(entry: LoadedEntry): number {
+	return toOptionalInteger(entry.metadata.revision) ?? 0;
+}
+
+function summarizeProposalEntry(entry: LoadedEntry): Record<string, unknown> {
+	return {
+		id: entry.id,
+		type: entry.type,
+		label: entry.label,
+		context_type: entry.contextType,
+		injection_tier: entry.injectionTier,
+		salience_score: entry.salienceScore,
+		mention_count: entry.mentionCount,
+		access_count: entry.accessCount,
+		updated_at: entry.updatedAt,
+		expected_revision: getExpectedRevision(entry),
+	};
+}
+
+function buildDreamProposalOperations(
+	duplicatePlans: DuplicateMergePlan[],
+	contradictionPlans: ContradictionPlan[],
+	entriesById: Map<string, LoadedEntry>,
+	promotionCandidates: LoadedEntry[],
+	archiveCandidates: LoadedEntry[],
+): Array<Record<string, unknown>> {
+	const operations: Array<Record<string, unknown>> = [];
+
+	for (const plan of duplicatePlans) {
+		const archiveIds = plan.duplicates.map((entry) => entry.id);
+		const expectedRevisions: Record<string, number> = {
+			[plan.canonical.id]: getExpectedRevision(plan.canonical),
+		};
+		for (const duplicate of plan.duplicates) {
+			expectedRevisions[duplicate.id] = getExpectedRevision(duplicate);
+		}
+		operations.push({
+			operation_id: `dop_merge_${plan.canonical.id}_${archiveIds.join("_")}`,
+			type: "duplicate_merge",
+			keep_id: plan.canonical.id,
+			archive_ids: archiveIds,
+			expected_revisions: expectedRevisions,
+			reason: "Dream detected compatible duplicate entries with the same normalized topic fingerprint.",
+			evidence: {
+				fingerprint: plan.fingerprint,
+				canonical: summarizeProposalEntry(plan.canonical),
+				duplicates: plan.duplicates.map(summarizeProposalEntry),
+			},
+			rollback: {
+				method: "restore_archived",
+				entry_ids: archiveIds,
+			},
+		});
+	}
+
+	for (const plan of contradictionPlans) {
+		const expectedRevisions = Object.fromEntries(
+			plan.entryIds.map((entryId) => [
+				entryId,
+				entriesById.has(entryId) ? getExpectedRevision(entriesById.get(entryId)!) : null,
+			]),
+		);
+		operations.push({
+			operation_id: `dop_contest_${plan.entryIds.join("_")}`,
+			type: "mark_contested",
+			entry_ids: plan.entryIds,
+			expected_revisions: expectedRevisions,
+			reason: "Dream detected contradictory views that require operator review before consolidation.",
+			evidence: {
+				label: plan.label,
+				reasons: plan.reasons,
+			},
+			rollback: {
+				method: "update_entry",
+				restore_state: "active",
+			},
+		});
+	}
+
+	for (const entry of promotionCandidates) {
+		operations.push({
+			operation_id: `dop_promote_${entry.id}`,
+			type: "promote_context_type",
+			entry_id: entry.id,
+			expected_revision: getExpectedRevision(entry),
+			proposed_context_type: defaultInjectionTier(entry.contextType) <= 2
+				? entry.contextType
+				: "recurring_pattern",
+			reason: "Dream found repeated or retrieved task-query memory that is strong enough to become durable recurring context.",
+			evidence: summarizeProposalEntry(entry),
+			rollback: {
+				method: "set_context_type",
+				restore_context_type: entry.contextType,
+			},
+		});
+	}
+
+	for (const entry of archiveCandidates) {
+		operations.push({
+			operation_id: `dop_archive_${entry.id}`,
+			type: "archive_entry",
+			entry_id: entry.id,
+			expected_revision: getExpectedRevision(entry),
+			reason: "Dream found low-salience single-mention memory with no retrieval reinforcement.",
+			evidence: summarizeProposalEntry(entry),
+			rollback: {
+				method: "restore_archived",
+				entry_id: entry.id,
+			},
+		});
+	}
+
+	return operations;
+}
+
+export async function runDreamProposal(
+	env: Env,
+	options: RunDreamProposalOptions,
+): Promise<Record<string, unknown>> {
+	const redis = createRedisClient(env);
+	const createdAt = new Date().toISOString();
+	const runId = `dpr_${createdAt.replace(/[:.]/g, "-")}`;
+
+	const migrationBackfillComplete = await redis.get("migration:backfill_complete");
+	if (!migrationBackfillComplete) {
+		return {
+			schema_version: 1,
+			run_id: runId,
+			status: "skipped_no_backfill",
+			created_at: createdAt,
+			completed_at: new Date().toISOString(),
+			dry_run: true,
+			trigger: options.trigger,
+			actor_id: options.actorId,
+			note: options.note ?? null,
+			next_action: "Backfill must complete before Dream can generate proposals.",
+		};
+	}
+
+	const [knowledgeBatch, projectBatch] = await Promise.all([
+		loadEntryBatchByType(redis, "knowledge"),
+		loadEntryBatchByType(redis, "project"),
+	]);
+	const knowledgeEntries = knowledgeBatch.entries;
+	const projectEntries = projectBatch.entries;
+	const allEntries = [...knowledgeEntries, ...projectEntries];
+	const candidateIdFilter =
+		options.candidateIds && options.candidateIds.length > 0
+			? new Set(options.candidateIds)
+			: null;
+	const candidateEntries = candidateIdFilter
+		? allEntries.filter((entry) => candidateIdFilter.has(entry.id))
+		: allEntries;
+	const { duplicatePlans, contradictionPlans } = buildReplayPlans(candidateEntries);
+	const promotionCandidates = candidateEntries
+		.filter(isPromotionCandidate)
+		.sort(comparePromotionPriority);
+	const archiveCandidates = candidateEntries
+		.filter(isArchiveCandidate)
+		.sort(compareArchivePriority);
+	const promotionCandidatesLimited =
+		typeof options.promotionLimit === "number" && options.promotionLimit >= 0
+			? promotionCandidates.slice(0, options.promotionLimit)
+			: promotionCandidates;
+	const archiveCandidatesLimited =
+		typeof options.archiveLimit === "number" && options.archiveLimit >= 0
+			? archiveCandidates.slice(0, options.archiveLimit)
+			: archiveCandidates;
+	const bucketCounts: Record<DreamBucket, number> = {
+		stable: 0,
+		active: 0,
+		weak: 0,
+		decay_candidate: 0,
+	};
+
+	for (const entry of allEntries) {
+		bucketCounts[classifyBucket(entry)] += 1;
+	}
+
+	const entriesById = new Map(candidateEntries.map((entry) => [entry.id, entry]));
+	const operations = buildDreamProposalOperations(
+		duplicatePlans,
+		contradictionPlans,
+		entriesById,
+		promotionCandidatesLimited,
+		archiveCandidatesLimited,
+	);
+	const candidateRevisions = Object.fromEntries(
+		candidateEntries.map((entry) => [entry.id, getExpectedRevision(entry)]),
+	);
+	const snapshot = {
+		schema_version: 1,
+		run_id: runId,
+		captured_at: createdAt,
+		candidate_ids: candidateEntries.map((entry) => entry.id),
+		candidate_revisions: candidateRevisions,
+		counts: {
+			total_entries: allEntries.length,
+			knowledge_entries: knowledgeEntries.length,
+			project_entries: projectEntries.length,
+			candidate_entries: candidateEntries.length,
+			buckets: bucketCounts,
+		},
+	};
+	const proposal = {
+		schema_version: 1,
+		run_id: runId,
+		status: "proposal_ready",
+		created_at: createdAt,
+		completed_at: new Date().toISOString(),
+		dry_run: true,
+		trigger: options.trigger,
+		actor_id: options.actorId,
+		note: options.note ?? null,
+		candidate_ids: candidateEntries.map((entry) => entry.id),
+		candidate_revisions: candidateRevisions,
+		operation_count: operations.length,
+		operations,
+		counts: {
+			total_entries: allEntries.length,
+			knowledge_entries: knowledgeEntries.length,
+			project_entries: projectEntries.length,
+			candidate_entries: candidateEntries.length,
+			duplicate_merge_candidates: duplicatePlans.length,
+			contradictions_detected: contradictionPlans.length,
+			promotion_candidates: promotionCandidates.length,
+			promotion_limit: options.promotionLimit ?? null,
+			archive_candidates: archiveCandidates.length,
+			archive_limit: options.archiveLimit ?? null,
+			stable: bucketCounts.stable,
+			active: bucketCounts.active,
+			weak: bucketCounts.weak,
+			decay_candidates: bucketCounts.decay_candidate,
+		},
+		requires_operator_review: operations.length > 0,
+		risk_score: duplicatePlans.length > 0 || contradictionPlans.length > 0 ? "medium" : "low",
+		next_action: operations.length > 0
+			? "Review proposed operations and apply them through explicit write tools only."
+			: "No Dream governance operations are proposed for this snapshot.",
+	};
+
+	await redis.set(`${DREAM_RUN_PREFIX}${runId}:snapshot`, JSON.stringify(snapshot));
+	await redis.set(`${DREAM_RUN_PREFIX}${runId}:proposal`, JSON.stringify(proposal));
+	await redis.set(`${DREAM_RUN_PREFIX}${runId}`, JSON.stringify(proposal));
+	await redis.set(DREAM_LAST_PROPOSAL_KEY, JSON.stringify(proposal));
+	await updateDreamRunIndex(redis, runId);
+	return proposal;
 }
 
 async function syncEntryAccessSignals(redis: Redis, entry: LoadedEntry): Promise<void> {

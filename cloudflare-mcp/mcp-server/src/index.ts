@@ -21,6 +21,7 @@ import {
 	restoreArchivedEntry,
 	restoreEntry,
 	runDreamCycle,
+	runDreamProposal,
 	updateEntry,
 } from "./dream";
 import { formatConsolidationNote } from "./consolidation";
@@ -1196,6 +1197,40 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 		);
 
 		if (this.includeWriteTools()) {
+			// Tool: run_dream_proposal
+			this.server.tool(
+				"run_dream_proposal",
+				"Generate a no-write Dream governance proposal. Requires mcp:write scope; does not mutate entries or vectors.",
+				{
+					candidate_ids: z.array(z.string().min(1).max(200)).max(200).optional().describe("Optional entry IDs to restrict proposal generation"),
+					archive_limit: z.number().int().min(0).max(MAX_OPERATOR_DREAM_ARCHIVE_LIMIT).optional().describe("Maximum archive operations to propose"),
+					promotion_limit: z.number().int().min(0).max(MAX_OPERATOR_DREAM_ARCHIVE_LIMIT).optional().describe("Maximum promotion operations to propose"),
+					note: z.string().min(1).max(500).optional().describe("Operator note for the proposal audit"),
+				},
+				MUTATING_TOOL_ANNOTATIONS,
+				async ({ candidate_ids, archive_limit, promotion_limit, note }) => {
+					try {
+						const actorId = await this.requireWriteAccess("run_dream_proposal");
+						const result = await runDreamProposal(this.env, {
+							trigger: "manual",
+							actorId,
+							candidateIds: candidate_ids,
+							archiveLimit: archive_limit,
+							promotionLimit: promotion_limit,
+							note,
+						});
+						return {
+							content: [{ type: "text", text: JSON.stringify(result) }],
+						};
+					} catch (error) {
+						const errMsg = error instanceof Error ? error.message : String(error);
+						return {
+							content: [{ type: "text", text: JSON.stringify({ error: errMsg }) }],
+						};
+					}
+				},
+			);
+
 			// Tool: restore_archived
 			this.server.tool(
 				"restore_archived",

@@ -91,7 +91,7 @@ vi.mock("@upstash/vector", () => ({
 	},
 }));
 
-import { compactDreamRunRecordForStorage, runDreamCycle } from "../src/dream";
+import { compactDreamRunRecordForStorage, runDreamCycle, runDreamProposal } from "../src/dream";
 
 function buildKnowledgeEntry(params: {
 	id: string;
@@ -284,6 +284,45 @@ describe("Dream replay logic", () => {
 			);
 			expect(mockState.vectorDeletes).toContain("ke_dup_secondary");
 		});
+
+	it("generates a no-write proposal without mutating entries, vectors, or latest Dream state", async () => {
+		const beforePrimary = JSON.stringify(getStoredObject("knowledge:ke_dup_primary"));
+		const beforeSecondary = JSON.stringify(getStoredObject("knowledge:ke_dup_secondary"));
+
+		const proposal = await runDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{
+				trigger: "local_test",
+				actorId: "test-operator",
+				note: "proposal unit test",
+				archiveLimit: 0,
+				promotionLimit: 0,
+			},
+		);
+
+		expect(proposal.status).toBe("proposal_ready");
+		expect(proposal.dry_run).toBe(true);
+		expect(proposal.run_id).toMatch(/^dpr_/);
+		expect((proposal.operations as Array<Record<string, unknown>>)).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ type: "duplicate_merge", keep_id: "ke_dup_primary" }),
+				expect.objectContaining({ type: "mark_contested" }),
+			]),
+		);
+		expect(JSON.stringify(getStoredObject("knowledge:ke_dup_primary"))).toBe(beforePrimary);
+		expect(JSON.stringify(getStoredObject("knowledge:ke_dup_secondary"))).toBe(beforeSecondary);
+		expect(mockState.vectorUpdates).toEqual([]);
+		expect(mockState.vectorDeletes).toEqual([]);
+		expect(mockState.store.get("dream:last_run")).toBeUndefined();
+		expect(mockState.store.get("archived:knowledge:ke_dup_secondary:latest")).toBeUndefined();
+		expect(mockState.store.get(`dream:run:${String(proposal.run_id)}:proposal`)).toBeTruthy();
+		expect(mockState.store.get("dream:proposal:last")).toBeTruthy();
+	});
 
 	it("compacts oversized stored Dream audits below the Redis payload budget", () => {
 		const largeBlock = "x".repeat(1_200);
