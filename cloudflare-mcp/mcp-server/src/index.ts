@@ -61,6 +61,12 @@ const CORS_ALLOW_METHODS = "GET, POST, OPTIONS, HEAD";
 const CORS_ALLOW_HEADERS = "Authorization, Content-Type, Accept, MCP-Session-Id, Last-Event-ID";
 const CORS_EXPOSE_HEADERS = "WWW-Authenticate, MCP-Session-Id, Location";
 const AUTHLESS_PROBE_PATHS = new Set(["/mcp", "/sse", "/openai/mcp", "/openai/sse"]);
+const VALIDATION_LAST_KEY = "validation:last";
+const VALIDATION_GATE_STATUS_KEY = "validation:gate_status";
+const DREAM_LAST_RUN_KEY = "dream:last_run";
+const DREAM_LAST_ATTEMPT_KEY = "dream:last_attempt";
+const DREAM_RUN_PREFIX = "dream:run:";
+const DREAM_RUN_INDEX_KEY = "dream:runs:index";
 const AUTHORIZATION_SERVER_METADATA_PATHS = new Set([
 	"/.well-known/oauth-authorization-server",
 	"/.well-known/openid-configuration",
@@ -710,6 +716,110 @@ async function buildHealthPayload(env: Env): Promise<Record<string, unknown>> {
 	};
 }
 
+function parseStoredArray(raw: unknown): unknown[] {
+	if (Array.isArray(raw)) {
+		return [...raw];
+	}
+	if (typeof raw === "string") {
+		try {
+			const parsed = JSON.parse(raw);
+			return Array.isArray(parsed) ? parsed : [];
+		} catch {
+			return [];
+		}
+	}
+	return [];
+}
+
+async function getValidationStatus(redis: Redis): Promise<Record<string, unknown>> {
+	const gateStatus = parseStoredObject(await redis.get(VALIDATION_GATE_STATUS_KEY));
+	const last = parseStoredObject(await redis.get(VALIDATION_LAST_KEY));
+	return {
+		schema_version: 1,
+		retrieved_at: new Date().toISOString(),
+		gate_status: gateStatus ?? {
+			overall_status: "unknown",
+			overall_passed: null,
+			gates: {},
+		},
+		last_validation: last,
+	};
+}
+
+function compactDreamRun(run: Record<string, unknown>): Record<string, unknown> {
+	const counts = parseStoredObject(run.counts);
+	return {
+		run_id: typeof run.run_id === "string" ? run.run_id : null,
+		run_at: typeof run.run_at === "string" ? run.run_at : null,
+		completed_at: typeof run.completed_at === "string" ? run.completed_at : null,
+		status: typeof run.status === "string" ? run.status : null,
+		trigger: typeof run.trigger === "string" ? run.trigger : null,
+		dry_run: typeof run.dry_run === "boolean" ? run.dry_run : null,
+		counts,
+	};
+}
+
+async function listDreamRuns(redis: Redis, limit: number, statusFilter?: string): Promise<Record<string, unknown>> {
+	const index = parseStoredArray(await redis.get(DREAM_RUN_INDEX_KEY))
+		.filter((value): value is string => typeof value === "string");
+	const candidateIds = index.length > 0
+		? index.slice(0, limit)
+		: [];
+	const runs: Record<string, unknown>[] = [];
+
+	for (const runId of candidateIds) {
+		const run = parseStoredObject(await redis.get(`${DREAM_RUN_PREFIX}${runId}`));
+		if (!run) continue;
+		if (statusFilter && run.status !== statusFilter) continue;
+		runs.push(compactDreamRun(run));
+		if (runs.length >= limit) break;
+	}
+
+	if (runs.length === 0) {
+		const lastRun = parseStoredObject(await redis.get(DREAM_LAST_RUN_KEY));
+		if (lastRun && (!statusFilter || lastRun.status === statusFilter)) {
+			runs.push(compactDreamRun(lastRun));
+		}
+	}
+
+	return {
+		schema_version: 1,
+		runs,
+		limit,
+		status_filter: statusFilter ?? null,
+		source: index.length > 0 ? DREAM_RUN_INDEX_KEY : DREAM_LAST_RUN_KEY,
+	};
+}
+
+async function getDreamRun(redis: Redis, runId: string): Promise<Record<string, unknown>> {
+	const directRun = parseStoredObject(await redis.get(`${DREAM_RUN_PREFIX}${runId}`));
+	if (directRun) {
+		return directRun;
+	}
+
+	const lastRun = parseStoredObject(await redis.get(DREAM_LAST_RUN_KEY));
+	if (lastRun?.run_id === runId) {
+		return lastRun;
+	}
+
+	const lastAttempt = parseStoredObject(await redis.get(DREAM_LAST_ATTEMPT_KEY));
+	if (lastAttempt?.run_id === runId) {
+		return lastAttempt;
+	}
+
+	return { error: "dream_run_not_found", run_id: runId };
+}
+
+async function getDreamEvents(redis: Redis, runId: string): Promise<Record<string, unknown>> {
+	const events = parseStoredArray(await redis.get(`${DREAM_RUN_PREFIX}${runId}:events`));
+	return {
+		schema_version: 1,
+		run_id: runId,
+		events,
+		event_count: events.length,
+	};
+}
+
 // Define our MCP agent with knowledge tools
 export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 	server = new McpServer({
@@ -1024,6 +1134,65 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 					content: [{ type: "text", text: JSON.stringify(dreamSummary) }],
 				};
 			}
+		);
+
+		this.server.tool(
+			"get_validation_status",
+			"Get the latest validation ledger status. Use this to distinguish runtime health from memory correctness.",
+			{},
+			READ_ONLY_TOOL_ANNOTATIONS,
+			async () => {
+				const redis = this.getRedis(this.env);
+				return {
+					content: [{ type: "text", text: JSON.stringify(await getValidationStatus(redis)) }],
+				};
+			},
+		);
+
+		this.server.tool(
+			"list_dream_runs",
+			"List recent Dream run summaries from the run ledger.",
+			{
+				limit: z.number().int().min(1).max(50).default(10),
+				status_filter: z.string().min(1).max(80).optional(),
+			},
+			READ_ONLY_TOOL_ANNOTATIONS,
+			async ({ limit, status_filter }) => {
+				const redis = this.getRedis(this.env);
+				return {
+					content: [{ type: "text", text: JSON.stringify(await listDreamRuns(redis, limit, status_filter)) }],
+				};
+			},
+		);
+
+		this.server.tool(
+			"get_dream_run",
+			"Get a Dream run record by run_id.",
+			{
+				run_id: z.string().min(1).max(200),
+			},
+			READ_ONLY_TOOL_ANNOTATIONS,
+			async ({ run_id }) => {
+				const redis = this.getRedis(this.env);
+				return {
+					content: [{ type: "text", text: JSON.stringify(await getDreamRun(redis, run_id)) }],
+				};
+			},
+		);
+
+		this.server.tool(
+			"get_dream_events",
+			"Get retained Dream run events by run_id.",
+			{
+				run_id: z.string().min(1).max(200),
+			},
+			READ_ONLY_TOOL_ANNOTATIONS,
+			async ({ run_id }) => {
+				const redis = this.getRedis(this.env);
+				return {
+					content: [{ type: "text", text: JSON.stringify(await getDreamEvents(redis, run_id)) }],
+				};
+			},
 		);
 
 		if (this.includeWriteTools()) {

@@ -15,6 +15,7 @@ from _memory_migration import (
     normalize_entry_for_phase2,
     utc_now_iso,
 )
+from _validation_ledger import ValidationGateRecord, write_validation_gate
 
 import sys
 
@@ -140,6 +141,24 @@ def main() -> int:
         "backfill_complete_flag": redis_client.get(MIGRATION_FLAG_KEY),
     }
     report_path = append_report(f"verify_memory_consistency_{datetime_safe_stamp()}.json", report)
+    write_validation_gate(
+        redis_client.client,
+        ValidationGateRecord(
+            gate="verify_memory_full_strict" if args.full and args.strict else "verify_memory_consistency",
+            passed=len(issues) == 0,
+            issues=issues,
+            report_path=str(report_path),
+            details={
+                "entry_type": args.entry_type,
+                "full": args.full,
+                "strict": args.strict,
+                "entry_count_checked": len(entries),
+                "redis_topic_count": redis_topic_count,
+                "redis_project_count": redis_project_count,
+                "redis_archived_count": archived_count,
+            },
+        ),
+    )
     print(f"Checked {len(entries)} entries; issues={len(issues)}")
     print(f"Report written to {report_path}")
 

@@ -14,6 +14,7 @@ from typing import Any
 import requests
 
 from _memory_migration import append_report, utc_now_iso
+from _validation_ledger import ValidationGateRecord, write_validation_gate
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BASE_URL = "https://mcp.dancing-ganesh.com"
@@ -309,6 +310,30 @@ def main() -> int:
         f"check_overnight_dream_run_{utc_now_iso().replace(':', '').replace('+00:00', 'Z')}.json",
         report,
     )
+    try:
+        sys.path.insert(0, str(REPO_ROOT / "distillation"))
+        from storage.redis_client import RedisClient  # noqa: PLC0415
+
+        redis_client = RedisClient()
+        write_validation_gate(
+            redis_client.client,
+            ValidationGateRecord(
+                gate="check_overnight_dream",
+                passed=validation.passed,
+                issues=validation.issues,
+                report_path=str(report_path),
+                details={
+                    "base_url": args.base_url,
+                    "expected_boundary_utc": validation.expected_boundary_utc,
+                    "expected_boundary_local": validation.expected_boundary_local,
+                    "dream_run_at": dream_summary.get("run_at"),
+                    "dream_status": dream_summary.get("status"),
+                    "dream_dry_run": dream_summary.get("dry_run"),
+                },
+            ),
+        )
+    except Exception as error:
+        print(f"WARNING: could not write validation ledger: {error}")
 
     print(f"Expected scheduled boundary (UTC): {validation.expected_boundary_utc}")
     print(f"Expected scheduled boundary (local): {validation.expected_boundary_local}")
