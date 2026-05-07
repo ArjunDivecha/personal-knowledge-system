@@ -45,11 +45,11 @@ Be careful here.
 - `mcp-server/` is a Vercel-style implementation using `mcp-handler`.
 - `cloudflare-mcp/mcp-server/` is a Cloudflare Workers implementation using `agents/mcp`.
 
-The test scripts at repo root target the deployed Worker URL:
-- `test_mcp.py`
-- `test_mcp_simple.py`
-- `test_mcp_tools.py`
-- `test_sse_connection.py`
+The old root-level probe scripts have been moved to `legacy/probes/` because they target the older workers.dev deployment shape and can mislead operators:
+- `legacy/probes/test_mcp.py`
+- `legacy/probes/test_mcp_simple.py`
+- `legacy/probes/test_mcp_tools.py`
+- `legacy/probes/test_sse_connection.py`
 
 If the task is about the live remote MCP service, inspect `cloudflare-mcp/mcp-server/` first.
 Per the updated README, `cloudflare-mcp/mcp-server/` is production and `mcp-server/` is legacy and not used.

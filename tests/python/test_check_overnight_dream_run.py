@@ -13,6 +13,8 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 from check_overnight_dream_run import most_recent_scheduled_boundary, validate_dream_run
 
+UTC = timezone.utc
+
 
 class CheckOvernightDreamRunTests(unittest.TestCase):
     def test_most_recent_scheduled_boundary_after_run(self) -> None:
@@ -97,4 +99,3 @@ class CheckOvernightDreamRunTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-UTC = timezone.utc

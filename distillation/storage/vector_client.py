@@ -20,6 +20,7 @@ OUTPUT FILES:
 from typing import Optional
 
 from upstash_vector import Index
+from upstash_vector.types import MetadataUpdateMode
 
 import sys
 from pathlib import Path
@@ -248,21 +249,35 @@ class VectorClient:
         if entry_ids:
             self.index.delete(ids=entry_ids)
 
-    def fetch_entries(self, entry_ids: list[str], include_metadata: bool = False, include_vectors: bool = False):
+    def fetch_entries(
+        self,
+        entry_ids: list[str],
+        include_metadata: bool = False,
+        include_vectors: bool = False,
+        batch_size: int = 200,
+    ):
         """Fetch vector rows by ID."""
         if not entry_ids:
             return []
-        return self.index.fetch(
-            ids=entry_ids,
-            include_metadata=include_metadata,
-            include_vectors=include_vectors,
-        )
+
+        results = []
+        for start in range(0, len(entry_ids), batch_size):
+            batch = entry_ids[start:start + batch_size]
+            results.extend(
+                self.index.fetch(
+                    ids=batch,
+                    include_metadata=include_metadata,
+                    include_vectors=include_vectors,
+                )
+            )
+        return results
 
     def update_entry_metadata(self, entry_id: str, metadata: dict):
-        """Overwrite metadata for an existing vector row."""
+        """Patch metadata for an existing vector row while preserving unrelated keys."""
         return self.index.update(
             id=entry_id,
             metadata=metadata,
+            metadata_update_mode=MetadataUpdateMode.PATCH,
         )
     
     # -------------------------------------------------------------------------

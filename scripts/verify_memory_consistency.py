@@ -26,6 +26,11 @@ from storage.redis_client import RedisClient  # noqa: E402
 from storage.vector_client import VectorClient  # noqa: E402
 
 
+def is_archived(entry: object) -> bool:
+    metadata = getattr(entry, "metadata", None)
+    return bool(getattr(metadata, "archived", False))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Verify Redis, vector metadata, and thin index consistency")
     parser.add_argument("--entry-type", choices=["all", "knowledge", "project"], default="all")
@@ -33,26 +38,46 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--full", action="store_true")
     parser.add_argument("--strict", action="store_true")
+    parser.add_argument("--vector-fetch-batch-size", type=int, default=200)
     args = parser.parse_args()
 
     ensure_runtime_dirs()
     redis_client = RedisClient()
     vector_client = VectorClient()
 
-    entries = load_entries(redis_client, entry_type=args.entry_type)
-    entries.sort(key=lambda entry: entry.id)
-    for entry in entries:
+    all_entries = load_entries(redis_client, entry_type=args.entry_type)
+    all_entries.sort(key=lambda entry: entry.id)
+    for entry in all_entries:
         normalize_entry_for_phase2(entry)
 
+    archived_count = sum(1 for entry in all_entries if is_archived(entry))
+    active_entries = [entry for entry in all_entries if not is_archived(entry)]
+    print(
+        f"Loaded {len(all_entries)} Redis entries ({len(active_entries)} active, {archived_count} archived)",
+        flush=True,
+    )
+
+    entries = active_entries
     if not args.full and len(entries) > args.sample_size:
         rng = random.Random(args.seed)
         entries = sorted(rng.sample(entries, args.sample_size), key=lambda entry: entry.id)
 
-    fetch_results = vector_client.fetch_entries([entry.id for entry in entries], include_metadata=True)
+    print(
+        f"Fetching {len(entries)} vector rows in batches of {args.vector_fetch_batch_size}",
+        flush=True,
+    )
+    fetch_results = vector_client.fetch_entries(
+        [entry.id for entry in entries],
+        include_metadata=True,
+        batch_size=args.vector_fetch_batch_size,
+    )
+    print(f"Fetched {len(fetch_results)} vector rows", flush=True)
 
     issues = []
-    redis_topic_count = len(redis_client.get_all_knowledge_entries())
-    redis_project_count = len(redis_client.get_all_project_entries())
+    redis_topic_count = sum(1 for entry in all_entries if getattr(entry, "type", None) == "knowledge" and not is_archived(entry))
+    redis_project_count = sum(1 for entry in all_entries if getattr(entry, "type", None) == "project" and not is_archived(entry))
+    redis_total_topic_count = sum(1 for entry in all_entries if getattr(entry, "type", None) == "knowledge")
+    redis_total_project_count = sum(1 for entry in all_entries if getattr(entry, "type", None) == "project")
     thin_index = redis_client.get_thin_index()
 
     for entry, fetch_result in zip(entries, fetch_results):
@@ -104,6 +129,9 @@ def main() -> int:
         "issues": issues,
         "redis_topic_count": redis_topic_count,
         "redis_project_count": redis_project_count,
+        "redis_total_topic_count": redis_total_topic_count,
+        "redis_total_project_count": redis_total_project_count,
+        "redis_archived_count": archived_count,
         "thin_index_topic_count": thin_index.topic_count if thin_index else None,
         "thin_index_project_count": thin_index.project_count if thin_index else None,
         "thin_index_total_topic_count": getattr(thin_index, "total_topic_count", None) if thin_index else None,

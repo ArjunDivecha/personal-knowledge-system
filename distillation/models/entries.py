@@ -57,6 +57,20 @@ def _coerce_optional_float(value: object) -> Optional[float]:
         return None
 
 
+def _coerce_evolution_delta(evolution: dict) -> str:
+    """Return a stable delta for legacy evolution records that predate the field."""
+    delta = evolution.get("delta") or evolution.get("delta_summary")
+    if isinstance(delta, str) and delta.strip():
+        return delta
+
+    from_view = evolution.get("from_view")
+    to_view = evolution.get("to_view")
+    if isinstance(from_view, str) and isinstance(to_view, str) and (from_view or to_view):
+        return f"View shifted from '{from_view[:80]}' to '{to_view[:80]}'"
+
+    return "Legacy evolution record missing delta"
+
+
 def normalize_knowledge_metadata_dict(metadata: Optional[dict]) -> dict:
     """Apply Phase 1 schema defaults to a knowledge metadata block."""
     meta = dict(metadata or {})
@@ -445,13 +459,15 @@ class KnowledgeEntry:
         # Parse evolution
         evolution = []
         for e in data.get("evolution", []):
-            ev = e.get("evidence", {})
+            if not isinstance(e, dict):
+                continue
+            ev = e.get("evidence") or {}
             evolution.append(Evolution(
-                delta=e["delta"],
-                trigger=e["trigger"],
-                from_view=e["from_view"],
-                to_view=e["to_view"],
-                date=e["date"],
+                delta=_coerce_evolution_delta(e),
+                trigger=e.get("trigger", ""),
+                from_view=e.get("from_view", ""),
+                to_view=e.get("to_view", ""),
+                date=e.get("date", ""),
                 evidence=Evidence(
                     conversation_id=ev.get("conversation_id", ""),
                     message_ids=ev.get("message_ids", []),

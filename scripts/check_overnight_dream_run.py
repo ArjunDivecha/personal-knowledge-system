@@ -22,6 +22,7 @@ DEFAULT_CRON_MINUTE_UTC = 10
 DEFAULT_MAX_START_DELAY_MINUTES = 45
 DEFAULT_EXPECTED_ARCHIVE_LIMIT = 10
 DEFAULT_EXPECTED_PROMOTION_LIMIT = 10
+UTC = timezone.utc
 
 
 @dataclass
@@ -325,4 +326,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-UTC = timezone.utc
