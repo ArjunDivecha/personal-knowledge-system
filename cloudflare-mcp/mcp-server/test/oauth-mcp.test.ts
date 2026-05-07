@@ -499,6 +499,7 @@ describe("OAuth and MCP integration", () => {
 					"get_dream_events",
 					"run_dream_proposal",
 					"apply_dream_proposal",
+					"rollback_dream_apply",
 					"add_insight",
 					"archive_entry",
 					"consolidate_entries",
@@ -725,6 +726,7 @@ describe("OAuth and MCP integration", () => {
 			expect(tools).not.toContain("restore_entry");
 			expect(tools).not.toContain("restore_archived");
 			expect(tools).not.toContain("run_dream_proposal");
+			expect(tools).not.toContain("rollback_dream_apply");
 			expect(tools).not.toContain("set_context_type");
 			expect(tools).not.toContain("update_entry");
 			expect(tools).not.toContain("apply_dream_proposal");

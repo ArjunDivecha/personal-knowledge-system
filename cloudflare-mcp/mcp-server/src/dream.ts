@@ -44,6 +44,15 @@ interface ApplyDreamProposalOptions {
 	operationIds?: string[] | null;
 }
 
+interface RollbackDreamApplyOptions {
+	proposalId: string;
+	applyMutationId: string;
+	rollbackMutationId: string;
+	actorId: string;
+	reason: string;
+	operationIds?: string[] | null;
+}
+
 interface LoadedEntry {
 	id: string;
 	type: EntryType;
@@ -2396,6 +2405,404 @@ export async function applyDreamProposal(
 		proposal_id: options.proposalId,
 	});
 	await storeMutationResult(redis, options.mutationId, result);
+	return result;
+}
+
+function getRollbackSupportedOperationTypes(): Set<string> {
+	return new Set(["mark_contested", "promote_context_type"]);
+}
+
+function getApplyAuditKey(proposalId: string, applyMutationId: string): string {
+	return `${DREAM_RUN_PREFIX}${proposalId}:apply:${applyMutationId}`;
+}
+
+function getRollbackAuditKey(proposalId: string, rollbackMutationId: string): string {
+	return `${DREAM_RUN_PREFIX}${proposalId}:rollback:${rollbackMutationId}`;
+}
+
+function getApplyAfterRevision(applyRecord: Record<string, unknown>, entryId: string): number | null {
+	const afterRevisions = parseStoredObject(applyRecord.after_revisions);
+	if (!afterRevisions) return null;
+	return toOptionalInteger(afterRevisions[entryId]);
+}
+
+async function validateRollbackCurrentRevisions(
+	redis: Redis,
+	applyRecord: Record<string, unknown>,
+	operations: Record<string, unknown>[],
+): Promise<{ entriesById: Map<string, LoadedEntry>; error: Record<string, unknown> | null }> {
+	const touchedIds = [...new Set(operations.flatMap(getOperationTouchedIds))];
+	const entriesById = await loadTouchedEntries(redis, touchedIds);
+	for (const entryId of touchedIds) {
+		const entry = entriesById.get(entryId);
+		if (!entry) {
+			return {
+				entriesById,
+				error: {
+					ok: false,
+					error: "entry_not_found",
+					id: entryId,
+				},
+			};
+		}
+		const expectedCurrentRevision = getApplyAfterRevision(applyRecord, entryId);
+		if (expectedCurrentRevision === null) {
+			return {
+				entriesById,
+				error: {
+					ok: false,
+					error: "rollback_revision_missing",
+					id: entryId,
+				},
+			};
+		}
+		const actualRevision = getExpectedRevision(entry);
+		if (actualRevision !== expectedCurrentRevision) {
+			return {
+				entriesById,
+				error: {
+					ok: false,
+					error: "conflict",
+					id: entryId,
+					expected_revision: expectedCurrentRevision,
+					actual_revision: actualRevision,
+				},
+			};
+		}
+	}
+	return { entriesById, error: null };
+}
+
+async function rollbackMarkContestedOperation(
+	redis: Redis,
+	vector: Index,
+	operation: Record<string, unknown>,
+	entriesById: Map<string, LoadedEntry>,
+	rollbackRunId: string,
+	timestamp: string,
+): Promise<Record<string, unknown>> {
+	const entryIds = toStringArray(operation.entry_ids);
+	const results: Array<Record<string, unknown>> = [];
+	for (const entryId of entryIds) {
+		const entry = entriesById.get(entryId);
+		if (!entry) {
+			return { ok: false, error: "entry_not_found", id: entryId };
+		}
+		if (entry.type !== "knowledge") {
+			return { ok: false, error: "unsupported_entry_type", id: entryId, entry_type: entry.type };
+		}
+		entry.entry.state = "active";
+		removeRelatedKnowledgeLinks(
+			entry.entry,
+			entryIds.filter((candidateId) => candidateId !== entryId),
+			["contradicts"],
+		);
+		entry.metadata.updated_at = timestamp;
+		entry.metadata.updated_by = {
+			actor_id: "dream_rollback",
+			tool: "rollback_dream_apply",
+		};
+		entry.metadata.revision = getExpectedRevision(entry) + 1;
+		entry.metadata.last_consolidated = timestamp;
+		appendConsolidationNote(
+			entry.metadata,
+			formatConsolidationNote({
+				timestamp,
+				source: "operator",
+				action: "rollback_mark_contested",
+				detail: `rollback ${rollbackRunId}`,
+			}),
+		);
+		entry.entry.metadata = entry.metadata;
+		entry.updatedAt = getEntryUpdatedAt(entry.entry, entry.metadata);
+		entry.salienceScore = computeSalience(entry.entry);
+		entry.metadata.salience_score = entry.salienceScore;
+		await persistEntry(redis, vector, entry);
+		results.push({
+			id: entry.id,
+			state: entry.entry.state,
+			revision: entry.metadata.revision,
+		});
+	}
+	return { ok: true, type: "mark_contested", results };
+}
+
+async function rollbackPromoteContextOperation(
+	redis: Redis,
+	vector: Index,
+	operation: Record<string, unknown>,
+	entriesById: Map<string, LoadedEntry>,
+	rollbackRunId: string,
+	timestamp: string,
+): Promise<Record<string, unknown>> {
+	const entryId = typeof operation.entry_id === "string" ? operation.entry_id : null;
+	const entry = entryId ? entriesById.get(entryId) : null;
+	if (!entry || !entryId) {
+		return { ok: false, error: "entry_not_found", id: entryId };
+	}
+	const rollback = parseStoredObject(operation.rollback);
+	const restoreContextType =
+		typeof rollback?.restore_context_type === "string" ? rollback.restore_context_type : null;
+	if (!restoreContextType) {
+		return { ok: false, error: "rollback_context_missing", id: entryId };
+	}
+	entry.metadata.context_type = restoreContextType;
+	entry.metadata.injection_tier = defaultInjectionTier(restoreContextType);
+	entry.metadata.updated_at = timestamp;
+	entry.metadata.updated_by = {
+		actor_id: "dream_rollback",
+		tool: "rollback_dream_apply",
+	};
+	entry.metadata.revision = getExpectedRevision(entry) + 1;
+	entry.metadata.last_consolidated = timestamp;
+	appendConsolidationNote(
+		entry.metadata,
+		formatConsolidationNote({
+			timestamp,
+			source: "operator",
+			action: "rollback_promote_context_type",
+			detail: `rollback ${rollbackRunId}`,
+		}),
+	);
+	entry.entry.metadata = entry.metadata;
+	entry.contextType = restoreContextType;
+	entry.injectionTier = defaultInjectionTier(restoreContextType);
+	entry.updatedAt = getEntryUpdatedAt(entry.entry, entry.metadata);
+	entry.salienceScore = computeSalience(entry.entry);
+	entry.metadata.salience_score = entry.salienceScore;
+	await persistEntry(redis, vector, entry);
+	return {
+		ok: true,
+		type: "promote_context_type",
+		id: entry.id,
+		context_type: entry.contextType,
+		injection_tier: entry.injectionTier,
+		revision: entry.metadata.revision,
+	};
+}
+
+async function rollbackDreamOperation(
+	redis: Redis,
+	vector: Index,
+	operation: Record<string, unknown>,
+	entriesById: Map<string, LoadedEntry>,
+	rollbackRunId: string,
+	timestamp: string,
+): Promise<Record<string, unknown>> {
+	const operationId = typeof operation.operation_id === "string" ? operation.operation_id : "unknown_operation";
+	const operationType = typeof operation.type === "string" ? operation.type : "unknown";
+	if (operationType === "mark_contested") {
+		return {
+			operation_id: operationId,
+			...(await rollbackMarkContestedOperation(redis, vector, operation, entriesById, rollbackRunId, timestamp)),
+		};
+	}
+	if (operationType === "promote_context_type") {
+		return {
+			operation_id: operationId,
+			...(await rollbackPromoteContextOperation(redis, vector, operation, entriesById, rollbackRunId, timestamp)),
+		};
+	}
+	return {
+		ok: false,
+		operation_id: operationId,
+		error: "unsupported_rollback_operation",
+		type: operationType,
+		message: "This operation cannot be fully rolled back from the current apply audit.",
+	};
+}
+
+export async function rollbackDreamApply(
+	env: Env,
+	options: RollbackDreamApplyOptions,
+): Promise<Record<string, unknown>> {
+	const redis = createRedisClient(env);
+	const vector = createVectorClient(env);
+	const storedMutation = parseStoredObject(await redis.get(getMutationResultKey(options.rollbackMutationId)));
+	if (storedMutation) {
+		return storedMutation;
+	}
+
+	const applyRecord = parseStoredObject(await redis.get(getApplyAuditKey(options.proposalId, options.applyMutationId)));
+	if (!applyRecord || applyRecord.ok !== true) {
+		const result = {
+			ok: false,
+			error: "apply_record_not_found",
+			proposal_id: options.proposalId,
+			apply_mutation_id: options.applyMutationId,
+			mutation_id: options.rollbackMutationId,
+		};
+		await storeMutationResult(redis, options.rollbackMutationId, result);
+		return result;
+	}
+
+	const proposal = parseStoredObject(await redis.get(`${DREAM_RUN_PREFIX}${options.proposalId}:proposal`)) ??
+		parseStoredObject(await redis.get(`${DREAM_RUN_PREFIX}${options.proposalId}`));
+	if (!proposal) {
+		const result = {
+			ok: false,
+			error: "proposal_not_found",
+			proposal_id: options.proposalId,
+			mutation_id: options.rollbackMutationId,
+		};
+		await storeMutationResult(redis, options.rollbackMutationId, result);
+		return result;
+	}
+
+	const appliedIds = new Set(toStringArray(applyRecord.operation_ids));
+	const requestedIds = options.operationIds && options.operationIds.length > 0
+		? new Set(options.operationIds)
+		: appliedIds;
+	const operationsById = new Map<string, Record<string, unknown>>();
+	for (const operation of toObjectArray(proposal.operations)) {
+		const operationId = typeof operation.operation_id === "string" ? operation.operation_id : "";
+		if (operationId.length > 0) {
+			operationsById.set(operationId, operation);
+		}
+	}
+	const operations = [...requestedIds].map((operationId) => operationsById.get(operationId)).filter(
+		(operation): operation is Record<string, unknown> => Boolean(operation),
+	);
+	if (operations.length !== requestedIds.size) {
+		const foundIds = new Set(
+			operations.map((operation) => String(operation.operation_id ?? "")),
+		);
+		const result = {
+			ok: false,
+			error: "operation_not_found",
+			missing_operation_ids: [...requestedIds].filter((operationId) => !foundIds.has(operationId)),
+			proposal_id: options.proposalId,
+			mutation_id: options.rollbackMutationId,
+		};
+		await storeMutationResult(redis, options.rollbackMutationId, result);
+		return result;
+	}
+	const notAppliedIds = [...requestedIds].filter((operationId) => !appliedIds.has(operationId));
+	if (notAppliedIds.length > 0) {
+		const result = {
+			ok: false,
+			error: "operation_not_applied",
+			operation_ids: notAppliedIds,
+			proposal_id: options.proposalId,
+			mutation_id: options.rollbackMutationId,
+		};
+		await storeMutationResult(redis, options.rollbackMutationId, result);
+		return result;
+	}
+
+	const unsupportedOperations = operations.filter((operation) => {
+		const operationType = typeof operation.type === "string" ? operation.type : "unknown";
+		return !getRollbackSupportedOperationTypes().has(operationType);
+	});
+	if (unsupportedOperations.length > 0) {
+		const result = {
+			ok: false,
+			error: "unsupported_rollback_operation",
+			proposal_id: options.proposalId,
+			mutation_id: options.rollbackMutationId,
+			unsupported_operations: unsupportedOperations.map((operation) => ({
+				operation_id: operation.operation_id ?? null,
+				type: operation.type ?? null,
+			})),
+		};
+		await storeMutationResult(redis, options.rollbackMutationId, result);
+		return result;
+	}
+
+	const { entriesById, error } = await validateRollbackCurrentRevisions(redis, applyRecord, operations);
+	if (error) {
+		const result = {
+			...error,
+			proposal_id: options.proposalId,
+			apply_mutation_id: options.applyMutationId,
+			mutation_id: options.rollbackMutationId,
+		};
+		await storeMutationResult(redis, options.rollbackMutationId, result);
+		return result;
+	}
+
+	const timestamp = new Date().toISOString();
+	const rollbackRunId = `rollback_${options.proposalId}_${timestamp.replace(/[:.]/g, "-")}`;
+	const touchedIds = [...new Set(operations.flatMap(getOperationTouchedIds))];
+	const beforeRevisions = Object.fromEntries(
+		touchedIds.map((entryId) => [entryId, getExpectedRevision(entriesById.get(entryId)!)]),
+	);
+	const rollbackResults: Array<Record<string, unknown>> = [];
+	for (const operation of [...operations].reverse()) {
+		rollbackResults.push(
+			await rollbackDreamOperation(redis, vector, operation, entriesById, rollbackRunId, timestamp),
+		);
+	}
+
+	if (rollbackResults.some((result) => result.ok === false)) {
+		const failedResult = {
+			ok: false,
+			error: "rollback_failed",
+			proposal_id: options.proposalId,
+			apply_mutation_id: options.applyMutationId,
+			mutation_id: options.rollbackMutationId,
+			results: rollbackResults,
+		};
+		await storeMutationResult(redis, options.rollbackMutationId, failedResult);
+		return failedResult;
+	}
+
+	await rebuildThinIndexSafely(redis, rollbackRunId);
+	const refreshedEntriesById = await loadTouchedEntries(redis, touchedIds);
+	const afterRevisions = Object.fromEntries(
+		touchedIds.map((entryId) => [
+			entryId,
+			refreshedEntriesById.has(entryId)
+				? getExpectedRevision(refreshedEntriesById.get(entryId)!)
+				: null,
+		]),
+	);
+	const result = {
+		ok: true,
+		proposal_id: options.proposalId,
+		apply_mutation_id: options.applyMutationId,
+		rollback_run_id: rollbackRunId,
+		mutation_id: options.rollbackMutationId,
+		rolled_back_at: timestamp,
+		rolled_back_by: options.actorId,
+		rolled_back_count: rollbackResults.length,
+		operation_ids: operations.map((operation) => operation.operation_id),
+		results: rollbackResults,
+		before_revisions: beforeRevisions,
+		after_revisions: afterRevisions,
+		side_effects: {
+			index: "rebuilt",
+		},
+	};
+
+	await redis.set(getRollbackAuditKey(options.proposalId, options.rollbackMutationId), JSON.stringify(result));
+	await redis.set(`${DREAM_RUN_PREFIX}${options.proposalId}:events`, JSON.stringify([
+		{
+			ts: timestamp,
+			event: "proposal_rollback",
+			mutation_id: options.rollbackMutationId,
+			apply_mutation_id: options.applyMutationId,
+			actor_id: options.actorId,
+			reason: options.reason,
+			operation_ids: result.operation_ids,
+			ids_affected: touchedIds,
+		},
+	]));
+	await appendMutationLog(redis, {
+		ts: timestamp,
+		mutation_id: options.rollbackMutationId,
+		tool: "rollback_dream_apply",
+		client: "mcp",
+		actor_id: options.actorId,
+		request_id: options.rollbackMutationId,
+		ids_affected: touchedIds,
+		before_revisions: beforeRevisions,
+		after_revisions: afterRevisions,
+		reason: options.reason,
+		proposal_id: options.proposalId,
+		apply_mutation_id: options.applyMutationId,
+	});
+	await storeMutationResult(redis, options.rollbackMutationId, result);
 	return result;
 }
 

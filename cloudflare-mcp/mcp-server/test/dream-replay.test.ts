@@ -105,7 +105,7 @@ vi.mock("@upstash/vector", () => ({
 	},
 }));
 
-import { applyDreamProposal, compactDreamRunRecordForStorage, runDreamCycle, runDreamProposal } from "../src/dream";
+import { applyDreamProposal, compactDreamRunRecordForStorage, rollbackDreamApply, runDreamCycle, runDreamProposal } from "../src/dream";
 
 function buildKnowledgeEntry(params: {
 	id: string;
@@ -429,6 +429,113 @@ describe("Dream replay logic", () => {
 			expect.objectContaining({ archived: false }),
 		);
 		expect(mockState.vectorDeletes).toEqual([]);
+	});
+
+	it("rolls back supported applied proposal operations with revision preflight", async () => {
+		const proposal = await runDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{
+				trigger: "local_test",
+				actorId: "test-operator",
+				archiveLimit: 0,
+				promotionLimit: 0,
+			},
+		);
+		const contestedOperation = (proposal.operations as Array<Record<string, unknown>>)
+			.find((operation) => operation.type === "mark_contested");
+		expect(contestedOperation).toBeTruthy();
+
+		const applyResult = await applyDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{
+				proposalId: String(proposal.run_id),
+				mutationId: "apply-contested-test",
+				actorId: "test-operator",
+				reason: "approve contested marker",
+				operationIds: [String(contestedOperation!.operation_id)],
+			},
+		);
+		expect(applyResult.ok).toBe(true);
+		expect(getStoredObject("knowledge:ke_conflict_a").state).toBe("contested");
+
+		const rollbackResult = await rollbackDreamApply(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{
+				proposalId: String(proposal.run_id),
+				applyMutationId: "apply-contested-test",
+				rollbackMutationId: "rollback-contested-test",
+				actorId: "test-operator",
+				reason: "rollback contested marker",
+				operationIds: [String(contestedOperation!.operation_id)],
+			},
+		);
+
+		expect(rollbackResult.ok).toBe(true);
+		expect(rollbackResult.rolled_back_count).toBe(1);
+		const conflictA = getStoredObject("knowledge:ke_conflict_a");
+		const conflictB = getStoredObject("knowledge:ke_conflict_b");
+		expect(conflictA.state).toBe("active");
+		expect(conflictB.state).toBe("active");
+		expect(conflictA.related_knowledge).toEqual([]);
+		expect(conflictB.related_knowledge).toEqual([]);
+		expect((conflictA.metadata as Record<string, unknown>).revision).toBe(1);
+		expect(mockState.store.get(`dream:run:${String(proposal.run_id)}:rollback:rollback-contested-test`)).toBeTruthy();
+	});
+
+	it("rejects unsupported rollback operations without mutating", async () => {
+		const proposal = await runDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{
+				trigger: "local_test",
+				actorId: "test-operator",
+				archiveLimit: 0,
+				promotionLimit: 0,
+			},
+		);
+		const duplicateOperation = (proposal.operations as Array<Record<string, unknown>>)
+			.find((operation) => operation.type === "duplicate_merge");
+		const result = await rollbackDreamApply(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{
+				proposalId: String(proposal.run_id),
+				applyMutationId: "missing-apply",
+				rollbackMutationId: "rollback-unsupported-test",
+				actorId: "test-operator",
+				reason: "rollback duplicate merge",
+				operationIds: [String(duplicateOperation!.operation_id)],
+			},
+		);
+
+		expect(result.ok).toBe(false);
+		expect(result.error).toBe("apply_record_not_found");
+		expect(getStoredObject("knowledge:ke_dup_secondary").metadata).toEqual(
+			expect.objectContaining({ archived: false }),
+		);
 	});
 
 	it("compacts oversized stored Dream audits below the Redis payload budget", () => {

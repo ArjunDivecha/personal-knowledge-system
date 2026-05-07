@@ -21,6 +21,7 @@ import {
 	createEntry,
 	restoreArchivedEntry,
 	restoreEntry,
+	rollbackDreamApply,
 	runDreamCycle,
 	runDreamProposal,
 	updateEntry,
@@ -1249,6 +1250,41 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 						const result = await applyDreamProposal(this.env, {
 							proposalId: proposal_id,
 							mutationId: mutation_id,
+							reason,
+							actorId,
+							operationIds: operation_ids,
+						});
+						return {
+							content: [{ type: "text", text: JSON.stringify(result) }],
+						};
+					} catch (error) {
+						const errMsg = error instanceof Error ? error.message : String(error);
+						return {
+							content: [{ type: "text", text: JSON.stringify({ error: errMsg }) }],
+						};
+					}
+				},
+			);
+
+			// Tool: rollback_dream_apply
+			this.server.tool(
+				"rollback_dream_apply",
+				"Rollback supported operations from a previously applied Dream proposal. Requires mcp:write scope.",
+				{
+					proposal_id: z.string().min(1).max(200).describe("Dream proposal run ID, usually dpr_..."),
+					apply_mutation_id: z.string().min(1).max(200).describe("Mutation ID used when the proposal was applied"),
+					rollback_mutation_id: z.string().min(1).max(200).describe("Client-generated idempotency key for this rollback request"),
+					reason: z.string().min(1).max(500).describe("Why this applied proposal should be rolled back"),
+					operation_ids: z.array(z.string().min(1).max(300)).max(100).optional().describe("Optional subset of applied operation IDs to roll back"),
+				},
+				MUTATING_TOOL_ANNOTATIONS,
+				async ({ proposal_id, apply_mutation_id, rollback_mutation_id, reason, operation_ids }) => {
+					try {
+						const actorId = await this.requireWriteAccess("rollback_dream_apply");
+						const result = await rollbackDreamApply(this.env, {
+							proposalId: proposal_id,
+							applyMutationId: apply_mutation_id,
+							rollbackMutationId: rollback_mutation_id,
 							reason,
 							actorId,
 							operationIds: operation_ids,
