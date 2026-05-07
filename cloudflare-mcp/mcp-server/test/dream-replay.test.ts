@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockState = vi.hoisted(() => ({
 	store: new Map<string, unknown>(),
 	lists: new Map<string, string[]>(),
+	sets: new Map<string, Set<string>>(),
 	vectorUpdates: [] as Array<Record<string, unknown>>,
+	vectorUpserts: [] as Array<Record<string, unknown>>,
 	vectorDeletes: [] as string[],
 	maxRequestBytes: null as number | null,
 	maxMgetKeys: null as number | null,
@@ -89,11 +91,30 @@ vi.mock("@upstash/redis/cloudflare", () => ({
 			mockState.lists.set(key, list.slice(start, stop + 1));
 			return "OK";
 		}
+
+		async sadd(key: string, value: string): Promise<number> {
+			const set = mockState.sets.get(key) ?? new Set<string>();
+			const beforeSize = set.size;
+			set.add(value);
+			mockState.sets.set(key, set);
+			return set.size > beforeSize ? 1 : 0;
+		}
+
+		async srem(key: string, value: string): Promise<number> {
+			const set = mockState.sets.get(key) ?? new Set<string>();
+			const deleted = set.delete(value);
+			mockState.sets.set(key, set);
+			return deleted ? 1 : 0;
+		}
 	},
 }));
 
 vi.mock("@upstash/vector", () => ({
 	Index: class MockIndex {
+		async upsert(payload: Record<string, unknown>): Promise<void> {
+			mockState.vectorUpserts.push(payload);
+		}
+
 		async update(payload: Record<string, unknown>): Promise<void> {
 			mockState.vectorUpdates.push(payload);
 		}
@@ -102,6 +123,16 @@ vi.mock("@upstash/vector", () => ({
 			const ids = Array.isArray(_id) ? _id : [_id];
 			mockState.vectorDeletes.push(...ids);
 		}
+	},
+}));
+
+vi.mock("openai", () => ({
+	default: class MockOpenAI {
+		embeddings = {
+			create: async () => ({
+				data: [{ embedding: [0.1, 0.2, 0.3] }],
+			}),
+		};
 	},
 }));
 
@@ -174,7 +205,9 @@ describe("Dream replay logic", () => {
 	beforeEach(() => {
 		mockState.store.clear();
 		mockState.lists.clear();
+		mockState.sets.clear();
 		mockState.vectorUpdates.length = 0;
+		mockState.vectorUpserts.length = 0;
 		mockState.vectorDeletes.length = 0;
 		mockState.maxRequestBytes = null;
 		mockState.maxMgetKeys = null;
@@ -234,6 +267,7 @@ describe("Dream replay logic", () => {
 				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
 				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
 				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+				OPENAI_API_KEY: "test-openai-key",
 			} as Env,
 			{
 				dryRun: false,
@@ -310,6 +344,7 @@ describe("Dream replay logic", () => {
 				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
 				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
 				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+				OPENAI_API_KEY: "test-openai-key",
 			} as Env,
 			{
 				trigger: "local_test",
@@ -346,6 +381,7 @@ describe("Dream replay logic", () => {
 				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
 				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
 				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+				OPENAI_API_KEY: "test-openai-key",
 			} as Env,
 			{
 				trigger: "local_test",
@@ -364,6 +400,7 @@ describe("Dream replay logic", () => {
 				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
 				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
 				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+				OPENAI_API_KEY: "test-openai-key",
 			} as Env,
 			{
 				proposalId: String(proposal.run_id),
@@ -474,6 +511,7 @@ describe("Dream replay logic", () => {
 				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
 				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
 				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+				OPENAI_API_KEY: "test-openai-key",
 			} as Env,
 			{
 				proposalId: String(proposal.run_id),
@@ -497,7 +535,7 @@ describe("Dream replay logic", () => {
 		expect(mockState.store.get(`dream:run:${String(proposal.run_id)}:rollback:rollback-contested-test`)).toBeTruthy();
 	});
 
-	it("rejects unsupported rollback operations without mutating", async () => {
+	it("rolls back duplicate merge operations from apply before-snapshots", async () => {
 		const proposal = await runDreamProposal(
 			{
 				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
@@ -514,7 +552,7 @@ describe("Dream replay logic", () => {
 		);
 		const duplicateOperation = (proposal.operations as Array<Record<string, unknown>>)
 			.find((operation) => operation.type === "duplicate_merge");
-		const result = await rollbackDreamApply(
+		const applyResult = await applyDreamProposal(
 			{
 				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
 				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
@@ -523,18 +561,53 @@ describe("Dream replay logic", () => {
 			} as Env,
 			{
 				proposalId: String(proposal.run_id),
-				applyMutationId: "missing-apply",
-				rollbackMutationId: "rollback-unsupported-test",
+				mutationId: "apply-duplicate-rollback-test",
+				actorId: "test-operator",
+				reason: "approve duplicate merge",
+				operationIds: [String(duplicateOperation!.operation_id)],
+			},
+		);
+		expect(applyResult.ok).toBe(true);
+		expect(getStoredObject("knowledge:ke_dup_primary").metadata).toEqual(
+			expect.objectContaining({ mention_count: 3 }),
+		);
+		expect(getStoredObject("knowledge:ke_dup_secondary").metadata).toEqual(
+			expect.objectContaining({ archived: true }),
+		);
+		expect((getStoredObject("mutation_result:apply-duplicate-rollback-test").before_snapshots as Record<string, unknown>))
+			.toBeTruthy();
+
+		const result = await rollbackDreamApply(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+				OPENAI_API_KEY: "test-openai-key",
+			} as Env,
+			{
+				proposalId: String(proposal.run_id),
+				applyMutationId: "apply-duplicate-rollback-test",
+				rollbackMutationId: "rollback-duplicate-test",
 				actorId: "test-operator",
 				reason: "rollback duplicate merge",
 				operationIds: [String(duplicateOperation!.operation_id)],
 			},
 		);
 
-		expect(result.ok).toBe(false);
-		expect(result.error).toBe("apply_record_not_found");
+		expect(result.ok).toBe(true);
+		expect(result.rolled_back_count).toBe(1);
+		expect(getStoredObject("knowledge:ke_dup_primary").metadata).toEqual(
+			expect.objectContaining({ mention_count: 2 }),
+		);
 		expect(getStoredObject("knowledge:ke_dup_secondary").metadata).toEqual(
 			expect.objectContaining({ archived: false }),
+		);
+		expect(mockState.vectorUpserts).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ id: "ke_dup_primary" }),
+				expect.objectContaining({ id: "ke_dup_secondary" }),
+			]),
 		);
 	});
 

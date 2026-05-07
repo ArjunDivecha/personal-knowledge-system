@@ -2322,6 +2322,12 @@ export async function applyDreamProposal(
 	const beforeRevisions = Object.fromEntries(
 		touchedIds.map((entryId) => [entryId, getExpectedRevision(entriesById.get(entryId)!)]),
 	);
+	const beforeSnapshots = Object.fromEntries(
+		touchedIds.map((entryId) => [
+			entryId,
+			JSON.parse(JSON.stringify(entriesById.get(entryId)!.entry)),
+		]),
+	);
 	const operationResults: Array<Record<string, unknown>> = [];
 
 	for (const operation of operations) {
@@ -2374,6 +2380,7 @@ export async function applyDreamProposal(
 		results: operationResults,
 		before_revisions: beforeRevisions,
 		after_revisions: afterRevisions,
+		before_snapshots: beforeSnapshots,
 		side_effects: {
 			index: "rebuilt",
 		},
@@ -2409,7 +2416,7 @@ export async function applyDreamProposal(
 }
 
 function getRollbackSupportedOperationTypes(): Set<string> {
-	return new Set(["mark_contested", "promote_context_type"]);
+	return new Set(["duplicate_merge", "mark_contested", "promote_context_type", "archive_entry"]);
 }
 
 function getApplyAuditKey(proposalId: string, applyMutationId: string): string {
@@ -2424,6 +2431,15 @@ function getApplyAfterRevision(applyRecord: Record<string, unknown>, entryId: st
 	const afterRevisions = parseStoredObject(applyRecord.after_revisions);
 	if (!afterRevisions) return null;
 	return toOptionalInteger(afterRevisions[entryId]);
+}
+
+function getApplyBeforeSnapshot(
+	applyRecord: Record<string, unknown>,
+	entryId: string,
+): Record<string, unknown> | null {
+	const beforeSnapshots = parseStoredObject(applyRecord.before_snapshots);
+	if (!beforeSnapshots) return null;
+	return parseStoredObject(beforeSnapshots[entryId]);
 }
 
 async function validateRollbackCurrentRevisions(
@@ -2456,6 +2472,16 @@ async function validateRollbackCurrentRevisions(
 				},
 			};
 		}
+		if (!getApplyBeforeSnapshot(applyRecord, entryId)) {
+			return {
+				entriesById,
+				error: {
+					ok: false,
+					error: "rollback_snapshot_missing",
+					id: entryId,
+				},
+			};
+		}
 		const actualRevision = getExpectedRevision(entry);
 		if (actualRevision !== expectedCurrentRevision) {
 			return {
@@ -2473,134 +2499,129 @@ async function validateRollbackCurrentRevisions(
 	return { entriesById, error: null };
 }
 
-async function rollbackMarkContestedOperation(
+async function restoreEntryFromApplySnapshot(
+	env: Env,
 	redis: Redis,
 	vector: Index,
-	operation: Record<string, unknown>,
-	entriesById: Map<string, LoadedEntry>,
+	applyRecord: Record<string, unknown>,
+	entryId: string,
 	rollbackRunId: string,
 	timestamp: string,
 ): Promise<Record<string, unknown>> {
-	const entryIds = toStringArray(operation.entry_ids);
-	const results: Array<Record<string, unknown>> = [];
-	for (const entryId of entryIds) {
-		const entry = entriesById.get(entryId);
-		if (!entry) {
-			return { ok: false, error: "entry_not_found", id: entryId };
-		}
-		if (entry.type !== "knowledge") {
-			return { ok: false, error: "unsupported_entry_type", id: entryId, entry_type: entry.type };
-		}
-		entry.entry.state = "active";
-		removeRelatedKnowledgeLinks(
-			entry.entry,
-			entryIds.filter((candidateId) => candidateId !== entryId),
-			["contradicts"],
-		);
-		entry.metadata.updated_at = timestamp;
-		entry.metadata.updated_by = {
-			actor_id: "dream_rollback",
-			tool: "rollback_dream_apply",
-		};
-		entry.metadata.revision = getExpectedRevision(entry) + 1;
-		entry.metadata.last_consolidated = timestamp;
-		appendConsolidationNote(
-			entry.metadata,
-			formatConsolidationNote({
-				timestamp,
-				source: "operator",
-				action: "rollback_mark_contested",
-				detail: `rollback ${rollbackRunId}`,
-			}),
-		);
-		entry.entry.metadata = entry.metadata;
-		entry.updatedAt = getEntryUpdatedAt(entry.entry, entry.metadata);
-		entry.salienceScore = computeSalience(entry.entry);
-		entry.metadata.salience_score = entry.salienceScore;
-		await persistEntry(redis, vector, entry);
-		results.push({
-			id: entry.id,
-			state: entry.entry.state,
-			revision: entry.metadata.revision,
-		});
+	const snapshot = getApplyBeforeSnapshot(applyRecord, entryId);
+	if (!snapshot) {
+		return { ok: false, error: "rollback_snapshot_missing", id: entryId };
 	}
-	return { ok: true, type: "mark_contested", results };
-}
-
-async function rollbackPromoteContextOperation(
-	redis: Redis,
-	vector: Index,
-	operation: Record<string, unknown>,
-	entriesById: Map<string, LoadedEntry>,
-	rollbackRunId: string,
-	timestamp: string,
-): Promise<Record<string, unknown>> {
-	const entryId = typeof operation.entry_id === "string" ? operation.entry_id : null;
-	const entry = entryId ? entriesById.get(entryId) : null;
-	if (!entry || !entryId) {
-		return { ok: false, error: "entry_not_found", id: entryId };
+	const entryType = getEntryTypeFromId(entryId);
+	const restoredEntry = normalizeEntry(snapshot, entryType);
+	if (!restoredEntry) {
+		return { ok: false, error: "rollback_snapshot_invalid", id: entryId };
 	}
-	const rollback = parseStoredObject(operation.rollback);
-	const restoreContextType =
-		typeof rollback?.restore_context_type === "string" ? rollback.restore_context_type : null;
-	if (!restoreContextType) {
-		return { ok: false, error: "rollback_context_missing", id: entryId };
-	}
-	entry.metadata.context_type = restoreContextType;
-	entry.metadata.injection_tier = defaultInjectionTier(restoreContextType);
-	entry.metadata.updated_at = timestamp;
-	entry.metadata.updated_by = {
+	const currentEntry = normalizeEntry(await redis.get(getEntryKey(entryType, entryId)), entryType);
+	const currentRevision = toOptionalInteger((currentEntry?.metadata as Record<string, unknown> | undefined)?.revision) ?? 0;
+	const metadata = (restoredEntry.metadata as Record<string, unknown> | undefined) ?? {};
+	const restoredArchived = metadata.archived === true;
+	metadata.updated_at = timestamp;
+	metadata.updated_by = {
 		actor_id: "dream_rollback",
 		tool: "rollback_dream_apply",
 	};
-	entry.metadata.revision = getExpectedRevision(entry) + 1;
-	entry.metadata.last_consolidated = timestamp;
+	metadata.revision = currentRevision + 1;
+	metadata.last_consolidated = timestamp;
 	appendConsolidationNote(
-		entry.metadata,
+		metadata,
 		formatConsolidationNote({
 			timestamp,
 			source: "operator",
-			action: "rollback_promote_context_type",
-			detail: `rollback ${rollbackRunId}`,
+			action: "rollback_dream_apply",
+			detail: `restored snapshot for ${entryId} (${rollbackRunId})`,
 		}),
 	);
-	entry.entry.metadata = entry.metadata;
-	entry.contextType = restoreContextType;
-	entry.injectionTier = defaultInjectionTier(restoreContextType);
-	entry.updatedAt = getEntryUpdatedAt(entry.entry, entry.metadata);
-	entry.salienceScore = computeSalience(entry.entry);
-	entry.metadata.salience_score = entry.salienceScore;
-	await persistEntry(redis, vector, entry);
+	restoredEntry.metadata = metadata;
+	const restoredLoadedEntry = buildLoadedEntry(entryId, entryType, restoredEntry);
+
+	if (entryType === "knowledge") {
+		const currentState =
+			currentEntry && typeof currentEntry.state === "string" ? currentEntry.state : null;
+		if (currentState) {
+			await redis.srem(`by_state:${currentState}`, entryId);
+		}
+		await redis.srem("by_state:archived", entryId);
+		if (restoredArchived) {
+			await redis.sadd("by_state:archived", entryId);
+		} else {
+			const restoredState =
+				typeof restoredEntry.state === "string" ? restoredEntry.state : "active";
+			await redis.sadd(`by_state:${restoredState}`, entryId);
+		}
+	}
+
+	await syncEntryAccessSignals(redis, restoredLoadedEntry);
+	if (restoredArchived) {
+		await persistEntry(redis, vector, restoredLoadedEntry, { skipVector: true });
+		await deleteVectorEntry(vector, entryId);
+	} else {
+		const embedding = await getEmbedding(env, buildEntryEmbeddingText(restoredLoadedEntry));
+		await persistEntry(redis, vector, restoredLoadedEntry, { embedding });
+	}
+	await patchThinIndexEntry(redis, restoredLoadedEntry, timestamp);
+
 	return {
 		ok: true,
-		type: "promote_context_type",
-		id: entry.id,
-		context_type: entry.contextType,
-		injection_tier: entry.injectionTier,
-		revision: entry.metadata.revision,
+		id: entryId,
+		type: entryType,
+		archived: restoredArchived,
+		revision: metadata.revision,
+		context_type: restoredLoadedEntry.contextType,
+		injection_tier: restoredLoadedEntry.injectionTier,
+	};
+}
+
+async function rollbackSnapshotOperation(
+	env: Env,
+	redis: Redis,
+	vector: Index,
+	applyRecord: Record<string, unknown>,
+	operation: Record<string, unknown>,
+	rollbackRunId: string,
+	timestamp: string,
+): Promise<Record<string, unknown>> {
+	const results: Array<Record<string, unknown>> = [];
+	for (const entryId of getOperationTouchedIds(operation)) {
+		results.push(
+			await restoreEntryFromApplySnapshot(
+				env,
+				redis,
+				vector,
+				applyRecord,
+				entryId,
+				rollbackRunId,
+				timestamp,
+			),
+		);
+	}
+	return {
+		ok: results.every((result) => result.ok === true),
+		type: operation.type ?? "unknown",
+		results,
 	};
 }
 
 async function rollbackDreamOperation(
+	env: Env,
 	redis: Redis,
 	vector: Index,
+	applyRecord: Record<string, unknown>,
 	operation: Record<string, unknown>,
-	entriesById: Map<string, LoadedEntry>,
 	rollbackRunId: string,
 	timestamp: string,
 ): Promise<Record<string, unknown>> {
 	const operationId = typeof operation.operation_id === "string" ? operation.operation_id : "unknown_operation";
 	const operationType = typeof operation.type === "string" ? operation.type : "unknown";
-	if (operationType === "mark_contested") {
+	if (getRollbackSupportedOperationTypes().has(operationType)) {
 		return {
 			operation_id: operationId,
-			...(await rollbackMarkContestedOperation(redis, vector, operation, entriesById, rollbackRunId, timestamp)),
-		};
-	}
-	if (operationType === "promote_context_type") {
-		return {
-			operation_id: operationId,
-			...(await rollbackPromoteContextOperation(redis, vector, operation, entriesById, rollbackRunId, timestamp)),
+			...(await rollbackSnapshotOperation(env, redis, vector, applyRecord, operation, rollbackRunId, timestamp)),
 		};
 	}
 	return {
@@ -2730,7 +2751,7 @@ export async function rollbackDreamApply(
 	const rollbackResults: Array<Record<string, unknown>> = [];
 	for (const operation of [...operations].reverse()) {
 		rollbackResults.push(
-			await rollbackDreamOperation(redis, vector, operation, entriesById, rollbackRunId, timestamp),
+			await rollbackDreamOperation(env, redis, vector, applyRecord, operation, rollbackRunId, timestamp),
 		);
 	}
 
