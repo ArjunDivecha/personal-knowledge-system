@@ -431,6 +431,10 @@ function setVectorMetadataBase(entry: LoadedEntry): Record<string, unknown> {
 	const base = {
 		type: entry.type,
 		archived: Boolean(entry.metadata.archived),
+		classification_status:
+			typeof entry.metadata.classification_status === "string" && entry.metadata.classification_status.length > 0
+				? entry.metadata.classification_status
+				: "pending",
 		context_type: entry.metadata.context_type,
 		injection_tier: entry.metadata.injection_tier,
 		salience_score: entry.metadata.salience_score,
