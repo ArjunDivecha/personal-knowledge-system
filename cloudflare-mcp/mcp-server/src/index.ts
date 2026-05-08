@@ -2273,6 +2273,50 @@ const defaultHandler = {
 			}
 		}
 
+		if (url.pathname === "/ops/dream/apply" && request.method === "POST") {
+			if (!isAuthorizedOperatorRequest(request, env)) {
+				return Response.json({ error: "Unauthorized" }, { status: 401 });
+			}
+
+			try {
+				const redis = createRedisClient(env);
+				const rateLimit = await applyFixedWindowRateLimit(
+					redis,
+					"operator",
+					"ops_dream_apply",
+					OPERATOR_WRITE_RATE_LIMIT,
+				);
+				if (!rateLimit.allowed) {
+					return Response.json(
+						{
+							error: `Rate limit exceeded for Dream operator apply calls. Allowed ${rateLimit.limit} calls per ${RATE_LIMIT_WINDOW_SECONDS} seconds.`,
+						},
+						{ status: 429 },
+					);
+				}
+
+				const body = await request.json();
+				const parsed = z.object({
+					proposal_id: z.string().min(1).max(200),
+					mutation_id: z.string().min(1).max(200),
+					reason: z.string().min(1).max(500),
+					operation_ids: z.array(z.string().min(1).max(300)).max(100).optional(),
+				}).parse(body);
+
+				const result = await applyDreamProposal(env, {
+					proposalId: parsed.proposal_id,
+					mutationId: parsed.mutation_id,
+					reason: parsed.reason,
+					actorId: "operator",
+					operationIds: parsed.operation_ids ?? null,
+				});
+				return Response.json(result, { headers: { "Content-Type": "application/json" } });
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				return Response.json({ error: msg }, { status: 500 });
+			}
+		}
+
 		if (url.pathname === "/ops/dream/restore" && request.method === "POST") {
 			if (!isAuthorizedOperatorRequest(request, env)) {
 				return Response.json({ error: "Unauthorized" }, { status: 401 });

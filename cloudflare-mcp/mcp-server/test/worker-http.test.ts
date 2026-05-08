@@ -152,6 +152,54 @@ describe("Worker HTTP routes", () => {
 		expect(await response.json()).toEqual({ error: "Unauthorized" });
 	});
 
+	it("rejects unauthorized Dream proposal apply calls", async () => {
+		const response = await dispatch(
+			new IncomingRequest("https://example.com/ops/dream/apply", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					proposal_id: "dpr_missing",
+					mutation_id: "mut_missing",
+					reason: "test unauthorized apply",
+				}),
+			}),
+		);
+
+		expect(response.status).toBe(401);
+		expect(await response.json()).toEqual({ error: "Unauthorized" });
+	});
+
+	it("serves authorized Dream proposal apply through the operator endpoint", async () => {
+		const response = await dispatch(
+			new IncomingRequest("https://example.com/ops/dream/apply", {
+				method: "POST",
+				headers: {
+					authorization: "Bearer test-dream-operator-token",
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({
+					proposal_id: "dpr_missing",
+					mutation_id: "mut_missing_apply",
+					reason: "test authorized apply",
+				}),
+			}),
+		);
+
+		expect(response.status).toBe(200);
+		const payload = (await response.json()) as Record<string, unknown>;
+		expect(payload).toMatchObject({
+			ok: false,
+			error: "proposal_not_found",
+			proposal_id: "dpr_missing",
+			mutation_id: "mut_missing_apply",
+		});
+		expect(redisMock.set).toHaveBeenCalledWith(
+			"mutation_result:mut_missing_apply",
+			expect.any(String),
+			expect.objectContaining({ ex: expect.any(Number) }),
+		);
+	});
+
 	it("runs an authorized scheduled-equivalent Dream proposal without live mutation", async () => {
 		redisMock.get.mockImplementation(async (key: string) => {
 			if (key === "migration:backfill_complete") {
