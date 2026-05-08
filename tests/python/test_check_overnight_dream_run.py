@@ -11,7 +11,7 @@ SCRIPTS_DIR = REPO_ROOT / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from check_overnight_dream_run import most_recent_scheduled_boundary, validate_dream_run
+from check_overnight_dream_run import most_recent_scheduled_boundary, validate_dream_proposal
 
 UTC = timezone.utc
 
@@ -27,29 +27,29 @@ class CheckOvernightDreamRunTests(unittest.TestCase):
         boundary = most_recent_scheduled_boundary(now_utc, 7, 10)
         self.assertEqual(boundary, datetime(2026, 3, 27, 7, 10, tzinfo=UTC))
 
-    def test_validate_dream_run_passes_for_bounded_live_run(self) -> None:
+    def test_validate_dream_proposal_passes_for_scheduled_proposal(self) -> None:
         now_utc = datetime(2026, 3, 28, 15, 0, tzinfo=UTC)
         run_at = "2026-03-28T07:10:41+00:00"
         health = {
-            "last_dream_run": run_at,
-            "last_dream_dry_run": False,
+            "status": "ok",
         }
-        dream_summary = {
+        dream_proposal = {
             "run_at": run_at,
-            "status": "completed",
-            "trigger": "scheduled",
-            "dry_run": False,
+            "status": "proposal_ready",
+            "trigger": "manual",
+            "actor_id": "scheduled:dream-governance",
+            "operations": [{"operation_id": "dop_archive_ke_test", "type": "archive_entry"}],
             "counts": {
                 "archive_limit": 10,
                 "promotion_limit": 10,
-                "archived": 17,
-                "promoted": 4,
+                "archive_candidates": 17,
+                "promotion_candidates": 4,
             },
         }
 
-        result = validate_dream_run(
+        result = validate_dream_proposal(
             health=health,
-            dream_summary=dream_summary,
+            dream_proposal=dream_proposal,
             now_utc=now_utc,
             cron_hour_utc=7,
             cron_minute_utc=10,
@@ -61,18 +61,19 @@ class CheckOvernightDreamRunTests(unittest.TestCase):
         self.assertTrue(result.passed)
         self.assertEqual(result.issues, [])
 
-    def test_validate_dream_run_fails_for_old_dry_run(self) -> None:
+    def test_validate_dream_proposal_fails_for_old_live_run_shape(self) -> None:
         now_utc = datetime(2026, 3, 28, 15, 0, tzinfo=UTC)
         run_at = "2026-03-27T07:10:41+00:00"
         health = {
-            "last_dream_run": run_at,
-            "last_dream_dry_run": True,
+            "status": "ok",
         }
-        dream_summary = {
+        dream_proposal = {
             "run_at": run_at,
             "status": "completed",
             "trigger": "scheduled",
             "dry_run": True,
+            "actor_id": "dream_scheduler",
+            "operations": [],
             "counts": {
                 "archive_limit": 10,
                 "promotion_limit": 10,
@@ -81,9 +82,9 @@ class CheckOvernightDreamRunTests(unittest.TestCase):
             },
         }
 
-        result = validate_dream_run(
+        result = validate_dream_proposal(
             health=health,
-            dream_summary=dream_summary,
+            dream_proposal=dream_proposal,
             now_utc=now_utc,
             cron_hour_utc=7,
             cron_minute_utc=10,
@@ -93,7 +94,8 @@ class CheckOvernightDreamRunTests(unittest.TestCase):
         )
 
         self.assertFalse(result.passed)
-        self.assertTrue(any("dry_run=True" in issue for issue in result.issues))
+        self.assertTrue(any("status is not proposal_ready" in issue for issue in result.issues))
+        self.assertTrue(any("unexpectedly includes dry_run" in issue for issue in result.issues))
         self.assertTrue(any("too old" in issue for issue in result.issues))
 
 

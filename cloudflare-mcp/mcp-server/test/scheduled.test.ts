@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const dreamMock = vi.hoisted(() => ({
 	restoreArchivedEntry: vi.fn(),
 	runDreamCycle: vi.fn(),
+	runDreamProposal: vi.fn(),
 }));
 
 vi.mock("../src/dream", () => dreamMock);
@@ -35,10 +36,14 @@ beforeEach(() => {
 		status: "completed",
 		dry_run: false,
 	});
+	dreamMock.runDreamProposal.mockResolvedValue({
+		run_id: "dpr_test",
+		status: "proposal_ready",
+	});
 });
 
 describe("Scheduled Dream runner", () => {
-	it("triggers the nightly Dream maintenance cycle", async () => {
+	it("generates a nightly Dream governance proposal without live mutation", async () => {
 		const controller = createScheduledController({
 			cron: "10 7 * * *",
 			scheduledTime: Date.parse("2026-03-28T07:10:00.000Z"),
@@ -48,18 +53,18 @@ describe("Scheduled Dream runner", () => {
 		await worker.scheduled(controller, getTestEnv(), ctx);
 		await waitOnExecutionContext(ctx);
 
-		expect(dreamMock.runDreamCycle).toHaveBeenCalledWith(
+		expect(dreamMock.runDreamProposal).toHaveBeenCalledWith(
 			expect.objectContaining({
 				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
 			}),
 			expect.objectContaining({
-				dryRun: false,
-				trigger: "scheduled",
-				cron: "10 7 * * *",
+				trigger: "manual",
+				actorId: "scheduled:dream-governance",
 				archiveLimit: 10,
 				promotionLimit: 10,
-				note: "Nightly Dream maintenance run.",
+				note: "Nightly Dream governance proposal. cron=10 7 * * * scheduled_time=1774681800000",
 			}),
 		);
+		expect(dreamMock.runDreamCycle).not.toHaveBeenCalled();
 	});
 });

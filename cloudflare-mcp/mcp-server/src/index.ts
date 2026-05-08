@@ -2292,14 +2292,12 @@ export default {
 		return withCors(request, response);
 	},
 	async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-		const promise = runDreamCycle(env, {
-			dryRun: false,
-			trigger: "scheduled",
-			cron: controller.cron,
-			scheduledTime: controller.scheduledTime,
+		const promise = runDreamProposal(env, {
+			trigger: "manual",
+			actorId: "scheduled:dream-governance",
 			archiveLimit: SCHEDULED_DREAM_ARCHIVE_LIMIT,
 			promotionLimit: SCHEDULED_DREAM_PROMOTION_LIMIT,
-			note: "Nightly Dream maintenance run.",
+			note: `Nightly Dream governance proposal. cron=${controller.cron} scheduled_time=${controller.scheduledTime}`,
 		});
 		ctx.waitUntil(promise);
 		const result = await promise;
