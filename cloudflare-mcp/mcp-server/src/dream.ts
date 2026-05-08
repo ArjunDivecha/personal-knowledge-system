@@ -360,8 +360,8 @@ function getEntryLabel(entry: Record<string, unknown>): string {
 
 function getEntryUpdatedAt(entry: Record<string, unknown>, metadata: Record<string, unknown>): string | null {
 	return (
-		(typeof metadata.last_seen === "string" && metadata.last_seen) ||
 		(typeof metadata.updated_at === "string" && metadata.updated_at) ||
+		(typeof metadata.last_seen === "string" && metadata.last_seen) ||
 		(typeof metadata.last_touched === "string" && metadata.last_touched) ||
 		null
 	);
@@ -427,6 +427,7 @@ function appendConsolidationNote(metadata: Record<string, unknown>, note: string
 }
 
 function setVectorMetadataBase(entry: LoadedEntry): Record<string, unknown> {
+	const sourceConversations = toStringArray(entry.metadata.source_conversations);
 	const base = {
 		type: entry.type,
 		archived: Boolean(entry.metadata.archived),
@@ -436,6 +437,11 @@ function setVectorMetadataBase(entry: LoadedEntry): Record<string, unknown> {
 		mention_count: entry.metadata.mention_count,
 		last_consolidated: entry.metadata.last_consolidated,
 		updated_at: entry.updatedAt,
+		...(sourceConversations.length === 1
+			? { source: sourceConversations[0] }
+			: sourceConversations.length > 1
+				? { source: sourceConversations.slice(0, 3).join(",") }
+				: {}),
 	};
 	if (entry.type === "knowledge") {
 		return {
@@ -2724,7 +2730,7 @@ async function restoreEntryFromApplySnapshot(
 		}),
 	);
 	restoredEntry.metadata = metadata;
-	const restoredLoadedEntry = buildLoadedEntry(entryId, entryType, restoredEntry);
+	let restoredLoadedEntry = buildLoadedEntry(entryId, entryType, restoredEntry);
 
 	if (entryType === "knowledge") {
 		const currentState =
@@ -2743,6 +2749,7 @@ async function restoreEntryFromApplySnapshot(
 	}
 
 	await syncEntryAccessSignals(redis, restoredLoadedEntry);
+	restoredLoadedEntry = buildLoadedEntry(entryId, entryType, restoredEntry);
 	if (restoredArchived) {
 		await persistEntry(redis, vector, restoredLoadedEntry, { skipVector: true });
 		await deleteVectorEntry(vector, entryId);
