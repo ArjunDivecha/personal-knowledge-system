@@ -15,12 +15,16 @@ import {
 } from "./salience";
 import {
 	addInsight,
+	applyDreamProposal,
 	archiveExistingEntry,
 	consolidateEntries,
 	createEntry,
+	gradeDreamProposal,
 	restoreArchivedEntry,
 	restoreEntry,
+	rollbackDreamApply,
 	runDreamCycle,
+	runDreamProposal,
 	updateEntry,
 } from "./dream";
 import { formatConsolidationNote } from "./consolidation";
@@ -61,6 +65,12 @@ const CORS_ALLOW_METHODS = "GET, POST, OPTIONS, HEAD";
 const CORS_ALLOW_HEADERS = "Authorization, Content-Type, Accept, MCP-Session-Id, Last-Event-ID";
 const CORS_EXPOSE_HEADERS = "WWW-Authenticate, MCP-Session-Id, Location";
 const AUTHLESS_PROBE_PATHS = new Set(["/mcp", "/sse", "/openai/mcp", "/openai/sse"]);
+const VALIDATION_LAST_KEY = "validation:last";
+const VALIDATION_GATE_STATUS_KEY = "validation:gate_status";
+const DREAM_LAST_RUN_KEY = "dream:last_run";
+const DREAM_LAST_ATTEMPT_KEY = "dream:last_attempt";
+const DREAM_RUN_PREFIX = "dream:run:";
+const DREAM_RUN_INDEX_KEY = "dream:runs:index";
 const AUTHORIZATION_SERVER_METADATA_PATHS = new Set([
 	"/.well-known/oauth-authorization-server",
 	"/.well-known/openid-configuration",
@@ -672,6 +682,7 @@ async function buildHealthPayload(env: Env): Promise<Record<string, unknown>> {
 	const redis = createRedisClient(env);
 	const rawIndex = parseStoredObject(await redis.get("index:current")) ?? {};
 	const dreamSummary = parseStoredObject(await redis.get("dream:last_run"));
+	const dreamProposal = parseStoredObject(await redis.get("dream:proposal:last"));
 	const backfillComplete = await redis.get("migration:backfill_complete");
 	const pendingClassificationCount = await redis.scard("classification:pending") as number;
 	const reconsolidationErrorCount = await redis.llen(getReconsolidationErrorKey()) as number;
@@ -694,6 +705,28 @@ async function buildHealthPayload(env: Env): Promise<Record<string, unknown>> {
 			typeof (dreamSummary.counts as Record<string, unknown>).archive_candidates === "number"
 				? (dreamSummary.counts as Record<string, number>).archive_candidates
 				: null,
+		last_dream_proposal_run:
+			typeof dreamProposal?.run_id === "string" ? dreamProposal.run_id : null,
+		last_dream_proposal_at:
+			typeof dreamProposal?.run_at === "string"
+				? dreamProposal.run_at
+				: typeof dreamProposal?.created_at === "string"
+					? dreamProposal.created_at
+					: null,
+		last_dream_proposal_status:
+			typeof dreamProposal?.status === "string" ? dreamProposal.status : null,
+		last_dream_proposal_actor:
+			typeof dreamProposal?.actor_id === "string" ? dreamProposal.actor_id : null,
+		last_dream_proposal_operation_count:
+			Array.isArray(dreamProposal?.operations) ? dreamProposal.operations.length : null,
+		last_dream_proposal_risk:
+			typeof dreamProposal?.risk_score === "string" ? dreamProposal.risk_score : null,
+		last_dream_proposal_archive_candidate_count:
+			typeof dreamProposal?.counts === "object" &&
+			dreamProposal.counts &&
+			typeof (dreamProposal.counts as Record<string, unknown>).archive_candidates === "number"
+				? (dreamProposal.counts as Record<string, number>).archive_candidates
+				: null,
 		thin_index: {
 			generated_at: typeof rawIndex.generated_at === "string" ? rawIndex.generated_at : null,
 			stored_topic_count: topics.length,
@@ -707,6 +740,110 @@ async function buildHealthPayload(env: Env): Promise<Record<string, unknown>> {
 			tier_3_count: typeof rawIndex.tier_3_count === "number" ? rawIndex.tier_3_count : null,
 			archived_count: typeof rawIndex.archived_count === "number" ? rawIndex.archived_count : 0,
 		},
+	};
+}
+
+function parseStoredArray(raw: unknown): unknown[] {
+	if (Array.isArray(raw)) {
+		return [...raw];
+	}
+	if (typeof raw === "string") {
+		try {
+			const parsed = JSON.parse(raw);
+			return Array.isArray(parsed) ? parsed : [];
+		} catch {
+			return [];
+		}
+	}
+	return [];
+}
+
+async function getValidationStatus(redis: Redis): Promise<Record<string, unknown>> {
+	const gateStatus = parseStoredObject(await redis.get(VALIDATION_GATE_STATUS_KEY));
+	const last = parseStoredObject(await redis.get(VALIDATION_LAST_KEY));
+	return {
+		schema_version: 1,
+		retrieved_at: new Date().toISOString(),
+		gate_status: gateStatus ?? {
+			overall_status: "unknown",
+			overall_passed: null,
+			gates: {},
+		},
+		last_validation: last,
+	};
+}
+
+function compactDreamRun(run: Record<string, unknown>): Record<string, unknown> {
+	const counts = parseStoredObject(run.counts);
+	return {
+		run_id: typeof run.run_id === "string" ? run.run_id : null,
+		run_at: typeof run.run_at === "string" ? run.run_at : null,
+		completed_at: typeof run.completed_at === "string" ? run.completed_at : null,
+		status: typeof run.status === "string" ? run.status : null,
+		trigger: typeof run.trigger === "string" ? run.trigger : null,
+		dry_run: typeof run.dry_run === "boolean" ? run.dry_run : null,
+		counts,
+	};
+}
+
+async function listDreamRuns(redis: Redis, limit: number, statusFilter?: string): Promise<Record<string, unknown>> {
+	const index = parseStoredArray(await redis.get(DREAM_RUN_INDEX_KEY))
+		.filter((value): value is string => typeof value === "string");
+	const candidateIds = index.length > 0
+		? index.slice(0, limit)
+		: [];
+	const runs: Record<string, unknown>[] = [];
+
+	for (const runId of candidateIds) {
+		const run = parseStoredObject(await redis.get(`${DREAM_RUN_PREFIX}${runId}`));
+		if (!run) continue;
+		if (statusFilter && run.status !== statusFilter) continue;
+		runs.push(compactDreamRun(run));
+		if (runs.length >= limit) break;
+	}
+
+	if (runs.length === 0) {
+		const lastRun = parseStoredObject(await redis.get(DREAM_LAST_RUN_KEY));
+		if (lastRun && (!statusFilter || lastRun.status === statusFilter)) {
+			runs.push(compactDreamRun(lastRun));
+		}
+	}
+
+	return {
+		schema_version: 1,
+		runs,
+		limit,
+		status_filter: statusFilter ?? null,
+		source: index.length > 0 ? DREAM_RUN_INDEX_KEY : DREAM_LAST_RUN_KEY,
+	};
+}
+
+async function getDreamRun(redis: Redis, runId: string): Promise<Record<string, unknown>> {
+	const directRun = parseStoredObject(await redis.get(`${DREAM_RUN_PREFIX}${runId}`));
+	if (directRun) {
+		return directRun;
+	}
+
+	const lastRun = parseStoredObject(await redis.get(DREAM_LAST_RUN_KEY));
+	if (lastRun?.run_id === runId) {
+		return lastRun;
+	}
+
+	const lastAttempt = parseStoredObject(await redis.get(DREAM_LAST_ATTEMPT_KEY));
+	if (lastAttempt?.run_id === runId) {
+		return lastAttempt;
+	}
+
+	return { error: "dream_run_not_found", run_id: runId };
+}
+
+async function getDreamEvents(redis: Redis, runId: string): Promise<Record<string, unknown>> {
+	const events = parseStoredArray(await redis.get(`${DREAM_RUN_PREFIX}${runId}:events`));
+	return {
+		schema_version: 1,
+		run_id: runId,
+		events,
+		event_count: events.length,
 	};
 }
 
@@ -1026,7 +1163,201 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 			}
 		);
 
+		this.server.tool(
+			"get_validation_status",
+			"Get the latest validation ledger status. Use this to distinguish runtime health from memory correctness.",
+			{},
+			READ_ONLY_TOOL_ANNOTATIONS,
+			async () => {
+				const redis = this.getRedis(this.env);
+				return {
+					content: [{ type: "text", text: JSON.stringify(await getValidationStatus(redis)) }],
+				};
+			},
+		);
+
+		this.server.tool(
+			"list_dream_runs",
+			"List recent Dream run summaries from the run ledger.",
+			{
+				limit: z.number().int().min(1).max(50).default(10),
+				status_filter: z.string().min(1).max(80).optional(),
+			},
+			READ_ONLY_TOOL_ANNOTATIONS,
+			async ({ limit, status_filter }) => {
+				const redis = this.getRedis(this.env);
+				return {
+					content: [{ type: "text", text: JSON.stringify(await listDreamRuns(redis, limit, status_filter)) }],
+				};
+			},
+		);
+
+		this.server.tool(
+			"get_dream_run",
+			"Get a Dream run record by run_id.",
+			{
+				run_id: z.string().min(1).max(200),
+			},
+			READ_ONLY_TOOL_ANNOTATIONS,
+			async ({ run_id }) => {
+				const redis = this.getRedis(this.env);
+				return {
+					content: [{ type: "text", text: JSON.stringify(await getDreamRun(redis, run_id)) }],
+				};
+			},
+		);
+
+		this.server.tool(
+			"get_dream_events",
+			"Get retained Dream run events by run_id.",
+			{
+				run_id: z.string().min(1).max(200),
+			},
+			READ_ONLY_TOOL_ANNOTATIONS,
+			async ({ run_id }) => {
+				const redis = this.getRedis(this.env);
+				return {
+					content: [{ type: "text", text: JSON.stringify(await getDreamEvents(redis, run_id)) }],
+				};
+			},
+		);
+
 		if (this.includeWriteTools()) {
+			// Tool: run_dream_proposal
+			this.server.tool(
+				"run_dream_proposal",
+				"Generate a no-write Dream governance proposal. Requires mcp:write scope; does not mutate entries or vectors.",
+				{
+					candidate_ids: z.array(z.string().min(1).max(200)).max(200).optional().describe("Optional entry IDs to restrict proposal generation"),
+					archive_limit: z.number().int().min(0).max(MAX_OPERATOR_DREAM_ARCHIVE_LIMIT).optional().describe("Maximum archive operations to propose"),
+					promotion_limit: z.number().int().min(0).max(MAX_OPERATOR_DREAM_ARCHIVE_LIMIT).optional().describe("Maximum promotion operations to propose"),
+					note: z.string().min(1).max(500).optional().describe("Operator note for the proposal audit"),
+				},
+				MUTATING_TOOL_ANNOTATIONS,
+				async ({ candidate_ids, archive_limit, promotion_limit, note }) => {
+					try {
+						const actorId = await this.requireWriteAccess("run_dream_proposal");
+						const result = await runDreamProposal(this.env, {
+							trigger: "manual",
+							actorId,
+							candidateIds: candidate_ids,
+							archiveLimit: archive_limit,
+							promotionLimit: promotion_limit,
+							note,
+						});
+						return {
+							content: [{ type: "text", text: JSON.stringify(result) }],
+						};
+					} catch (error) {
+						const errMsg = error instanceof Error ? error.message : String(error);
+						return {
+							content: [{ type: "text", text: JSON.stringify({ error: errMsg }) }],
+						};
+					}
+				},
+			);
+
+			// Tool: grade_dream_proposal
+			this.server.tool(
+				"grade_dream_proposal",
+				"Run deterministic hard-gate grading for a Dream proposal. Requires mcp:write scope; does not mutate entries or vectors.",
+				{
+					proposal_id: z.string().min(1).max(200).describe("Dream proposal run ID, usually dpr_..."),
+					rubric_version: z.string().min(1).max(100).optional().describe("Optional rubric version; defaults to deterministic-v1"),
+				},
+				MUTATING_TOOL_ANNOTATIONS,
+				async ({ proposal_id, rubric_version }) => {
+					try {
+						const actorId = await this.requireWriteAccess("grade_dream_proposal");
+						const result = await gradeDreamProposal(this.env, {
+							proposalId: proposal_id,
+							actorId,
+							rubricVersion: rubric_version,
+						});
+						return {
+							content: [{ type: "text", text: JSON.stringify(result) }],
+						};
+					} catch (error) {
+						const errMsg = error instanceof Error ? error.message : String(error);
+						return {
+							content: [{ type: "text", text: JSON.stringify({ error: errMsg }) }],
+						};
+					}
+				},
+			);
+
+			// Tool: apply_dream_proposal
+			this.server.tool(
+				"apply_dream_proposal",
+				"Apply an approved Dream governance proposal after rechecking expected revisions. Requires mcp:write scope.",
+				{
+					proposal_id: z.string().min(1).max(200).describe("Dream proposal run ID, usually dpr_..."),
+					mutation_id: z.string().min(1).max(200).describe("Client-generated idempotency key for this apply request"),
+					reason: z.string().min(1).max(500).describe("Why this proposal is approved for application"),
+					require_grade_pass: z.boolean().optional().describe("Require stored deterministic grade pass before mutating; defaults to true"),
+					grade_id: z.string().min(1).max(200).optional().describe("Optional specific grade id to require"),
+					operation_ids: z.array(z.string().min(1).max(300)).max(100).optional().describe("Optional subset of proposal operation IDs to apply"),
+				},
+				MUTATING_TOOL_ANNOTATIONS,
+				async ({ proposal_id, mutation_id, reason, require_grade_pass, grade_id, operation_ids }) => {
+					try {
+						const actorId = await this.requireWriteAccess("apply_dream_proposal");
+						const result = await applyDreamProposal(this.env, {
+							proposalId: proposal_id,
+							mutationId: mutation_id,
+							reason,
+							actorId,
+							operationIds: operation_ids,
+							requireGradePass: require_grade_pass,
+							gradeId: grade_id,
+						});
+						return {
+							content: [{ type: "text", text: JSON.stringify(result) }],
+						};
+					} catch (error) {
+						const errMsg = error instanceof Error ? error.message : String(error);
+						return {
+							content: [{ type: "text", text: JSON.stringify({ error: errMsg }) }],
+						};
+					}
+				},
+			);
+
+			// Tool: rollback_dream_apply
+			this.server.tool(
+				"rollback_dream_apply",
+				"Rollback supported operations from a previously applied Dream proposal. Requires mcp:write scope.",
+				{
+					proposal_id: z.string().min(1).max(200).describe("Dream proposal run ID, usually dpr_..."),
+					apply_mutation_id: z.string().min(1).max(200).describe("Mutation ID used when the proposal was applied"),
+					rollback_mutation_id: z.string().min(1).max(200).describe("Client-generated idempotency key for this rollback request"),
+					reason: z.string().min(1).max(500).describe("Why this applied proposal should be rolled back"),
+					operation_ids: z.array(z.string().min(1).max(300)).max(100).optional().describe("Optional subset of applied operation IDs to roll back"),
+				},
+				MUTATING_TOOL_ANNOTATIONS,
+				async ({ proposal_id, apply_mutation_id, rollback_mutation_id, reason, operation_ids }) => {
+					try {
+						const actorId = await this.requireWriteAccess("rollback_dream_apply");
+						const result = await rollbackDreamApply(this.env, {
+							proposalId: proposal_id,
+							applyMutationId: apply_mutation_id,
+							rollbackMutationId: rollback_mutation_id,
+							reason,
+							actorId,
+							operationIds: operation_ids,
+						});
+						return {
+							content: [{ type: "text", text: JSON.stringify(result) }],
+						};
+					} catch (error) {
+						const errMsg = error instanceof Error ? error.message : String(error);
+						return {
+							content: [{ type: "text", text: JSON.stringify({ error: errMsg }) }],
+						};
+					}
+				},
+			);
+
 			// Tool: restore_archived
 			this.server.tool(
 				"restore_archived",
@@ -1888,6 +2219,104 @@ const defaultHandler = {
 			}
 		}
 
+		if (url.pathname === "/ops/dream/proposal" && request.method === "POST") {
+			if (!isAuthorizedOperatorRequest(request, env)) {
+				return Response.json({ error: "Unauthorized" }, { status: 401 });
+			}
+
+			try {
+				const redis = createRedisClient(env);
+				const rateLimit = await applyFixedWindowRateLimit(
+					redis,
+					"operator",
+					"ops_dream_proposal",
+					OPERATOR_WRITE_RATE_LIMIT,
+				);
+				if (!rateLimit.allowed) {
+					return Response.json(
+						{
+							error: `Rate limit exceeded for Dream operator proposals. Allowed ${rateLimit.limit} calls per ${RATE_LIMIT_WINDOW_SECONDS} seconds.`,
+						},
+						{ status: 429 },
+					);
+				}
+
+				const body = await request.json();
+				const parsed = z.object({
+					candidate_ids: z.array(z.string().min(1)).max(200).optional(),
+					archive_limit: z.number().int().min(0).max(MAX_OPERATOR_DREAM_ARCHIVE_LIMIT).optional(),
+					promotion_limit: z.number().int().min(0).max(MAX_OPERATOR_DREAM_ARCHIVE_LIMIT).optional(),
+					note: z.string().max(500).optional(),
+					scheduled_equivalent: z.boolean().default(false),
+				}).parse(body);
+
+				const result = await runDreamProposal(env, {
+					trigger: "manual",
+					actorId: parsed.scheduled_equivalent ? "scheduled:dream-governance" : "operator",
+					candidateIds: parsed.candidate_ids ?? null,
+					archiveLimit: parsed.scheduled_equivalent
+						? SCHEDULED_DREAM_ARCHIVE_LIMIT
+						: parsed.archive_limit ?? null,
+					promotionLimit: parsed.scheduled_equivalent
+						? SCHEDULED_DREAM_PROMOTION_LIMIT
+						: parsed.promotion_limit ?? null,
+					note: parsed.note ??
+						(parsed.scheduled_equivalent
+							? "Operator-triggered scheduled-equivalent Dream governance proposal."
+							: "Operator-triggered Dream governance proposal."),
+				});
+
+				return Response.json(result, { headers: { "Content-Type": "application/json" } });
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				return Response.json({ error: msg }, { status: 500 });
+			}
+		}
+
+		if (url.pathname === "/ops/dream/apply" && request.method === "POST") {
+			if (!isAuthorizedOperatorRequest(request, env)) {
+				return Response.json({ error: "Unauthorized" }, { status: 401 });
+			}
+
+			try {
+				const redis = createRedisClient(env);
+				const rateLimit = await applyFixedWindowRateLimit(
+					redis,
+					"operator",
+					"ops_dream_apply",
+					OPERATOR_WRITE_RATE_LIMIT,
+				);
+				if (!rateLimit.allowed) {
+					return Response.json(
+						{
+							error: `Rate limit exceeded for Dream operator apply calls. Allowed ${rateLimit.limit} calls per ${RATE_LIMIT_WINDOW_SECONDS} seconds.`,
+						},
+						{ status: 429 },
+					);
+				}
+
+				const body = await request.json();
+				const parsed = z.object({
+					proposal_id: z.string().min(1).max(200),
+					mutation_id: z.string().min(1).max(200),
+					reason: z.string().min(1).max(500),
+					operation_ids: z.array(z.string().min(1).max(300)).max(100).optional(),
+				}).parse(body);
+
+				const result = await applyDreamProposal(env, {
+					proposalId: parsed.proposal_id,
+					mutationId: parsed.mutation_id,
+					reason: parsed.reason,
+					actorId: "operator",
+					operationIds: parsed.operation_ids ?? null,
+				});
+				return Response.json(result, { headers: { "Content-Type": "application/json" } });
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				return Response.json({ error: msg }, { status: 500 });
+			}
+		}
+
 		if (url.pathname === "/ops/dream/restore" && request.method === "POST") {
 			if (!isAuthorizedOperatorRequest(request, env)) {
 				return Response.json({ error: "Unauthorized" }, { status: 401 });
@@ -2018,14 +2447,12 @@ export default {
 		return withCors(request, response);
 	},
 	async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-		const promise = runDreamCycle(env, {
-			dryRun: false,
-			trigger: "scheduled",
-			cron: controller.cron,
-			scheduledTime: controller.scheduledTime,
+		const promise = runDreamProposal(env, {
+			trigger: "manual",
+			actorId: "scheduled:dream-governance",
 			archiveLimit: SCHEDULED_DREAM_ARCHIVE_LIMIT,
 			promotionLimit: SCHEDULED_DREAM_PROMOTION_LIMIT,
-			note: "Nightly Dream maintenance run.",
+			note: `Nightly Dream governance proposal. cron=${controller.cron} scheduled_time=${controller.scheduledTime}`,
 		});
 		ctx.waitUntil(promise);
 		const result = await promise;

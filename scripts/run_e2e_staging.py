@@ -15,6 +15,7 @@ from typing import Any
 import requests
 
 from _memory_migration import append_report, utc_now_iso
+from _validation_ledger import ValidationGateRecord, write_validation_gate
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -39,22 +40,10 @@ def run_command(cmd: list[str], env: dict[str, str] | None = None) -> dict[str, 
 
 def build_staging_seed_env() -> dict[str, str]:
     env = dict(os.environ)
-    env["STAGING_UPSTASH_REDIS_REST_URL"] = get_env_value(
-        "STAGING_UPSTASH_REDIS_REST_URL",
-        "UPSTASH_REDIS_REST_URL",
-    ) or ""
-    env["STAGING_UPSTASH_REDIS_REST_TOKEN"] = get_env_value(
-        "STAGING_UPSTASH_REDIS_REST_TOKEN",
-        "UPSTASH_REDIS_REST_TOKEN",
-    ) or ""
-    env["STAGING_UPSTASH_VECTOR_REST_URL"] = get_env_value(
-        "STAGING_UPSTASH_VECTOR_REST_URL",
-        "UPSTASH_VECTOR_REST_URL",
-    ) or ""
-    env["STAGING_UPSTASH_VECTOR_REST_TOKEN"] = get_env_value(
-        "STAGING_UPSTASH_VECTOR_REST_TOKEN",
-        "UPSTASH_VECTOR_REST_TOKEN",
-    ) or ""
+    env["STAGING_UPSTASH_REDIS_REST_URL"] = get_env_value("STAGING_UPSTASH_REDIS_REST_URL") or ""
+    env["STAGING_UPSTASH_REDIS_REST_TOKEN"] = get_env_value("STAGING_UPSTASH_REDIS_REST_TOKEN") or ""
+    env["STAGING_UPSTASH_VECTOR_REST_URL"] = get_env_value("STAGING_UPSTASH_VECTOR_REST_URL") or ""
+    env["STAGING_UPSTASH_VECTOR_REST_TOKEN"] = get_env_value("STAGING_UPSTASH_VECTOR_REST_TOKEN") or ""
     openai_key = get_env_value("STAGING_OPENAI_API_KEY", "OPENAI_API_KEY")
     if openai_key:
         env["STAGING_OPENAI_API_KEY"] = openai_key
@@ -202,6 +191,7 @@ def mcp_post(
     access_token: str,
     payload: dict[str, Any],
     session_id: str | None = None,
+    path: str = "/mcp",
 ) -> requests.Response:
     headers = {
         "Content-Type": "application/json",
@@ -210,7 +200,7 @@ def mcp_post(
     }
     if session_id:
         headers["Mcp-Session-Id"] = session_id
-    return session.post(f"{base_url.rstrip('/')}/mcp", json=payload, headers=headers, timeout=30)
+    return session.post(f"{base_url.rstrip('/')}{path}", json=payload, headers=headers, timeout=30)
 
 
 def call_mcp_tool(
@@ -222,6 +212,7 @@ def call_mcp_tool(
     rpc_id: int,
     name: str,
     arguments: dict[str, Any],
+    path: str = "/mcp",
 ) -> tuple[requests.Response, dict[str, Any], Any]:
     response = mcp_post(
         session,
@@ -237,10 +228,321 @@ def call_mcp_tool(
             },
         },
         session_id=session_id,
+        path=path,
     )
     response_data = parse_sse_json(response.text)
     payload = json.loads(response_data["result"]["content"][0]["text"])
     return response, response_data, payload
+
+
+def require_step_ok(step: dict[str, Any]) -> None:
+    if not step.get("ok"):
+        raise RuntimeError(f"Staging lifecycle step failed: {step.get('name')}: {step}")
+
+
+def select_archive_operation(proposal: dict[str, Any]) -> dict[str, Any]:
+    operations = proposal.get("operations")
+    if not isinstance(operations, list):
+        raise RuntimeError("Dream proposal did not include an operations list")
+    for operation in operations:
+        if isinstance(operation, dict) and operation.get("type") == "archive_entry":
+            operation_id = operation.get("operation_id")
+            entry_id = operation.get("entry_id")
+            if isinstance(operation_id, str) and isinstance(entry_id, str):
+                return operation
+    raise RuntimeError("Dream proposal did not include an archive_entry operation for rollback drill")
+
+
+def call_openai_read_only_compatibility(base_url: str) -> list[dict[str, Any]]:
+    session, access_token = oauth_client_flow(base_url, scope="mcp:read")
+    steps: list[dict[str, Any]] = []
+    initialize_response = mcp_post(
+        session,
+        base_url,
+        access_token,
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "staging-openai-readonly-check", "version": "1.0"},
+            },
+        },
+        path="/openai/mcp",
+    )
+    initialize_data = parse_sse_json(initialize_response.text)
+    session_id = initialize_response.headers.get("mcp-session-id")
+    steps.append(
+        {
+            "name": "openai_mcp_initialize",
+            "status_code": initialize_response.status_code,
+            "ok": initialize_response.ok and "result" in initialize_data and bool(session_id),
+            "body": initialize_data,
+        }
+    )
+    if not session_id:
+        return steps
+
+    tools_response = mcp_post(
+        session,
+        base_url,
+        access_token,
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+        session_id=session_id,
+        path="/openai/mcp",
+    )
+    tools_data = parse_sse_json(tools_response.text)
+    tool_names = [tool["name"] for tool in tools_data.get("result", {}).get("tools", [])]
+    forbidden_tools = {
+        "run_dream_proposal",
+        "grade_dream_proposal",
+        "apply_dream_proposal",
+        "rollback_dream_apply",
+        "rollback_dream_run",
+        "restore_archived",
+        "set_context_type",
+        "rebuild_thin_index",
+    }
+    steps.append(
+        {
+            "name": "openai_mcp_read_only_tools",
+            "status_code": tools_response.status_code,
+            "ok": tools_response.ok
+            and "get_index" in tool_names
+            and "search" in tool_names
+            and forbidden_tools.isdisjoint(tool_names),
+            "body": {
+                "tool_names": tool_names,
+                "forbidden_present": sorted(forbidden_tools.intersection(tool_names)),
+            },
+        }
+    )
+    return steps
+
+
+def call_dream_governance_lifecycle(base_url: str) -> list[dict[str, Any]]:
+    operator_token = get_env_value("STAGING_DREAM_OPERATOR_TOKEN", "DREAM_OPERATOR_TOKEN")
+    if not operator_token:
+        return [
+            {
+                "name": "dream_governance_lifecycle",
+                "ok": False,
+                "status_code": None,
+                "body": {"error": "STAGING_DREAM_OPERATOR_TOKEN or DREAM_OPERATOR_TOKEN not set"},
+            }
+        ]
+
+    session, access_token = oauth_client_flow(
+        base_url,
+        scope="mcp:read mcp:write",
+        operator_token=operator_token,
+    )
+    steps: list[dict[str, Any]] = []
+    initialize_response = mcp_post(
+        session,
+        base_url,
+        access_token,
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "staging-dream-governance-lifecycle", "version": "1.0"},
+            },
+        },
+    )
+    initialize_data = parse_sse_json(initialize_response.text)
+    session_id = initialize_response.headers.get("mcp-session-id")
+    init_step = {
+        "name": "dream_lifecycle_initialize",
+        "status_code": initialize_response.status_code,
+        "ok": initialize_response.ok and "result" in initialize_data and bool(session_id),
+        "body": initialize_data,
+    }
+    steps.append(init_step)
+    require_step_ok(init_step)
+    assert session_id is not None
+
+    proposal_response, _, proposal = call_mcp_tool(
+        session,
+        base_url,
+        access_token,
+        session_id,
+        rpc_id=2,
+        name="run_dream_proposal",
+        arguments={
+            "candidate_ids": ["ke_fixture_archive_001"],
+            "archive_limit": 1,
+            "promotion_limit": 0,
+            "note": "Staging R5 lifecycle proposal",
+        },
+    )
+    archive_operation = select_archive_operation(proposal)
+    operation_id = str(archive_operation["operation_id"])
+    archived_entry_id = str(archive_operation["entry_id"])
+    proposal_step = {
+        "name": "dream_lifecycle_proposal",
+        "status_code": proposal_response.status_code,
+        "ok": proposal_response.ok
+        and proposal.get("status") == "proposal_ready"
+        and proposal.get("dry_run") is True
+        and proposal.get("operation_count", 0) >= 1
+        and archived_entry_id == "ke_fixture_archive_001",
+        "body": {
+            "run_id": proposal.get("run_id"),
+            "operation_id": operation_id,
+            "entry_id": archived_entry_id,
+            "operation_count": proposal.get("operation_count"),
+            "counts": proposal.get("counts"),
+        },
+    }
+    steps.append(proposal_step)
+    require_step_ok(proposal_step)
+    proposal_id = str(proposal["run_id"])
+
+    grade_response, _, grade = call_mcp_tool(
+        session,
+        base_url,
+        access_token,
+        session_id,
+        rpc_id=3,
+        name="grade_dream_proposal",
+        arguments={"proposal_id": proposal_id},
+    )
+    grade_step = {
+        "name": "dream_lifecycle_grade",
+        "status_code": grade_response.status_code,
+        "ok": grade_response.ok
+        and grade.get("proposal_id") == proposal_id
+        and grade.get("passed") is True
+        and grade.get("status") == "passed",
+        "body": {
+            "proposal_id": grade.get("proposal_id"),
+            "grade_id": grade.get("grade_id"),
+            "passed": grade.get("passed"),
+            "issues": grade.get("issues"),
+        },
+    }
+    steps.append(grade_step)
+    require_step_ok(grade_step)
+
+    apply_mutation_id = f"staging-r5-apply-{uuid.uuid4().hex}"
+    rollback_mutation_id = f"staging-r5-rollback-{uuid.uuid4().hex}"
+    apply_response, _, apply_payload = call_mcp_tool(
+        session,
+        base_url,
+        access_token,
+        session_id,
+        rpc_id=4,
+        name="apply_dream_proposal",
+        arguments={
+            "proposal_id": proposal_id,
+            "mutation_id": apply_mutation_id,
+            "reason": "Staging R5 rollback drill apply",
+            "require_grade_pass": True,
+            "grade_id": str(grade.get("grade_id")),
+            "operation_ids": [operation_id],
+        },
+    )
+    apply_step = {
+        "name": "dream_lifecycle_apply",
+        "status_code": apply_response.status_code,
+        "ok": apply_response.ok
+        and apply_payload.get("ok") is True
+        and apply_payload.get("applied_count") == 1,
+        "body": {
+            "proposal_id": apply_payload.get("proposal_id"),
+            "mutation_id": apply_payload.get("mutation_id"),
+            "applied_count": apply_payload.get("applied_count"),
+            "operation_ids": apply_payload.get("operation_ids"),
+            "before_revisions": apply_payload.get("before_revisions"),
+            "after_revisions": apply_payload.get("after_revisions"),
+        },
+    }
+    steps.append(apply_step)
+    require_step_ok(apply_step)
+
+    post_apply_deep_response, _, post_apply_deep = call_mcp_tool(
+        session,
+        base_url,
+        access_token,
+        session_id,
+        rpc_id=5,
+        name="get_deep",
+        arguments={"id": archived_entry_id},
+    )
+    post_apply_metadata = post_apply_deep.get("metadata") or {}
+    post_apply_step = {
+        "name": "dream_lifecycle_verify_post_apply",
+        "status_code": post_apply_deep_response.status_code,
+        "ok": post_apply_deep_response.ok
+        and post_apply_deep.get("id") == archived_entry_id
+        and post_apply_metadata.get("archived") is True,
+        "body": post_apply_deep,
+    }
+    steps.append(post_apply_step)
+    require_step_ok(post_apply_step)
+
+    rollback_response, _, rollback_payload = call_mcp_tool(
+        session,
+        base_url,
+        access_token,
+        session_id,
+        rpc_id=6,
+        name="rollback_dream_apply",
+        arguments={
+            "proposal_id": proposal_id,
+            "apply_mutation_id": apply_mutation_id,
+            "rollback_mutation_id": rollback_mutation_id,
+            "reason": "Staging R5 rollback drill restore",
+            "operation_ids": [operation_id],
+        },
+    )
+    rollback_step = {
+        "name": "dream_lifecycle_rollback",
+        "status_code": rollback_response.status_code,
+        "ok": rollback_response.ok
+        and rollback_payload.get("ok") is True
+        and rollback_payload.get("rolled_back_count") == 1,
+        "body": {
+            "proposal_id": rollback_payload.get("proposal_id"),
+            "apply_mutation_id": rollback_payload.get("apply_mutation_id"),
+            "rollback_mutation_id": rollback_payload.get("rollback_mutation_id"),
+            "rolled_back_count": rollback_payload.get("rolled_back_count"),
+            "conflicts": rollback_payload.get("conflicts"),
+            "error": rollback_payload.get("error"),
+            "raw": rollback_payload,
+        },
+    }
+    steps.append(rollback_step)
+    require_step_ok(rollback_step)
+
+    post_rollback_deep_response, _, post_rollback_deep = call_mcp_tool(
+        session,
+        base_url,
+        access_token,
+        session_id,
+        rpc_id=7,
+        name="get_deep",
+        arguments={"id": archived_entry_id},
+    )
+    post_rollback_metadata = post_rollback_deep.get("metadata") or {}
+    post_rollback_step = {
+        "name": "dream_lifecycle_verify_post_rollback",
+        "status_code": post_rollback_deep_response.status_code,
+        "ok": post_rollback_deep_response.ok
+        and post_rollback_deep.get("id") == archived_entry_id
+        and post_rollback_metadata.get("archived") is False,
+        "body": post_rollback_deep,
+    }
+    steps.append(post_rollback_step)
+    require_step_ok(post_rollback_step)
+
+    return steps
 
 
 def call_mcp_sequence(base_url: str, archived_entry_id: str | None = None) -> list[dict[str, Any]]:
@@ -470,14 +772,60 @@ def call_mcp_sequence(base_url: str, archived_entry_id: str | None = None) -> li
 
 def build_verify_env() -> dict[str, str]:
     env = dict(os.environ)
-    env["UPSTASH_REDIS_REST_URL"] = get_env_value("STAGING_UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_URL") or ""
-    env["UPSTASH_REDIS_REST_TOKEN"] = get_env_value("STAGING_UPSTASH_REDIS_REST_TOKEN", "UPSTASH_REDIS_REST_TOKEN") or ""
-    env["UPSTASH_VECTOR_REST_URL"] = get_env_value("STAGING_UPSTASH_VECTOR_REST_URL", "UPSTASH_VECTOR_REST_URL") or ""
-    env["UPSTASH_VECTOR_REST_TOKEN"] = get_env_value("STAGING_UPSTASH_VECTOR_REST_TOKEN", "UPSTASH_VECTOR_REST_TOKEN") or ""
+    env["UPSTASH_REDIS_REST_URL"] = get_env_value("STAGING_UPSTASH_REDIS_REST_URL") or ""
+    env["UPSTASH_REDIS_REST_TOKEN"] = get_env_value("STAGING_UPSTASH_REDIS_REST_TOKEN") or ""
+    env["UPSTASH_VECTOR_REST_URL"] = get_env_value("STAGING_UPSTASH_VECTOR_REST_URL") or ""
+    env["UPSTASH_VECTOR_REST_TOKEN"] = get_env_value("STAGING_UPSTASH_VECTOR_REST_TOKEN") or ""
     openai_key = get_env_value("STAGING_OPENAI_API_KEY", "OPENAI_API_KEY")
     if openai_key:
         env["OPENAI_API_KEY"] = openai_key
     return env
+
+
+def write_staging_validation_gate(report_path: Path, passed: bool, issues: list[str], report: dict[str, Any]) -> None:
+    env_backup = {
+        "UPSTASH_REDIS_REST_URL": os.getenv("UPSTASH_REDIS_REST_URL"),
+        "UPSTASH_REDIS_REST_TOKEN": os.getenv("UPSTASH_REDIS_REST_TOKEN"),
+    }
+    try:
+        sys.path.insert(0, str(REPO_ROOT / "distillation"))
+        from storage.redis_client import RedisClient  # noqa: PLC0415
+
+        os.environ["UPSTASH_REDIS_REST_URL"] = get_env_value("STAGING_UPSTASH_REDIS_REST_URL") or ""
+        os.environ["UPSTASH_REDIS_REST_TOKEN"] = get_env_value("STAGING_UPSTASH_REDIS_REST_TOKEN") or ""
+        if not os.environ["UPSTASH_REDIS_REST_URL"] or not os.environ["UPSTASH_REDIS_REST_TOKEN"]:
+            raise RuntimeError("Missing staging Redis env for validation ledger write")
+        redis_client = RedisClient()
+        write_validation_gate(
+            redis_client.client,
+            ValidationGateRecord(
+                gate="staging_e2e",
+                passed=passed,
+                issues=issues,
+                report_path=str(report_path),
+                details={
+                    "base_url": report.get("base_url"),
+                    "bundle": report.get("bundle"),
+                    "step_count": len(report.get("steps", [])),
+                    "rollback_drill": any(
+                        step.get("name") == "dream_lifecycle_rollback" and step.get("ok") is True
+                        for step in report.get("steps", [])
+                    ),
+                    "openai_read_only": any(
+                        step.get("name") == "openai_mcp_read_only_tools" and step.get("ok") is True
+                        for step in report.get("steps", [])
+                    ),
+                },
+            ),
+        )
+    except Exception as error:  # noqa: BLE001
+        print(f"WARNING: could not write staging validation ledger: {error}")
+    finally:
+        for key, value in env_backup.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def main() -> int:
@@ -492,6 +840,11 @@ def main() -> int:
     parser.add_argument("--skip-seed", action="store_true")
     parser.add_argument("--skip-dream", action="store_true")
     parser.add_argument("--skip-write-path", action="store_true")
+    parser.add_argument(
+        "--legacy-smoke",
+        action="store_true",
+        help="Run the older Dream dry-run/live-archive smoke instead of the PRD R5 governance lifecycle.",
+    )
     args = parser.parse_args()
 
     report: dict[str, Any] = {
@@ -519,7 +872,21 @@ def main() -> int:
         report["steps"].append({"name": "health_check", **call_health(args.base_url)})
         report["steps"].append({"name": "operator_unauthorized", **call_operator_unauthorized(args.base_url)})
         archived_entry_id: str | None = None
-        if not args.skip_dream:
+        if not args.skip_dream and not args.legacy_smoke:
+            try:
+                lifecycle_steps = call_dream_governance_lifecycle(args.base_url)
+            except Exception as error:  # noqa: BLE001
+                lifecycle_steps = [
+                    {
+                        "name": "dream_governance_lifecycle",
+                        "ok": False,
+                        "status_code": None,
+                        "body": {"error": str(error)},
+                    }
+                ]
+            report["steps"].extend(lifecycle_steps)
+            report["steps"].extend(call_openai_read_only_compatibility(args.base_url))
+        elif not args.skip_dream:
             dry_run_step = call_dream_run(
                 args.base_url,
                 dry_run=True,
@@ -585,6 +952,13 @@ def main() -> int:
         step for step in report["steps"]
         if ("returncode" in step and step["returncode"] != 0) or ("ok" in step and not step["ok"])
     ]
+    if not args.dry_run:
+        write_staging_validation_gate(
+            report_path,
+            passed=not failed_steps,
+            issues=[str(step.get("name", "unknown_step")) for step in failed_steps],
+            report=report,
+        )
     return 1 if failed_steps else 0
 
 

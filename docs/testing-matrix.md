@@ -30,7 +30,7 @@ The repo already has useful probes, but they are not yet a unified testing stack
 - production-shaped Dream canary:
   - [test-dream-live.ts](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/knowledge-system/cloudflare-mcp/mcp-server/scripts/test-dream-live.ts)
 
-That is now complemented by local Worker-runtime tests, CI, and a staging write-path harness. The testing stack is no longer just probes; it now covers the main deployed control paths as well.
+That is now complemented by local Worker-runtime tests, CI, and a staging governance-lifecycle harness. The testing stack is no longer just probes; it now covers the main deployed control paths as well.
 
 ## Environments
 
@@ -155,17 +155,19 @@ Target:
 
 - local integration, staging, and production canary
 
-### Layer E: Dream Lifecycle
+### Layer E: Dream Governance Lifecycle
 
 Validates:
 
-- dry-run candidate generation
-- bounded live archive
 - snapshot creation
-- restore behavior
-- MCP context override after restore
-- post-restore non-prunability
-- `dream:last_run` stability when `setAsLatest=false`
+- proposal generation
+- deterministic grading
+- bounded apply
+- post-apply verification
+- conflict-aware rollback
+- post-rollback verification
+- `/openai/mcp` read-only compatibility
+- validation-ledger recording
 
 Target:
 
@@ -180,10 +182,13 @@ Before calling the system healthy, the following should be green:
 - `/health` is green in staging
 - deterministic fixture queries return expected tiers/order
 - MCP `initialize`, `tools/list`, `get_index`, `search`, and `get_context` all pass in staging
-- MCP `restore_archived` and `set_context_type` pass in staging with `mcp:write`
 - unauthorized operator calls return `401`
-- Dream dry run returns expected archive candidates for the seeded fixture set
-- bounded live Dream archive/restore canary passes
+- Dream proposal generation returns the expected archive candidate for the seeded fixture set
+- deterministic Dream grading passes
+- bounded apply archives the fixture candidate
+- rollback restores the fixture candidate
+- `/openai/mcp` exposes read tools only
+- `validation:gate_status` records the staging E2E result
 - final `verify_memory_consistency.py --full --strict` returns `0` issues in staging
 
 ## Repo Layout
@@ -240,7 +245,9 @@ Current staging smoke coverage:
 - reset and seed staging Redis/Vector from a fixture bundle
 - hit staging `/health`
 - verify unauthorized operator requests return `401`
-- run a staging Dream dry run through the operator endpoint
+- run Dream proposal -> grade -> apply -> verify -> rollback -> verify through MCP write tools
+- confirm `/openai/mcp` remains read-only
+- record the result in the validation ledger as `staging_e2e`
 - complete OAuth discovery, registration, authorization, and token exchange
 - run MCP `initialize`, `tools/list`, `get_index`, `search`, `get_context`, and `get_dream_summary`
 - finish with `verify_memory_consistency.py --full --strict` against staging data
@@ -252,7 +259,7 @@ Current local Worker-runtime coverage:
 - landing page routing
 - OAuth discovery, client registration, authorization code, and token exchange
 - MCP `initialize`, `tools/list`, `get_index`, and `get_dream_summary`
-- scheduled Dream dry-run trigger wiring
+- scheduled Dream proposal-first trigger wiring
 
 ## Near-Term Build Order
 

@@ -27,6 +27,40 @@ interface RunDreamOptions {
 	setAsLatest?: boolean;
 }
 
+interface RunDreamProposalOptions {
+	trigger: "manual" | "local_test";
+	actorId: string;
+	note?: string | null;
+	candidateIds?: string[] | null;
+	archiveLimit?: number | null;
+	promotionLimit?: number | null;
+}
+
+interface ApplyDreamProposalOptions {
+	proposalId: string;
+	mutationId: string;
+	actorId: string;
+	reason: string;
+	operationIds?: string[] | null;
+	requireGradePass?: boolean | null;
+	gradeId?: string | null;
+}
+
+interface GradeDreamProposalOptions {
+	proposalId: string;
+	actorId: string;
+	rubricVersion?: string | null;
+}
+
+interface RollbackDreamApplyOptions {
+	proposalId: string;
+	applyMutationId: string;
+	rollbackMutationId: string;
+	actorId: string;
+	reason: string;
+	operationIds?: string[] | null;
+}
+
 interface LoadedEntry {
 	id: string;
 	type: EntryType;
@@ -141,6 +175,8 @@ const DREAM_LOCK_KEY = "dream:lock";
 const DREAM_LAST_RUN_KEY = "dream:last_run";
 const DREAM_LAST_ATTEMPT_KEY = "dream:last_attempt";
 const DREAM_RUN_PREFIX = "dream:run:";
+const DREAM_RUN_INDEX_KEY = "dream:runs:index";
+const DREAM_LAST_PROPOSAL_KEY = "dream:proposal:last";
 const ARCHIVED_PREFIX = "archived";
 const DREAM_LOCK_TTL_SECONDS = 30 * 60;
 const DREAM_LOCK_STALE_AFTER_SECONDS = 5 * 60;
@@ -255,6 +291,14 @@ function toStringArray(value: unknown): string[] {
 	return value.filter((item): item is string => typeof item === "string");
 }
 
+function toObjectArray(value: unknown): Record<string, unknown>[] {
+	if (!Array.isArray(value)) return [];
+	return value.filter(
+		(item): item is Record<string, unknown> =>
+			Boolean(item) && typeof item === "object" && !Array.isArray(item),
+	);
+}
+
 function latestIsoTimestamp(...values: Array<string | null | undefined>): string | null {
 	let latestValue: string | null = null;
 	let latestTime = Number.NEGATIVE_INFINITY;
@@ -316,8 +360,8 @@ function getEntryLabel(entry: Record<string, unknown>): string {
 
 function getEntryUpdatedAt(entry: Record<string, unknown>, metadata: Record<string, unknown>): string | null {
 	return (
-		(typeof metadata.last_seen === "string" && metadata.last_seen) ||
 		(typeof metadata.updated_at === "string" && metadata.updated_at) ||
+		(typeof metadata.last_seen === "string" && metadata.last_seen) ||
 		(typeof metadata.last_touched === "string" && metadata.last_touched) ||
 		null
 	);
@@ -383,15 +427,25 @@ function appendConsolidationNote(metadata: Record<string, unknown>, note: string
 }
 
 function setVectorMetadataBase(entry: LoadedEntry): Record<string, unknown> {
+	const sourceConversations = toStringArray(entry.metadata.source_conversations);
 	const base = {
 		type: entry.type,
 		archived: Boolean(entry.metadata.archived),
+		classification_status:
+			typeof entry.metadata.classification_status === "string" && entry.metadata.classification_status.length > 0
+				? entry.metadata.classification_status
+				: "pending",
 		context_type: entry.metadata.context_type,
 		injection_tier: entry.metadata.injection_tier,
 		salience_score: entry.metadata.salience_score,
 		mention_count: entry.metadata.mention_count,
 		last_consolidated: entry.metadata.last_consolidated,
 		updated_at: entry.updatedAt,
+		...(sourceConversations.length === 1
+			? { source: sourceConversations[0] }
+			: sourceConversations.length > 1
+				? { source: sourceConversations.slice(0, 3).join(",") }
+				: {}),
 	};
 	if (entry.type === "knowledge") {
 		return {
@@ -547,14 +601,7 @@ function detectPairContradictionReason(left: LoadedEntry, right: LoadedEntry): s
 		return opposingMarkerReason;
 	}
 
-	if (getEntryConfidence(left) === "low" || getEntryConfidence(right) === "low") {
-		return null;
-	}
-
-	const similarity = computeTokenSimilarity(leftNarrative, rightNarrative);
-	return similarity <= 0.12
-		? `same topic has materially different views (similarity=${similarity.toFixed(2)})`
-		: null;
+	return null;
 }
 
 function detectInternalContradictionReason(entry: LoadedEntry): string | null {
@@ -1176,6 +1223,27 @@ async function writeRunRecord(
 	}
 }
 
+async function updateDreamRunIndex(redis: Redis, runId: string, maxRuns = 50): Promise<void> {
+	const rawIndex = await redis.get(DREAM_RUN_INDEX_KEY);
+	const existing = Array.isArray(rawIndex)
+		? rawIndex
+		: typeof rawIndex === "string"
+			? (() => {
+				try {
+					const parsed = JSON.parse(rawIndex);
+					return Array.isArray(parsed) ? parsed : [];
+				} catch {
+					return [];
+				}
+			})()
+			: [];
+	const nextIndex = [
+		runId,
+		...existing.filter((value): value is string => typeof value === "string" && value !== runId),
+	].slice(0, maxRuns);
+	await redis.set(DREAM_RUN_INDEX_KEY, JSON.stringify(nextIndex));
+}
+
 function isDreamLockStale(lockState: DreamLockState | null, nowMs: number = Date.now()): boolean {
 	if (!lockState) {
 		return true;
@@ -1714,6 +1782,1246 @@ async function storeMutationResult(
 	await redis.set(getMutationResultKey(mutationId), JSON.stringify(result), {
 		ex: MUTATION_RESULT_TTL_SECONDS,
 	});
+}
+
+function getExpectedRevision(entry: LoadedEntry): number {
+	return toOptionalInteger(entry.metadata.revision) ?? 0;
+}
+
+function summarizeProposalEntry(entry: LoadedEntry): Record<string, unknown> {
+	return {
+		id: entry.id,
+		type: entry.type,
+		label: entry.label,
+		context_type: entry.contextType,
+		injection_tier: entry.injectionTier,
+		salience_score: entry.salienceScore,
+		mention_count: entry.mentionCount,
+		access_count: entry.accessCount,
+		updated_at: entry.updatedAt,
+		expected_revision: getExpectedRevision(entry),
+	};
+}
+
+function buildDreamProposalOperations(
+	duplicatePlans: DuplicateMergePlan[],
+	contradictionPlans: ContradictionPlan[],
+	entriesById: Map<string, LoadedEntry>,
+	promotionCandidates: LoadedEntry[],
+	archiveCandidates: LoadedEntry[],
+): Array<Record<string, unknown>> {
+	const operations: Array<Record<string, unknown>> = [];
+
+	for (const plan of duplicatePlans) {
+		const archiveIds = plan.duplicates.map((entry) => entry.id);
+		const expectedRevisions: Record<string, number> = {
+			[plan.canonical.id]: getExpectedRevision(plan.canonical),
+		};
+		for (const duplicate of plan.duplicates) {
+			expectedRevisions[duplicate.id] = getExpectedRevision(duplicate);
+		}
+		operations.push({
+			operation_id: `dop_merge_${plan.canonical.id}_${archiveIds.join("_")}`,
+			type: "duplicate_merge",
+			keep_id: plan.canonical.id,
+			archive_ids: archiveIds,
+			expected_revisions: expectedRevisions,
+			reason: "Dream detected compatible duplicate entries with the same normalized topic fingerprint.",
+			evidence: {
+				fingerprint: plan.fingerprint,
+				canonical: summarizeProposalEntry(plan.canonical),
+				duplicates: plan.duplicates.map(summarizeProposalEntry),
+			},
+			rollback: {
+				method: "restore_archived",
+				entry_ids: archiveIds,
+			},
+		});
+	}
+
+	for (const plan of contradictionPlans) {
+		const expectedRevisions = Object.fromEntries(
+			plan.entryIds.map((entryId) => [
+				entryId,
+				entriesById.has(entryId) ? getExpectedRevision(entriesById.get(entryId)!) : null,
+			]),
+		);
+		operations.push({
+			operation_id: `dop_contest_${plan.entryIds.join("_")}`,
+			type: "mark_contested",
+			entry_ids: plan.entryIds,
+			expected_revisions: expectedRevisions,
+			reason: "Dream detected contradictory views that require operator review before consolidation.",
+			evidence: {
+				label: plan.label,
+				reasons: plan.reasons,
+			},
+			rollback: {
+				method: "update_entry",
+				restore_state: "active",
+			},
+		});
+	}
+
+	for (const entry of promotionCandidates) {
+		operations.push({
+			operation_id: `dop_promote_${entry.id}`,
+			type: "promote_context_type",
+			entry_id: entry.id,
+			expected_revision: getExpectedRevision(entry),
+			proposed_context_type: defaultInjectionTier(entry.contextType) <= 2
+				? entry.contextType
+				: "recurring_pattern",
+			reason: "Dream found repeated or retrieved task-query memory that is strong enough to become durable recurring context.",
+			evidence: summarizeProposalEntry(entry),
+			rollback: {
+				method: "set_context_type",
+				restore_context_type: entry.contextType,
+			},
+		});
+	}
+
+	for (const entry of archiveCandidates) {
+		operations.push({
+			operation_id: `dop_archive_${entry.id}`,
+			type: "archive_entry",
+			entry_id: entry.id,
+			expected_revision: getExpectedRevision(entry),
+			reason: "Dream found low-salience single-mention memory with no retrieval reinforcement.",
+			evidence: summarizeProposalEntry(entry),
+			rollback: {
+				method: "restore_archived",
+				entry_id: entry.id,
+			},
+		});
+	}
+
+	return operations;
+}
+
+export async function runDreamProposal(
+	env: Env,
+	options: RunDreamProposalOptions,
+): Promise<Record<string, unknown>> {
+	const redis = createRedisClient(env);
+	const createdAt = new Date().toISOString();
+	const runId = `dpr_${createdAt.replace(/[:.]/g, "-")}`;
+
+	const migrationBackfillComplete = await redis.get("migration:backfill_complete");
+	if (!migrationBackfillComplete) {
+		return {
+			schema_version: 1,
+			run_id: runId,
+			status: "skipped_no_backfill",
+			created_at: createdAt,
+			completed_at: new Date().toISOString(),
+			dry_run: true,
+			trigger: options.trigger,
+			actor_id: options.actorId,
+			note: options.note ?? null,
+			next_action: "Backfill must complete before Dream can generate proposals.",
+		};
+	}
+
+	const [knowledgeBatch, projectBatch] = await Promise.all([
+		loadEntryBatchByType(redis, "knowledge"),
+		loadEntryBatchByType(redis, "project"),
+	]);
+	const knowledgeEntries = knowledgeBatch.entries;
+	const projectEntries = projectBatch.entries;
+	const allEntries = [...knowledgeEntries, ...projectEntries];
+	const candidateIdFilter =
+		options.candidateIds && options.candidateIds.length > 0
+			? new Set(options.candidateIds)
+			: null;
+	const candidateEntries = candidateIdFilter
+		? allEntries.filter((entry) => candidateIdFilter.has(entry.id))
+		: allEntries;
+	const { duplicatePlans, contradictionPlans } = buildReplayPlans(candidateEntries);
+	const promotionCandidates = candidateEntries
+		.filter(isPromotionCandidate)
+		.sort(comparePromotionPriority);
+	const archiveCandidates = candidateEntries
+		.filter(isArchiveCandidate)
+		.sort(compareArchivePriority);
+	const promotionCandidatesLimited =
+		typeof options.promotionLimit === "number" && options.promotionLimit >= 0
+			? promotionCandidates.slice(0, options.promotionLimit)
+			: promotionCandidates;
+	const archiveCandidatesLimited =
+		typeof options.archiveLimit === "number" && options.archiveLimit >= 0
+			? archiveCandidates.slice(0, options.archiveLimit)
+			: archiveCandidates;
+	const bucketCounts: Record<DreamBucket, number> = {
+		stable: 0,
+		active: 0,
+		weak: 0,
+		decay_candidate: 0,
+	};
+
+	for (const entry of allEntries) {
+		bucketCounts[classifyBucket(entry)] += 1;
+	}
+
+	const entriesById = new Map(candidateEntries.map((entry) => [entry.id, entry]));
+	const operations = buildDreamProposalOperations(
+		duplicatePlans,
+		contradictionPlans,
+		entriesById,
+		promotionCandidatesLimited,
+		archiveCandidatesLimited,
+	);
+	const candidateRevisions = Object.fromEntries(
+		candidateEntries.map((entry) => [entry.id, getExpectedRevision(entry)]),
+	);
+	const snapshot = {
+		schema_version: 1,
+		run_id: runId,
+		captured_at: createdAt,
+		candidate_ids: candidateEntries.map((entry) => entry.id),
+		candidate_revisions: candidateRevisions,
+		counts: {
+			total_entries: allEntries.length,
+			knowledge_entries: knowledgeEntries.length,
+			project_entries: projectEntries.length,
+			candidate_entries: candidateEntries.length,
+			buckets: bucketCounts,
+		},
+	};
+	const proposal = {
+		schema_version: 1,
+		run_id: runId,
+		status: "proposal_ready",
+		created_at: createdAt,
+		completed_at: new Date().toISOString(),
+		dry_run: true,
+		trigger: options.trigger,
+		actor_id: options.actorId,
+		note: options.note ?? null,
+		candidate_ids: candidateEntries.map((entry) => entry.id),
+		candidate_revisions: candidateRevisions,
+		operation_count: operations.length,
+		operations,
+		counts: {
+			total_entries: allEntries.length,
+			knowledge_entries: knowledgeEntries.length,
+			project_entries: projectEntries.length,
+			candidate_entries: candidateEntries.length,
+			duplicate_merge_candidates: duplicatePlans.length,
+			contradictions_detected: contradictionPlans.length,
+			promotion_candidates: promotionCandidates.length,
+			promotion_limit: options.promotionLimit ?? null,
+			archive_candidates: archiveCandidates.length,
+			archive_limit: options.archiveLimit ?? null,
+			stable: bucketCounts.stable,
+			active: bucketCounts.active,
+			weak: bucketCounts.weak,
+			decay_candidates: bucketCounts.decay_candidate,
+		},
+		requires_operator_review: operations.length > 0,
+		risk_score: duplicatePlans.length > 0 || contradictionPlans.length > 0 ? "medium" : "low",
+		next_action: operations.length > 0
+			? "Review proposed operations and apply them through explicit write tools only."
+			: "No Dream governance operations are proposed for this snapshot.",
+	};
+
+	await redis.set(`${DREAM_RUN_PREFIX}${runId}:snapshot`, JSON.stringify(snapshot));
+	await redis.set(`${DREAM_RUN_PREFIX}${runId}:proposal`, JSON.stringify(proposal));
+	await redis.set(`${DREAM_RUN_PREFIX}${runId}`, JSON.stringify(proposal));
+	await redis.set(DREAM_LAST_PROPOSAL_KEY, JSON.stringify(proposal));
+	await updateDreamRunIndex(redis, runId);
+	return proposal;
+}
+
+function getDreamGradeKey(proposalId: string, gradeId?: string | null): string {
+	return gradeId
+		? `${DREAM_RUN_PREFIX}${proposalId}:grade:${gradeId}`
+		: `${DREAM_RUN_PREFIX}${proposalId}:grade`;
+}
+
+function buildGradeIssue(
+	code: string,
+	message: string,
+	operationId?: string | null,
+): Record<string, unknown> {
+	return {
+		code,
+		message,
+		operation_id: operationId ?? null,
+	};
+}
+
+function gradeDreamProposalRecord(
+	proposal: Record<string, unknown>,
+	options: { actorId: string; rubricVersion?: string | null },
+): Record<string, unknown> {
+	const gradedAt = new Date().toISOString();
+	const proposalId = typeof proposal.run_id === "string" ? proposal.run_id : "unknown_proposal";
+	const operations = toObjectArray(proposal.operations);
+	const candidateIds = new Set(toStringArray(proposal.candidate_ids));
+	const issues: Array<Record<string, unknown>> = [];
+	const allowedOperationTypes = new Set([
+		"archive_entry",
+		"promote_context_type",
+		"mark_contested",
+		"duplicate_merge",
+	]);
+
+	if (proposal.status !== "proposal_ready") {
+		issues.push(buildGradeIssue("proposal_not_ready", `Proposal status is ${String(proposal.status)}`));
+	}
+	if (candidateIds.size === 0 && operations.length > 0) {
+		issues.push(buildGradeIssue("missing_snapshot_candidates", "Mutating proposal has no candidate snapshot ids."));
+	}
+	if (!parseStoredObject(proposal.candidate_revisions) && operations.length > 0) {
+		issues.push(buildGradeIssue("missing_candidate_revisions", "Mutating proposal has no candidate revision map."));
+	}
+
+	const seenOperationIds = new Set<string>();
+	for (const operation of operations) {
+		const operationId = typeof operation.operation_id === "string" ? operation.operation_id : null;
+		const operationType = typeof operation.type === "string" ? operation.type : null;
+		if (!operationId) {
+			issues.push(buildGradeIssue("missing_operation_id", "Operation is missing operation_id."));
+		} else if (seenOperationIds.has(operationId)) {
+			issues.push(buildGradeIssue("duplicate_operation_id", "Operation id is duplicated.", operationId));
+		} else {
+			seenOperationIds.add(operationId);
+		}
+		if (!operationType || !allowedOperationTypes.has(operationType)) {
+			issues.push(buildGradeIssue("unsupported_operation_type", `Unsupported operation type ${String(operationType)}`, operationId));
+		}
+		const touchedIds = getOperationTouchedIds(operation);
+		if (touchedIds.length === 0) {
+			issues.push(buildGradeIssue("operation_touches_no_entries", "Operation does not identify any touched entries.", operationId));
+		}
+		for (const entryId of touchedIds) {
+			if (!candidateIds.has(entryId)) {
+				issues.push(buildGradeIssue("entry_outside_snapshot", `Operation touches ${entryId}, which is outside the proposal snapshot.`, operationId));
+			}
+		}
+		const expectedRevisions = getOperationExpectedRevisions(operation);
+		for (const entryId of touchedIds) {
+			if (expectedRevisions[entryId] === undefined) {
+				issues.push(buildGradeIssue("missing_expected_revision", `Operation is missing expected revision for ${entryId}.`, operationId));
+			}
+		}
+		if (!parseStoredObject(operation.rollback)) {
+			issues.push(buildGradeIssue("missing_rollback_metadata", "Operation is missing rollback metadata.", operationId));
+		}
+		const reason = typeof operation.reason === "string" ? operation.reason.trim() : "";
+		if (!reason) {
+			issues.push(buildGradeIssue("missing_reason", "Operation is missing a reason.", operationId));
+		}
+		if (!parseStoredObject(operation.evidence)) {
+			issues.push(buildGradeIssue("missing_evidence", "Operation is missing evidence.", operationId));
+		}
+	}
+
+	const counts = parseStoredObject(proposal.counts) ?? {};
+	const archiveLimit = toOptionalInteger(counts.archive_limit);
+	const promotionLimit = toOptionalInteger(counts.promotion_limit);
+	const archiveOps = operations.filter((operation) => operation.type === "archive_entry").length;
+	const promotionOps = operations.filter((operation) => operation.type === "promote_context_type").length;
+	if (archiveLimit !== null && archiveOps > archiveLimit) {
+		issues.push(buildGradeIssue("archive_limit_exceeded", `Archive operations ${archiveOps} exceed limit ${archiveLimit}.`));
+	}
+	if (promotionLimit !== null && promotionOps > promotionLimit) {
+		issues.push(buildGradeIssue("promotion_limit_exceeded", `Promotion operations ${promotionOps} exceed limit ${promotionLimit}.`));
+	}
+
+	const passed = issues.length === 0;
+	return {
+		schema_version: 1,
+		grade_id: `dpg_${gradedAt.replace(/[:.]/g, "-")}`,
+		proposal_id: proposalId,
+		graded_at: gradedAt,
+		graded_by: options.actorId,
+		rubric_version: options.rubricVersion ?? "deterministic-v1",
+		status: passed ? "passed" : "failed",
+		passed,
+		hard_fail_count: issues.length,
+		issues,
+		operation_count: operations.length,
+		operation_ids: operations
+			.map((operation) => operation.operation_id)
+			.filter((operationId): operationId is string => typeof operationId === "string"),
+		rubric: {
+			evidence_sufficiency: passed,
+			revision_safety: passed,
+			idempotency_safety: passed,
+			reversibility: passed,
+			blast_radius: passed,
+			retrieval_index_impact: passed,
+			policy_threshold_compliance: passed,
+			operator_review_requirement: operations.length > 0,
+		},
+		next_action: passed
+			? "Proposal passed deterministic hard gates and may be applied through apply_dream_proposal."
+			: "Fix or regenerate the proposal before applying.",
+	};
+}
+
+export async function gradeDreamProposal(
+	env: Env,
+	options: GradeDreamProposalOptions,
+): Promise<Record<string, unknown>> {
+	const redis = createRedisClient(env);
+	const proposal = parseStoredObject(await redis.get(`${DREAM_RUN_PREFIX}${options.proposalId}:proposal`)) ??
+		parseStoredObject(await redis.get(`${DREAM_RUN_PREFIX}${options.proposalId}`));
+	if (!proposal) {
+		return {
+			ok: false,
+			error: "proposal_not_found",
+			proposal_id: options.proposalId,
+		};
+	}
+	const grade = gradeDreamProposalRecord(proposal, {
+		actorId: options.actorId,
+		rubricVersion: options.rubricVersion,
+	});
+	await redis.set(getDreamGradeKey(options.proposalId), JSON.stringify(grade));
+	await redis.set(getDreamGradeKey(options.proposalId, String(grade.grade_id)), JSON.stringify(grade));
+	return grade;
+}
+
+function getEntryTypeFromId(entryId: string): EntryType {
+	return entryId.startsWith("pe_") ? "project" : "knowledge";
+}
+
+function getOperationTouchedIds(operation: Record<string, unknown>): string[] {
+	const ids = new Set<string>();
+	const entryId = typeof operation.entry_id === "string" ? operation.entry_id : null;
+	const keepId = typeof operation.keep_id === "string" ? operation.keep_id : null;
+	if (entryId) ids.add(entryId);
+	if (keepId) ids.add(keepId);
+	for (const value of toStringArray(operation.entry_ids)) ids.add(value);
+	for (const value of toStringArray(operation.archive_ids)) ids.add(value);
+	return [...ids];
+}
+
+function getOperationExpectedRevisions(operation: Record<string, unknown>): Record<string, number> {
+	const expectedRevisions: Record<string, number> = {};
+	const expectedRevisionMap = parseStoredObject(operation.expected_revisions);
+	if (expectedRevisionMap) {
+		for (const [entryId, rawRevision] of Object.entries(expectedRevisionMap)) {
+			const revision = toOptionalInteger(rawRevision);
+			if (revision !== null) {
+				expectedRevisions[entryId] = revision;
+			}
+		}
+	}
+	const entryId = typeof operation.entry_id === "string" ? operation.entry_id : null;
+	const expectedRevision = toOptionalInteger(operation.expected_revision);
+	if (entryId && expectedRevision !== null) {
+		expectedRevisions[entryId] = expectedRevision;
+	}
+	return expectedRevisions;
+}
+
+async function loadTouchedEntries(
+	redis: Redis,
+	entryIds: string[],
+): Promise<Map<string, LoadedEntry>> {
+	const entries = new Map<string, LoadedEntry>();
+	for (const entryId of entryIds) {
+		const loadedEntry = await loadLoadedEntry(redis, getEntryTypeFromId(entryId), entryId);
+		if (loadedEntry) {
+			entries.set(entryId, loadedEntry);
+		}
+	}
+	return entries;
+}
+
+function validateOperationRevisions(
+	operation: Record<string, unknown>,
+	entriesById: Map<string, LoadedEntry>,
+): Record<string, unknown> | null {
+	const operationId = typeof operation.operation_id === "string" ? operation.operation_id : "unknown_operation";
+	for (const entryId of getOperationTouchedIds(operation)) {
+		const entry = entriesById.get(entryId);
+		if (!entry) {
+			return {
+				ok: false,
+				error: "entry_not_found",
+				operation_id: operationId,
+				id: entryId,
+			};
+		}
+		if (entry.metadata.archived === true) {
+			return {
+				ok: false,
+				error: "entry_archived",
+				operation_id: operationId,
+				id: entryId,
+			};
+		}
+	}
+
+	const expectedRevisions = getOperationExpectedRevisions(operation);
+	for (const [entryId, expectedRevision] of Object.entries(expectedRevisions)) {
+		const entry = entriesById.get(entryId);
+		if (!entry) {
+			return {
+				ok: false,
+				error: "entry_not_found",
+				operation_id: operationId,
+				id: entryId,
+			};
+		}
+		const actualRevision = getExpectedRevision(entry);
+		if (actualRevision !== expectedRevision) {
+			return {
+				ok: false,
+				error: "conflict",
+				operation_id: operationId,
+				id: entryId,
+				expected_revision: expectedRevision,
+				actual_revision: actualRevision,
+			};
+		}
+	}
+	return null;
+}
+
+function getOperationReason(operation: Record<string, unknown>, fallback: string): string {
+	return typeof operation.reason === "string" && operation.reason.length > 0
+		? operation.reason
+		: fallback;
+}
+
+async function applyDreamProposalOperation(
+	redis: Redis,
+	vector: Index,
+	operation: Record<string, unknown>,
+	entriesById: Map<string, LoadedEntry>,
+	applyRunId: string,
+	timestamp: string,
+): Promise<Record<string, unknown>> {
+	const operationId = typeof operation.operation_id === "string" ? operation.operation_id : "unknown_operation";
+	const operationType = typeof operation.type === "string" ? operation.type : "unknown";
+
+	if (operationType === "duplicate_merge") {
+		const keepId = typeof operation.keep_id === "string" ? operation.keep_id : null;
+		const archiveIds = toStringArray(operation.archive_ids);
+		if (!keepId || archiveIds.length === 0) {
+			return { ok: false, operation_id: operationId, error: "invalid_duplicate_merge_operation" };
+		}
+		const canonical = entriesById.get(keepId);
+		const duplicates = archiveIds
+			.map((entryId) => entriesById.get(entryId))
+			.filter((entry): entry is LoadedEntry => Boolean(entry));
+		if (!canonical || duplicates.length !== archiveIds.length) {
+			return { ok: false, operation_id: operationId, error: "entry_not_found" };
+		}
+		const result = await applyDuplicateMergePlan(
+			redis,
+			vector,
+			{
+				fingerprint:
+					typeof parseStoredObject(operation.evidence)?.fingerprint === "string"
+						? String(parseStoredObject(operation.evidence)?.fingerprint)
+						: canonical.id,
+				canonical,
+				duplicates,
+			},
+			applyRunId,
+			timestamp,
+		);
+		return { ok: true, operation_id: operationId, type: operationType, result };
+	}
+
+	if (operationType === "mark_contested") {
+		const entryIds = toStringArray(operation.entry_ids);
+		const reasons = toStringArray(parseStoredObject(operation.evidence)?.reasons);
+		const results: Array<Record<string, unknown>> = [];
+		for (const entryId of entryIds) {
+			const entry = entriesById.get(entryId);
+			if (!entry) {
+				return { ok: false, operation_id: operationId, error: "entry_not_found", id: entryId };
+			}
+			results.push(
+				await markEntryContested(
+					redis,
+					vector,
+					entry,
+					reasons.length > 0 ? reasons : [getOperationReason(operation, "Dream proposal contested marker")],
+					entryIds.filter((candidateId) => candidateId !== entryId),
+					applyRunId,
+					timestamp,
+				),
+			);
+		}
+		return { ok: true, operation_id: operationId, type: operationType, results };
+	}
+
+	if (operationType === "promote_context_type") {
+		const entryId = typeof operation.entry_id === "string" ? operation.entry_id : null;
+		const entry = entryId ? entriesById.get(entryId) : null;
+		if (!entry) {
+			return { ok: false, operation_id: operationId, error: "entry_not_found", id: entryId };
+		}
+		const result = await promoteEntry(redis, vector, entry, applyRunId, timestamp);
+		return { ok: true, operation_id: operationId, type: operationType, result };
+	}
+
+	if (operationType === "archive_entry") {
+		const entryId = typeof operation.entry_id === "string" ? operation.entry_id : null;
+		const entry = entryId ? entriesById.get(entryId) : null;
+		if (!entry) {
+			return { ok: false, operation_id: operationId, error: "entry_not_found", id: entryId };
+		}
+		const result = await archiveEntry(
+			redis,
+			vector,
+			entry,
+			applyRunId,
+			timestamp,
+			getOperationReason(operation, "applied Dream proposal archive operation"),
+		);
+		return { ok: true, operation_id: operationId, type: operationType, result };
+	}
+
+	return {
+		ok: false,
+		operation_id: operationId,
+		error: "unsupported_operation_type",
+		type: operationType,
+	};
+}
+
+export async function applyDreamProposal(
+	env: Env,
+	options: ApplyDreamProposalOptions,
+): Promise<Record<string, unknown>> {
+	const redis = createRedisClient(env);
+	const vector = createVectorClient(env);
+	const storedMutation = parseStoredObject(await redis.get(getMutationResultKey(options.mutationId)));
+	if (storedMutation) {
+		return storedMutation;
+	}
+
+	const proposal = parseStoredObject(await redis.get(`${DREAM_RUN_PREFIX}${options.proposalId}:proposal`)) ??
+		parseStoredObject(await redis.get(`${DREAM_RUN_PREFIX}${options.proposalId}`));
+	if (!proposal) {
+		const result = {
+			ok: false,
+			error: "proposal_not_found",
+			proposal_id: options.proposalId,
+			mutation_id: options.mutationId,
+		};
+		await storeMutationResult(redis, options.mutationId, result);
+		return result;
+	}
+
+	if (proposal.status !== "proposal_ready") {
+		const result = {
+			ok: false,
+			error: "proposal_not_applicable",
+			proposal_id: options.proposalId,
+			status: proposal.status ?? null,
+			mutation_id: options.mutationId,
+		};
+		await storeMutationResult(redis, options.mutationId, result);
+		return result;
+	}
+
+	const allOperations = toObjectArray(proposal.operations);
+	const selectedIds = options.operationIds && options.operationIds.length > 0
+		? new Set(options.operationIds)
+		: null;
+	const operations = selectedIds
+		? allOperations.filter((operation) => {
+			const operationId = typeof operation.operation_id === "string" ? operation.operation_id : null;
+			return operationId ? selectedIds.has(operationId) : false;
+		})
+		: allOperations;
+	if (selectedIds && operations.length !== selectedIds.size) {
+		const foundIds = new Set(
+			operations
+				.map((operation) => operation.operation_id)
+				.filter((operationId): operationId is string => typeof operationId === "string"),
+		);
+		const result = {
+			ok: false,
+			error: "operation_not_found",
+			proposal_id: options.proposalId,
+			missing_operation_ids: [...selectedIds].filter((operationId) => !foundIds.has(operationId)),
+			mutation_id: options.mutationId,
+		};
+		await storeMutationResult(redis, options.mutationId, result);
+		return result;
+	}
+	if (operations.length === 0) {
+		const result = {
+			ok: true,
+			proposal_id: options.proposalId,
+			mutation_id: options.mutationId,
+			applied_count: 0,
+			results: [],
+			no_op: true,
+		};
+		await storeMutationResult(redis, options.mutationId, result);
+		return result;
+	}
+
+	if (options.requireGradePass !== false) {
+		const grade = parseStoredObject(await redis.get(getDreamGradeKey(options.proposalId, options.gradeId))) ??
+			parseStoredObject(await redis.get(getDreamGradeKey(options.proposalId)));
+		if (!grade || grade.passed !== true || grade.status !== "passed") {
+			const result = {
+				ok: false,
+				error: "grade_required",
+				proposal_id: options.proposalId,
+				mutation_id: options.mutationId,
+				grade_status: grade?.status ?? null,
+				next_action: "Run grade_dream_proposal and ensure it passes before applying mutating operations.",
+			};
+			await storeMutationResult(redis, options.mutationId, result);
+			return result;
+		}
+		const gradedOperationIds = new Set(toStringArray(grade.operation_ids));
+		const ungradedOperationIds = operations
+			.map((operation) => operation.operation_id)
+			.filter((operationId): operationId is string => typeof operationId === "string")
+			.filter((operationId) => !gradedOperationIds.has(operationId));
+		if (ungradedOperationIds.length > 0) {
+			const result = {
+				ok: false,
+				error: "operation_not_graded",
+				proposal_id: options.proposalId,
+				mutation_id: options.mutationId,
+				operation_ids: ungradedOperationIds,
+			};
+			await storeMutationResult(redis, options.mutationId, result);
+			return result;
+		}
+	}
+
+	const touchedIds = [...new Set(operations.flatMap(getOperationTouchedIds))];
+	const entriesById = await loadTouchedEntries(redis, touchedIds);
+	for (const operation of operations) {
+		const validationError = validateOperationRevisions(operation, entriesById);
+		if (validationError) {
+			const result = {
+				...validationError,
+				proposal_id: options.proposalId,
+				mutation_id: options.mutationId,
+			};
+			await storeMutationResult(redis, options.mutationId, result);
+			return result;
+		}
+	}
+
+	const timestamp = new Date().toISOString();
+	const applyRunId = `apply_${options.proposalId}_${timestamp.replace(/[:.]/g, "-")}`;
+	const beforeRevisions = Object.fromEntries(
+		touchedIds.map((entryId) => [entryId, getExpectedRevision(entriesById.get(entryId)!)]),
+	);
+	const beforeSnapshots = Object.fromEntries(
+		touchedIds.map((entryId) => [
+			entryId,
+			JSON.parse(JSON.stringify(entriesById.get(entryId)!.entry)),
+		]),
+	);
+	const operationResults: Array<Record<string, unknown>> = [];
+
+	for (const operation of operations) {
+		operationResults.push(
+			await applyDreamProposalOperation(
+				redis,
+				vector,
+				operation,
+				entriesById,
+				applyRunId,
+				timestamp,
+			),
+		);
+	}
+
+	if (operationResults.some((result) => result.ok === false)) {
+		const failedResult = {
+			ok: false,
+			error: "operation_failed",
+			proposal_id: options.proposalId,
+			mutation_id: options.mutationId,
+			results: operationResults,
+		};
+		await storeMutationResult(redis, options.mutationId, failedResult);
+		return failedResult;
+	}
+
+	if (operationResults.length > 0) {
+		await rebuildThinIndexSafely(redis, applyRunId);
+	}
+
+	const refreshedEntriesById = await loadTouchedEntries(redis, touchedIds);
+	const afterRevisions = Object.fromEntries(
+		touchedIds.map((entryId) => [
+			entryId,
+			refreshedEntriesById.has(entryId)
+				? getExpectedRevision(refreshedEntriesById.get(entryId)!)
+				: null,
+		]),
+	);
+	const result = {
+		ok: true,
+		proposal_id: options.proposalId,
+		apply_run_id: applyRunId,
+		mutation_id: options.mutationId,
+		applied_at: timestamp,
+		applied_by: options.actorId,
+		applied_count: operationResults.length,
+		operation_ids: operations.map((operation) => operation.operation_id),
+		results: operationResults,
+		before_revisions: beforeRevisions,
+		after_revisions: afterRevisions,
+		before_snapshots: beforeSnapshots,
+		side_effects: {
+			index: "rebuilt",
+		},
+	};
+
+	await redis.set(`${DREAM_RUN_PREFIX}${options.proposalId}:apply:${options.mutationId}`, JSON.stringify(result));
+	await redis.set(`${DREAM_RUN_PREFIX}${options.proposalId}:events`, JSON.stringify([
+		{
+			ts: timestamp,
+			event: "proposal_applied",
+			mutation_id: options.mutationId,
+			actor_id: options.actorId,
+			reason: options.reason,
+			operation_ids: result.operation_ids,
+			ids_affected: touchedIds,
+		},
+	]));
+	await appendMutationLog(redis, {
+		ts: timestamp,
+		mutation_id: options.mutationId,
+		tool: "apply_dream_proposal",
+		client: "mcp",
+		actor_id: options.actorId,
+		request_id: options.mutationId,
+		ids_affected: touchedIds,
+		before_revisions: beforeRevisions,
+		after_revisions: afterRevisions,
+		reason: options.reason,
+		proposal_id: options.proposalId,
+	});
+	await storeMutationResult(redis, options.mutationId, result);
+	return result;
+}
+
+function getRollbackSupportedOperationTypes(): Set<string> {
+	return new Set(["duplicate_merge", "mark_contested", "promote_context_type", "archive_entry"]);
+}
+
+function getApplyAuditKey(proposalId: string, applyMutationId: string): string {
+	return `${DREAM_RUN_PREFIX}${proposalId}:apply:${applyMutationId}`;
+}
+
+function getRollbackAuditKey(proposalId: string, rollbackMutationId: string): string {
+	return `${DREAM_RUN_PREFIX}${proposalId}:rollback:${rollbackMutationId}`;
+}
+
+function getApplyAfterRevision(applyRecord: Record<string, unknown>, entryId: string): number | null {
+	const afterRevisions = parseStoredObject(applyRecord.after_revisions);
+	if (!afterRevisions) return null;
+	return toOptionalInteger(afterRevisions[entryId]);
+}
+
+function getApplyBeforeSnapshot(
+	applyRecord: Record<string, unknown>,
+	entryId: string,
+): Record<string, unknown> | null {
+	const beforeSnapshots = parseStoredObject(applyRecord.before_snapshots);
+	if (!beforeSnapshots) return null;
+	return parseStoredObject(beforeSnapshots[entryId]);
+}
+
+async function validateRollbackCurrentRevisions(
+	redis: Redis,
+	applyRecord: Record<string, unknown>,
+	operations: Record<string, unknown>[],
+): Promise<{ entriesById: Map<string, LoadedEntry>; error: Record<string, unknown> | null }> {
+	const touchedIds = [...new Set(operations.flatMap(getOperationTouchedIds))];
+	const entriesById = await loadTouchedEntries(redis, touchedIds);
+	for (const entryId of touchedIds) {
+		const entry = entriesById.get(entryId);
+		if (!entry) {
+			return {
+				entriesById,
+				error: {
+					ok: false,
+					error: "entry_not_found",
+					id: entryId,
+				},
+			};
+		}
+		const expectedCurrentRevision = getApplyAfterRevision(applyRecord, entryId);
+		if (expectedCurrentRevision === null) {
+			return {
+				entriesById,
+				error: {
+					ok: false,
+					error: "rollback_revision_missing",
+					id: entryId,
+				},
+			};
+		}
+		if (!getApplyBeforeSnapshot(applyRecord, entryId)) {
+			return {
+				entriesById,
+				error: {
+					ok: false,
+					error: "rollback_snapshot_missing",
+					id: entryId,
+				},
+			};
+		}
+		const actualRevision = getExpectedRevision(entry);
+		if (actualRevision !== expectedCurrentRevision) {
+			return {
+				entriesById,
+				error: {
+					ok: false,
+					error: "conflict",
+					id: entryId,
+					expected_revision: expectedCurrentRevision,
+					actual_revision: actualRevision,
+				},
+			};
+		}
+	}
+	return { entriesById, error: null };
+}
+
+async function restoreEntryFromApplySnapshot(
+	env: Env,
+	redis: Redis,
+	vector: Index,
+	applyRecord: Record<string, unknown>,
+	entryId: string,
+	rollbackRunId: string,
+	timestamp: string,
+): Promise<Record<string, unknown>> {
+	const snapshot = getApplyBeforeSnapshot(applyRecord, entryId);
+	if (!snapshot) {
+		return { ok: false, error: "rollback_snapshot_missing", id: entryId };
+	}
+	const entryType = getEntryTypeFromId(entryId);
+	const restoredEntry = normalizeEntry(snapshot, entryType);
+	if (!restoredEntry) {
+		return { ok: false, error: "rollback_snapshot_invalid", id: entryId };
+	}
+	const currentEntry = normalizeEntry(await redis.get(getEntryKey(entryType, entryId)), entryType);
+	const currentRevision = toOptionalInteger((currentEntry?.metadata as Record<string, unknown> | undefined)?.revision) ?? 0;
+	const metadata = (restoredEntry.metadata as Record<string, unknown> | undefined) ?? {};
+	const restoredArchived = metadata.archived === true;
+	metadata.updated_at = timestamp;
+	metadata.updated_by = {
+		actor_id: "dream_rollback",
+		tool: "rollback_dream_apply",
+	};
+	metadata.revision = currentRevision + 1;
+	metadata.last_consolidated = timestamp;
+	appendConsolidationNote(
+		metadata,
+		formatConsolidationNote({
+			timestamp,
+			source: "operator",
+			action: "rollback_dream_apply",
+			detail: `restored snapshot for ${entryId} (${rollbackRunId})`,
+		}),
+	);
+	restoredEntry.metadata = metadata;
+	let restoredLoadedEntry = buildLoadedEntry(entryId, entryType, restoredEntry);
+
+	if (entryType === "knowledge") {
+		const currentState =
+			currentEntry && typeof currentEntry.state === "string" ? currentEntry.state : null;
+		if (currentState) {
+			await redis.srem(`by_state:${currentState}`, entryId);
+		}
+		await redis.srem("by_state:archived", entryId);
+		if (restoredArchived) {
+			await redis.sadd("by_state:archived", entryId);
+		} else {
+			const restoredState =
+				typeof restoredEntry.state === "string" ? restoredEntry.state : "active";
+			await redis.sadd(`by_state:${restoredState}`, entryId);
+		}
+	}
+
+	await syncEntryAccessSignals(redis, restoredLoadedEntry);
+	restoredLoadedEntry = buildLoadedEntry(entryId, entryType, restoredEntry);
+	if (restoredArchived) {
+		await persistEntry(redis, vector, restoredLoadedEntry, { skipVector: true });
+		await deleteVectorEntry(vector, entryId);
+	} else {
+		const embedding = await getEmbedding(env, buildEntryEmbeddingText(restoredLoadedEntry));
+		await persistEntry(redis, vector, restoredLoadedEntry, { embedding });
+	}
+	await patchThinIndexEntry(redis, restoredLoadedEntry, timestamp);
+
+	return {
+		ok: true,
+		id: entryId,
+		type: entryType,
+		archived: restoredArchived,
+		revision: metadata.revision,
+		context_type: restoredLoadedEntry.contextType,
+		injection_tier: restoredLoadedEntry.injectionTier,
+	};
+}
+
+async function rollbackSnapshotOperation(
+	env: Env,
+	redis: Redis,
+	vector: Index,
+	applyRecord: Record<string, unknown>,
+	operation: Record<string, unknown>,
+	rollbackRunId: string,
+	timestamp: string,
+): Promise<Record<string, unknown>> {
+	const results: Array<Record<string, unknown>> = [];
+	for (const entryId of getOperationTouchedIds(operation)) {
+		results.push(
+			await restoreEntryFromApplySnapshot(
+				env,
+				redis,
+				vector,
+				applyRecord,
+				entryId,
+				rollbackRunId,
+				timestamp,
+			),
+		);
+	}
+	return {
+		ok: results.every((result) => result.ok === true),
+		type: operation.type ?? "unknown",
+		results,
+	};
+}
+
+async function rollbackDreamOperation(
+	env: Env,
+	redis: Redis,
+	vector: Index,
+	applyRecord: Record<string, unknown>,
+	operation: Record<string, unknown>,
+	rollbackRunId: string,
+	timestamp: string,
+): Promise<Record<string, unknown>> {
+	const operationId = typeof operation.operation_id === "string" ? operation.operation_id : "unknown_operation";
+	const operationType = typeof operation.type === "string" ? operation.type : "unknown";
+	if (getRollbackSupportedOperationTypes().has(operationType)) {
+		return {
+			operation_id: operationId,
+			...(await rollbackSnapshotOperation(env, redis, vector, applyRecord, operation, rollbackRunId, timestamp)),
+		};
+	}
+	return {
+		ok: false,
+		operation_id: operationId,
+		error: "unsupported_rollback_operation",
+		type: operationType,
+		message: "This operation cannot be fully rolled back from the current apply audit.",
+	};
+}
+
+export async function rollbackDreamApply(
+	env: Env,
+	options: RollbackDreamApplyOptions,
+): Promise<Record<string, unknown>> {
+	const redis = createRedisClient(env);
+	const vector = createVectorClient(env);
+	const storedMutation = parseStoredObject(await redis.get(getMutationResultKey(options.rollbackMutationId)));
+	if (storedMutation) {
+		return storedMutation;
+	}
+
+	const applyRecord = parseStoredObject(await redis.get(getApplyAuditKey(options.proposalId, options.applyMutationId)));
+	if (!applyRecord || applyRecord.ok !== true) {
+		const result = {
+			ok: false,
+			error: "apply_record_not_found",
+			proposal_id: options.proposalId,
+			apply_mutation_id: options.applyMutationId,
+			mutation_id: options.rollbackMutationId,
+		};
+		await storeMutationResult(redis, options.rollbackMutationId, result);
+		return result;
+	}
+
+	const proposal = parseStoredObject(await redis.get(`${DREAM_RUN_PREFIX}${options.proposalId}:proposal`)) ??
+		parseStoredObject(await redis.get(`${DREAM_RUN_PREFIX}${options.proposalId}`));
+	if (!proposal) {
+		const result = {
+			ok: false,
+			error: "proposal_not_found",
+			proposal_id: options.proposalId,
+			mutation_id: options.rollbackMutationId,
+		};
+		await storeMutationResult(redis, options.rollbackMutationId, result);
+		return result;
+	}
+
+	const appliedIds = new Set(toStringArray(applyRecord.operation_ids));
+	const requestedIds = options.operationIds && options.operationIds.length > 0
+		? new Set(options.operationIds)
+		: appliedIds;
+	const operationsById = new Map<string, Record<string, unknown>>();
+	for (const operation of toObjectArray(proposal.operations)) {
+		const operationId = typeof operation.operation_id === "string" ? operation.operation_id : "";
+		if (operationId.length > 0) {
+			operationsById.set(operationId, operation);
+		}
+	}
+	const operations = [...requestedIds].map((operationId) => operationsById.get(operationId)).filter(
+		(operation): operation is Record<string, unknown> => Boolean(operation),
+	);
+	if (operations.length !== requestedIds.size) {
+		const foundIds = new Set(
+			operations.map((operation) => String(operation.operation_id ?? "")),
+		);
+		const result = {
+			ok: false,
+			error: "operation_not_found",
+			missing_operation_ids: [...requestedIds].filter((operationId) => !foundIds.has(operationId)),
+			proposal_id: options.proposalId,
+			mutation_id: options.rollbackMutationId,
+		};
+		await storeMutationResult(redis, options.rollbackMutationId, result);
+		return result;
+	}
+	const notAppliedIds = [...requestedIds].filter((operationId) => !appliedIds.has(operationId));
+	if (notAppliedIds.length > 0) {
+		const result = {
+			ok: false,
+			error: "operation_not_applied",
+			operation_ids: notAppliedIds,
+			proposal_id: options.proposalId,
+			mutation_id: options.rollbackMutationId,
+		};
+		await storeMutationResult(redis, options.rollbackMutationId, result);
+		return result;
+	}
+
+	const unsupportedOperations = operations.filter((operation) => {
+		const operationType = typeof operation.type === "string" ? operation.type : "unknown";
+		return !getRollbackSupportedOperationTypes().has(operationType);
+	});
+	if (unsupportedOperations.length > 0) {
+		const result = {
+			ok: false,
+			error: "unsupported_rollback_operation",
+			proposal_id: options.proposalId,
+			mutation_id: options.rollbackMutationId,
+			unsupported_operations: unsupportedOperations.map((operation) => ({
+				operation_id: operation.operation_id ?? null,
+				type: operation.type ?? null,
+			})),
+		};
+		await storeMutationResult(redis, options.rollbackMutationId, result);
+		return result;
+	}
+
+	const { entriesById, error } = await validateRollbackCurrentRevisions(redis, applyRecord, operations);
+	if (error) {
+		const result = {
+			...error,
+			proposal_id: options.proposalId,
+			apply_mutation_id: options.applyMutationId,
+			mutation_id: options.rollbackMutationId,
+		};
+		await storeMutationResult(redis, options.rollbackMutationId, result);
+		return result;
+	}
+
+	const timestamp = new Date().toISOString();
+	const rollbackRunId = `rollback_${options.proposalId}_${timestamp.replace(/[:.]/g, "-")}`;
+	const touchedIds = [...new Set(operations.flatMap(getOperationTouchedIds))];
+	const beforeRevisions = Object.fromEntries(
+		touchedIds.map((entryId) => [entryId, getExpectedRevision(entriesById.get(entryId)!)]),
+	);
+	const rollbackResults: Array<Record<string, unknown>> = [];
+	for (const operation of [...operations].reverse()) {
+		rollbackResults.push(
+			await rollbackDreamOperation(env, redis, vector, applyRecord, operation, rollbackRunId, timestamp),
+		);
+	}
+
+	if (rollbackResults.some((result) => result.ok === false)) {
+		const failedResult = {
+			ok: false,
+			error: "rollback_failed",
+			proposal_id: options.proposalId,
+			apply_mutation_id: options.applyMutationId,
+			mutation_id: options.rollbackMutationId,
+			results: rollbackResults,
+		};
+		await storeMutationResult(redis, options.rollbackMutationId, failedResult);
+		return failedResult;
+	}
+
+	await rebuildThinIndexSafely(redis, rollbackRunId);
+	const refreshedEntriesById = await loadTouchedEntries(redis, touchedIds);
+	const afterRevisions = Object.fromEntries(
+		touchedIds.map((entryId) => [
+			entryId,
+			refreshedEntriesById.has(entryId)
+				? getExpectedRevision(refreshedEntriesById.get(entryId)!)
+				: null,
+		]),
+	);
+	const result = {
+		ok: true,
+		proposal_id: options.proposalId,
+		apply_mutation_id: options.applyMutationId,
+		rollback_run_id: rollbackRunId,
+		mutation_id: options.rollbackMutationId,
+		rolled_back_at: timestamp,
+		rolled_back_by: options.actorId,
+		rolled_back_count: rollbackResults.length,
+		operation_ids: operations.map((operation) => operation.operation_id),
+		results: rollbackResults,
+		before_revisions: beforeRevisions,
+		after_revisions: afterRevisions,
+		side_effects: {
+			index: "rebuilt",
+		},
+	};
+
+	await redis.set(getRollbackAuditKey(options.proposalId, options.rollbackMutationId), JSON.stringify(result));
+	await redis.set(`${DREAM_RUN_PREFIX}${options.proposalId}:events`, JSON.stringify([
+		{
+			ts: timestamp,
+			event: "proposal_rollback",
+			mutation_id: options.rollbackMutationId,
+			apply_mutation_id: options.applyMutationId,
+			actor_id: options.actorId,
+			reason: options.reason,
+			operation_ids: result.operation_ids,
+			ids_affected: touchedIds,
+		},
+	]));
+	await appendMutationLog(redis, {
+		ts: timestamp,
+		mutation_id: options.rollbackMutationId,
+		tool: "rollback_dream_apply",
+		client: "mcp",
+		actor_id: options.actorId,
+		request_id: options.rollbackMutationId,
+		ids_affected: touchedIds,
+		before_revisions: beforeRevisions,
+		after_revisions: afterRevisions,
+		reason: options.reason,
+		proposal_id: options.proposalId,
+		apply_mutation_id: options.applyMutationId,
+	});
+	await storeMutationResult(redis, options.rollbackMutationId, result);
+	return result;
 }
 
 async function syncEntryAccessSignals(redis: Redis, entry: LoadedEntry): Promise<void> {

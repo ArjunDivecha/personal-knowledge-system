@@ -36,6 +36,7 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+.pks/
 
 # Local GitHub Actions runner
 .github-runner/

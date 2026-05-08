@@ -241,6 +241,41 @@ beforeEach(() => {
 				archive_candidates: 78,
 			},
 		},
+		"dream:runs:index": ["dr_2026-03-28T03-00-00-000Z"],
+		"dream:run:dr_2026-03-28T03-00-00-000Z": {
+			run_id: "dr_2026-03-28T03-00-00-000Z",
+			run_at: "2026-03-28T03:00:00.000Z",
+			completed_at: "2026-03-28T03:01:00.000Z",
+			status: "completed",
+			trigger: "scheduled",
+			dry_run: true,
+			counts: {
+				archive_candidates: 78,
+			},
+		},
+		"dream:run:dr_2026-03-28T03-00-00-000Z:events": [
+			{ phase: "survey", status: "completed" },
+		],
+		"validation:gate_status": {
+			schema_version: 1,
+			updated_at: "2026-05-07T18:40:36+00:00",
+			overall_status: "green",
+			overall_passed: true,
+			gates: {
+				verify_memory_full_strict: {
+					status: "pass",
+					passed: true,
+					report_path: "/tmp/verify.json",
+				},
+			},
+		},
+		"validation:last": {
+			schema_version: 1,
+			gate: "verify_memory_full_strict",
+			status: "pass",
+			passed: true,
+			report_path: "/tmp/verify.json",
+		},
 			"knowledge:ke_quant": {
 				id: "ke_quant",
 				type: "knowledge",
@@ -458,6 +493,14 @@ describe("OAuth and MCP integration", () => {
 					"search",
 					"create_entry",
 					"get_dream_summary",
+					"get_validation_status",
+					"list_dream_runs",
+					"get_dream_run",
+					"get_dream_events",
+					"run_dream_proposal",
+					"grade_dream_proposal",
+					"apply_dream_proposal",
+					"rollback_dream_apply",
 					"add_insight",
 					"archive_entry",
 					"consolidate_entries",
@@ -522,6 +565,57 @@ describe("OAuth and MCP integration", () => {
 		const dreamSummary = JSON.parse(dreamText) as Record<string, unknown>;
 		expect(dreamSummary.status).toBe("completed");
 		expect((dreamSummary.counts as Record<string, unknown>).archive_candidates).toBe(78);
+
+		const validationResponse = await dispatch(
+			new IncomingRequest(`${baseUrl}/mcp`, {
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${accessToken}`,
+					accept: "application/json, text/event-stream",
+					"content-type": "application/json",
+					"mcp-session-id": sessionId!,
+				},
+				body: JSON.stringify({
+					jsonrpc: "2.0",
+					id: 5,
+					method: "tools/call",
+					params: {
+						name: "get_validation_status",
+						arguments: {},
+					},
+				}),
+			}),
+		);
+		const validationEnvelope = await readRpcEnvelope(validationResponse);
+		const validationResult = validationEnvelope.result as Record<string, unknown>;
+		const validationText = ((validationResult.content as Array<Record<string, unknown>>)[0].text as string);
+		const validationStatus = JSON.parse(validationText) as Record<string, any>;
+		expect(validationStatus.gate_status.overall_status).toBe("green");
+
+		const listRunsResponse = await dispatch(
+			new IncomingRequest(`${baseUrl}/mcp`, {
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${accessToken}`,
+					accept: "application/json, text/event-stream",
+					"content-type": "application/json",
+					"mcp-session-id": sessionId!,
+				},
+				body: JSON.stringify({
+					jsonrpc: "2.0",
+					id: 6,
+					method: "tools/call",
+					params: {
+						name: "list_dream_runs",
+						arguments: { limit: 5 },
+					},
+				}),
+			}),
+		);
+		const listRunsEnvelope = await readRpcEnvelope(listRunsResponse);
+		const listRunsText = (((listRunsEnvelope.result as Record<string, unknown>).content as Array<Record<string, unknown>>)[0].text as string);
+		const listRuns = JSON.parse(listRunsText) as Record<string, any>;
+		expect(listRuns.runs[0].run_id).toBe("dr_2026-03-28T03-00-00-000Z");
 	});
 
 	it("grants write scope for standard /mcp OAuth requests", async () => {
@@ -619,6 +713,10 @@ describe("OAuth and MCP integration", () => {
 				"search",
 				"get_deep",
 				"get_dream_summary",
+				"get_validation_status",
+				"list_dream_runs",
+				"get_dream_run",
+				"get_dream_events",
 				"github",
 			]),
 			);
@@ -628,8 +726,13 @@ describe("OAuth and MCP integration", () => {
 			expect(tools).not.toContain("create_entry");
 			expect(tools).not.toContain("restore_entry");
 			expect(tools).not.toContain("restore_archived");
+			expect(tools).not.toContain("run_dream_proposal");
+			expect(tools).not.toContain("grade_dream_proposal");
+			expect(tools).not.toContain("rollback_dream_apply");
 			expect(tools).not.toContain("set_context_type");
 			expect(tools).not.toContain("update_entry");
+			expect(tools).not.toContain("apply_dream_proposal");
+			expect(tools).not.toContain("rollback_dream_run");
 	});
 
 	it("accepts OpenAI resource-scoped OAuth requests on /openai/mcp", async () => {

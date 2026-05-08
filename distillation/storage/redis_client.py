@@ -30,6 +30,8 @@ from config import UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN
 from models.entries import KnowledgeEntry, ProjectEntry
 from models.thin_index import ThinIndex
 
+REDIS_MGET_BATCH_SIZE = 100
+
 
 class RedisClient:
     """
@@ -80,6 +82,20 @@ class RedisClient:
                 return False, f"Unexpected value: {value}"
         except Exception as e:
             return False, f"Redis connection failed: {str(e)}"
+
+    def _scan_keys(self, match: str) -> list[str]:
+        keys = []
+        cursor: int | str = 0
+        while True:
+            cursor, batch = self.client.scan(cursor, match=match, count=100)
+            keys.extend(batch)
+            if cursor == 0 or cursor == "0":
+                return keys
+
+    def _iter_mget_values(self, keys: list[str], batch_size: int = REDIS_MGET_BATCH_SIZE):
+        for start in range(0, len(keys), batch_size):
+            batch = keys[start:start + batch_size]
+            yield from self.client.mget(*batch)
     
     # -------------------------------------------------------------------------
     # KNOWLEDGE ENTRIES
@@ -109,25 +125,16 @@ class RedisClient:
         self.client.sadd(state_key, entry.id)
         self._sync_classification_pending(entry.id, entry.metadata.classification_status if entry.metadata else None)
     
-    def get_all_knowledge_entries(self) -> list[KnowledgeEntry]:
+    def get_all_knowledge_entries(self, batch_size: int = REDIS_MGET_BATCH_SIZE) -> list[KnowledgeEntry]:
         """Get all knowledge entries."""
         entries = []
-        
-        # Scan for all knowledge keys
-        cursor = 0
-        while True:
-            cursor, keys = self.client.scan(cursor, match="knowledge:*", count=100)
-            
-            for key in keys:
-                data = self.client.get(key)
-                if data:
-                    if isinstance(data, str):
-                        data = json.loads(data)
-                    entries.append(KnowledgeEntry.from_dict(data))
-            
-            if cursor == 0:
-                break
-        
+        keys = self._scan_keys(match="knowledge:*")
+        for data in self._iter_mget_values(keys, batch_size=batch_size):
+            if data:
+                if isinstance(data, str):
+                    data = json.loads(data)
+                entries.append(KnowledgeEntry.from_dict(data))
+
         return entries
     
     def delete_knowledge_entry(self, entry_id: str):
@@ -162,24 +169,16 @@ class RedisClient:
         self.client.sadd(status_key, entry.id)
         self._sync_classification_pending(entry.id, entry.metadata.classification_status if entry.metadata else None)
     
-    def get_all_project_entries(self) -> list[ProjectEntry]:
+    def get_all_project_entries(self, batch_size: int = REDIS_MGET_BATCH_SIZE) -> list[ProjectEntry]:
         """Get all project entries."""
         entries = []
-        
-        cursor = 0
-        while True:
-            cursor, keys = self.client.scan(cursor, match="project:*", count=100)
-            
-            for key in keys:
-                data = self.client.get(key)
-                if data:
-                    if isinstance(data, str):
-                        data = json.loads(data)
-                    entries.append(ProjectEntry.from_dict(data))
-            
-            if cursor == 0:
-                break
-        
+        keys = self._scan_keys(match="project:*")
+        for data in self._iter_mget_values(keys, batch_size=batch_size):
+            if data:
+                if isinstance(data, str):
+                    data = json.loads(data)
+                entries.append(ProjectEntry.from_dict(data))
+
         return entries
     
     def delete_project_entry(self, entry_id: str):

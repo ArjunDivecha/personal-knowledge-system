@@ -4,8 +4,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const redisMock = vi.hoisted(() => ({
 	get: vi.fn(),
+	set: vi.fn(),
+	incr: vi.fn(),
 	scard: vi.fn(),
 	llen: vi.fn(),
+	lpush: vi.fn(),
+	ltrim: vi.fn(),
 }));
 
 vi.mock("@upstash/redis/cloudflare", () => ({
@@ -43,8 +47,12 @@ async function dispatch(request: Request): Promise<Response> {
 beforeEach(() => {
 	vi.clearAllMocks();
 	redisMock.get.mockResolvedValue(null);
+	redisMock.set.mockResolvedValue("OK");
+	redisMock.incr.mockResolvedValue(1);
 	redisMock.scard.mockResolvedValue(0);
 	redisMock.llen.mockResolvedValue(0);
+	redisMock.lpush.mockResolvedValue(1);
+	redisMock.ltrim.mockResolvedValue("OK");
 });
 
 describe("Worker HTTP routes", () => {
@@ -68,6 +76,20 @@ describe("Worker HTTP routes", () => {
 				archive_candidates: 78,
 			},
 		};
+		const lastDreamProposal = {
+			run_id: "dpr_2026-03-28T07-10-00-000Z",
+			created_at: "2026-03-28T07:10:00.000Z",
+			status: "proposal_ready",
+			actor_id: "scheduled:dream-governance",
+			risk_score: "low",
+			operations: [
+				{ operation_id: "dop_archive_ke_1", type: "archive_entry" },
+				{ operation_id: "dop_archive_ke_2", type: "archive_entry" },
+			],
+			counts: {
+				archive_candidates: 83,
+			},
+		};
 
 		redisMock.get.mockImplementation(async (key: string) => {
 			switch (key) {
@@ -75,6 +97,8 @@ describe("Worker HTTP routes", () => {
 					return rawIndex;
 				case "dream:last_run":
 					return lastDreamRun;
+				case "dream:proposal:last":
+					return lastDreamProposal;
 				case "migration:backfill_complete":
 					return "2026-03-27T05:29:20+00:00";
 				default:
@@ -94,6 +118,13 @@ describe("Worker HTTP routes", () => {
 		expect(payload.migration_backfill_complete).toBe("2026-03-27T05:29:20+00:00");
 		expect(payload.last_dream_status).toBe("completed");
 		expect(payload.last_dream_archive_candidate_count).toBe(78);
+		expect(payload.last_dream_proposal_run).toBe("dpr_2026-03-28T07-10-00-000Z");
+		expect(payload.last_dream_proposal_at).toBe("2026-03-28T07:10:00.000Z");
+		expect(payload.last_dream_proposal_status).toBe("proposal_ready");
+		expect(payload.last_dream_proposal_actor).toBe("scheduled:dream-governance");
+		expect(payload.last_dream_proposal_operation_count).toBe(2);
+		expect(payload.last_dream_proposal_risk).toBe("low");
+		expect(payload.last_dream_proposal_archive_candidate_count).toBe(83);
 		expect(payload.reconsolidation_error_count_today).toBe(0);
 		expect(payload.pending_classification_count).toBe(0);
 		expect(payload.thin_index).toEqual(
@@ -119,6 +150,115 @@ describe("Worker HTTP routes", () => {
 
 		expect(response.status).toBe(401);
 		expect(await response.json()).toEqual({ error: "Unauthorized" });
+	});
+
+	it("rejects unauthorized Dream proposal apply calls", async () => {
+		const response = await dispatch(
+			new IncomingRequest("https://example.com/ops/dream/apply", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					proposal_id: "dpr_missing",
+					mutation_id: "mut_missing",
+					reason: "test unauthorized apply",
+				}),
+			}),
+		);
+
+		expect(response.status).toBe(401);
+		expect(await response.json()).toEqual({ error: "Unauthorized" });
+	});
+
+	it("serves authorized Dream proposal apply through the operator endpoint", async () => {
+		const response = await dispatch(
+			new IncomingRequest("https://example.com/ops/dream/apply", {
+				method: "POST",
+				headers: {
+					authorization: "Bearer test-dream-operator-token",
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({
+					proposal_id: "dpr_missing",
+					mutation_id: "mut_missing_apply",
+					reason: "test authorized apply",
+				}),
+			}),
+		);
+
+		expect(response.status).toBe(200);
+		const payload = (await response.json()) as Record<string, unknown>;
+		expect(payload).toMatchObject({
+			ok: false,
+			error: "proposal_not_found",
+			proposal_id: "dpr_missing",
+			mutation_id: "mut_missing_apply",
+		});
+		expect(redisMock.set).toHaveBeenCalledWith(
+			"mutation_result:mut_missing_apply",
+			expect.any(String),
+			expect.objectContaining({ ex: expect.any(Number) }),
+		);
+	});
+
+	it("runs an authorized scheduled-equivalent Dream proposal without live mutation", async () => {
+		redisMock.get.mockImplementation(async (key: string) => {
+			if (key === "migration:backfill_complete") {
+				return "2026-03-27T05:29:20+00:00";
+			}
+			if (key === "knowledge:ke_candidate") {
+				return {
+					id: "ke_candidate",
+					type: "knowledge",
+					domain: "Low salience candidate",
+					state: "active",
+					current_view: "Tiny one-off memory",
+					confidence: "low",
+					related_knowledge: [],
+					metadata: {
+						schema_version: 2,
+						context_type: "task_query",
+						injection_tier: 3,
+						salience_score: 0.01,
+						mention_count: 1,
+						access_count: 0,
+						source_conversations: ["conv_candidate"],
+						archived: false,
+					},
+				};
+			}
+			return null;
+		});
+		redisMock.scan = vi.fn()
+			.mockResolvedValueOnce(["0", ["knowledge:ke_candidate"]])
+			.mockResolvedValueOnce(["0", []]);
+		redisMock.mget = vi.fn().mockResolvedValue([await redisMock.get("knowledge:ke_candidate")]);
+
+		const response = await dispatch(
+			new IncomingRequest("https://example.com/ops/dream/proposal", {
+				method: "POST",
+				headers: {
+					authorization: "Bearer test-dream-operator-token",
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({ scheduled_equivalent: true }),
+			}),
+		);
+
+		expect(response.status).toBe(200);
+		const payload = (await response.json()) as Record<string, any>;
+		expect(payload.status).toBe("proposal_ready");
+		expect(payload.actor_id).toBe("scheduled:dream-governance");
+		expect(payload.counts.archive_limit).toBe(10);
+		expect(payload.counts.promotion_limit).toBe(10);
+		expect(payload.dry_run).toBe(true);
+		expect(redisMock.set).toHaveBeenCalledWith(
+			"dream:proposal:last",
+			expect.any(String),
+		);
+		expect(redisMock.set).not.toHaveBeenCalledWith(
+			expect.stringMatching(/^knowledge:/),
+			expect.anything(),
+		);
 	});
 
 	it("serves the landing page", async () => {
