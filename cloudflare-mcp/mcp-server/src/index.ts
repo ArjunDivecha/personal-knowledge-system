@@ -2219,6 +2219,60 @@ const defaultHandler = {
 			}
 		}
 
+		if (url.pathname === "/ops/dream/proposal" && request.method === "POST") {
+			if (!isAuthorizedOperatorRequest(request, env)) {
+				return Response.json({ error: "Unauthorized" }, { status: 401 });
+			}
+
+			try {
+				const redis = createRedisClient(env);
+				const rateLimit = await applyFixedWindowRateLimit(
+					redis,
+					"operator",
+					"ops_dream_proposal",
+					OPERATOR_WRITE_RATE_LIMIT,
+				);
+				if (!rateLimit.allowed) {
+					return Response.json(
+						{
+							error: `Rate limit exceeded for Dream operator proposals. Allowed ${rateLimit.limit} calls per ${RATE_LIMIT_WINDOW_SECONDS} seconds.`,
+						},
+						{ status: 429 },
+					);
+				}
+
+				const body = await request.json();
+				const parsed = z.object({
+					candidate_ids: z.array(z.string().min(1)).max(200).optional(),
+					archive_limit: z.number().int().min(0).max(MAX_OPERATOR_DREAM_ARCHIVE_LIMIT).optional(),
+					promotion_limit: z.number().int().min(0).max(MAX_OPERATOR_DREAM_ARCHIVE_LIMIT).optional(),
+					note: z.string().max(500).optional(),
+					scheduled_equivalent: z.boolean().default(false),
+				}).parse(body);
+
+				const result = await runDreamProposal(env, {
+					trigger: "manual",
+					actorId: parsed.scheduled_equivalent ? "scheduled:dream-governance" : "operator",
+					candidateIds: parsed.candidate_ids ?? null,
+					archiveLimit: parsed.scheduled_equivalent
+						? SCHEDULED_DREAM_ARCHIVE_LIMIT
+						: parsed.archive_limit ?? null,
+					promotionLimit: parsed.scheduled_equivalent
+						? SCHEDULED_DREAM_PROMOTION_LIMIT
+						: parsed.promotion_limit ?? null,
+					note: parsed.note ??
+						(parsed.scheduled_equivalent
+							? "Operator-triggered scheduled-equivalent Dream governance proposal."
+							: "Operator-triggered Dream governance proposal."),
+				});
+
+				return Response.json(result, { headers: { "Content-Type": "application/json" } });
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				return Response.json({ error: msg }, { status: 500 });
+			}
+		}
+
 		if (url.pathname === "/ops/dream/restore" && request.method === "POST") {
 			if (!isAuthorizedOperatorRequest(request, env)) {
 				return Response.json({ error: "Unauthorized" }, { status: 401 });

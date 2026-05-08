@@ -29,12 +29,12 @@ class CheckOvernightDreamRunTests(unittest.TestCase):
 
     def test_validate_dream_proposal_passes_for_scheduled_proposal(self) -> None:
         now_utc = datetime(2026, 3, 28, 15, 0, tzinfo=UTC)
-        run_at = "2026-03-28T07:10:41+00:00"
+        created_at = "2026-03-28T07:10:41+00:00"
         health = {
             "status": "ok",
         }
         dream_proposal = {
-            "run_at": run_at,
+            "created_at": created_at,
             "status": "proposal_ready",
             "trigger": "manual",
             "actor_id": "scheduled:dream-governance",

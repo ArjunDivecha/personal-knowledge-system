@@ -255,8 +255,12 @@ def validate_dream_proposal(
     expected_latest_start = expected_boundary + timedelta(minutes=max_start_delay_minutes)
 
     run_at_raw = dream_proposal.get("run_at")
+    timestamp_field = "run_at"
     if not isinstance(run_at_raw, str):
-        issues.append("Dream proposal is missing run_at")
+        run_at_raw = dream_proposal.get("created_at")
+        timestamp_field = "created_at"
+    if not isinstance(run_at_raw, str):
+        issues.append("Dream proposal is missing run_at or created_at")
         run_at = None
     else:
         run_at = parse_iso_datetime(run_at_raw)
@@ -302,11 +306,11 @@ def validate_dream_proposal(
     if run_at is not None:
         if run_at < expected_boundary:
             issues.append(
-                f"Latest scheduled Dream proposal is too old: run_at={run_at.isoformat()} expected_after={expected_boundary.isoformat()}",
+                f"Latest scheduled Dream proposal is too old: {timestamp_field}={run_at.isoformat()} expected_after={expected_boundary.isoformat()}",
             )
         if run_at > expected_latest_start:
             issues.append(
-                f"Latest scheduled Dream proposal started later than expected window: run_at={run_at.isoformat()} latest_expected={expected_latest_start.isoformat()}",
+                f"Latest scheduled Dream proposal started later than expected window: {timestamp_field}={run_at.isoformat()} latest_expected={expected_latest_start.isoformat()}",
             )
 
     if health.get("status") != "ok":
@@ -368,7 +372,7 @@ def main() -> int:
                     "base_url": args.base_url,
                     "expected_boundary_utc": validation.expected_boundary_utc,
                     "expected_boundary_local": validation.expected_boundary_local,
-                    "dream_run_at": dream_proposal.get("run_at"),
+                    "dream_run_at": dream_proposal.get("run_at") or dream_proposal.get("created_at"),
                     "dream_status": dream_proposal.get("status"),
                     "dream_actor_id": dream_proposal.get("actor_id"),
                 },
