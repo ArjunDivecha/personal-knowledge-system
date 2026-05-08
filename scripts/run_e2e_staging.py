@@ -514,6 +514,8 @@ def call_dream_governance_lifecycle(base_url: str) -> list[dict[str, Any]]:
             "rollback_mutation_id": rollback_payload.get("rollback_mutation_id"),
             "rolled_back_count": rollback_payload.get("rolled_back_count"),
             "conflicts": rollback_payload.get("conflicts"),
+            "error": rollback_payload.get("error"),
+            "raw": rollback_payload,
         },
     }
     steps.append(rollback_step)
