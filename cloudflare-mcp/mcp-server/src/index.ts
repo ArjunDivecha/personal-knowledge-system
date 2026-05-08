@@ -681,6 +681,7 @@ async function buildHealthPayload(env: Env): Promise<Record<string, unknown>> {
 	const redis = createRedisClient(env);
 	const rawIndex = parseStoredObject(await redis.get("index:current")) ?? {};
 	const dreamSummary = parseStoredObject(await redis.get("dream:last_run"));
+	const dreamProposal = parseStoredObject(await redis.get("dream:proposal:last"));
 	const backfillComplete = await redis.get("migration:backfill_complete");
 	const pendingClassificationCount = await redis.scard("classification:pending") as number;
 	const reconsolidationErrorCount = await redis.llen(getReconsolidationErrorKey()) as number;
@@ -702,6 +703,24 @@ async function buildHealthPayload(env: Env): Promise<Record<string, unknown>> {
 			dreamSummary.counts &&
 			typeof (dreamSummary.counts as Record<string, unknown>).archive_candidates === "number"
 				? (dreamSummary.counts as Record<string, number>).archive_candidates
+				: null,
+		last_dream_proposal_run:
+			typeof dreamProposal?.run_id === "string" ? dreamProposal.run_id : null,
+		last_dream_proposal_at:
+			typeof dreamProposal?.run_at === "string" ? dreamProposal.run_at : null,
+		last_dream_proposal_status:
+			typeof dreamProposal?.status === "string" ? dreamProposal.status : null,
+		last_dream_proposal_actor:
+			typeof dreamProposal?.actor_id === "string" ? dreamProposal.actor_id : null,
+		last_dream_proposal_operation_count:
+			Array.isArray(dreamProposal?.operations) ? dreamProposal.operations.length : null,
+		last_dream_proposal_risk:
+			typeof dreamProposal?.risk_score === "string" ? dreamProposal.risk_score : null,
+		last_dream_proposal_archive_candidate_count:
+			typeof dreamProposal?.counts === "object" &&
+			dreamProposal.counts &&
+			typeof (dreamProposal.counts as Record<string, unknown>).archive_candidates === "number"
+				? (dreamProposal.counts as Record<string, number>).archive_candidates
 				: null,
 		thin_index: {
 			generated_at: typeof rawIndex.generated_at === "string" ? rawIndex.generated_at : null,

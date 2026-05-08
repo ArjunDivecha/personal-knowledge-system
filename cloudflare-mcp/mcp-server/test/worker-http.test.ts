@@ -68,6 +68,20 @@ describe("Worker HTTP routes", () => {
 				archive_candidates: 78,
 			},
 		};
+		const lastDreamProposal = {
+			run_id: "dpr_2026-03-28T07-10-00-000Z",
+			run_at: "2026-03-28T07:10:00.000Z",
+			status: "proposal_ready",
+			actor_id: "scheduled:dream-governance",
+			risk_score: "low",
+			operations: [
+				{ operation_id: "dop_archive_ke_1", type: "archive_entry" },
+				{ operation_id: "dop_archive_ke_2", type: "archive_entry" },
+			],
+			counts: {
+				archive_candidates: 83,
+			},
+		};
 
 		redisMock.get.mockImplementation(async (key: string) => {
 			switch (key) {
@@ -75,6 +89,8 @@ describe("Worker HTTP routes", () => {
 					return rawIndex;
 				case "dream:last_run":
 					return lastDreamRun;
+				case "dream:proposal:last":
+					return lastDreamProposal;
 				case "migration:backfill_complete":
 					return "2026-03-27T05:29:20+00:00";
 				default:
@@ -94,6 +110,12 @@ describe("Worker HTTP routes", () => {
 		expect(payload.migration_backfill_complete).toBe("2026-03-27T05:29:20+00:00");
 		expect(payload.last_dream_status).toBe("completed");
 		expect(payload.last_dream_archive_candidate_count).toBe(78);
+		expect(payload.last_dream_proposal_run).toBe("dpr_2026-03-28T07-10-00-000Z");
+		expect(payload.last_dream_proposal_status).toBe("proposal_ready");
+		expect(payload.last_dream_proposal_actor).toBe("scheduled:dream-governance");
+		expect(payload.last_dream_proposal_operation_count).toBe(2);
+		expect(payload.last_dream_proposal_risk).toBe("low");
+		expect(payload.last_dream_proposal_archive_candidate_count).toBe(83);
 		expect(payload.reconsolidation_error_count_today).toBe(0);
 		expect(payload.pending_classification_count).toBe(0);
 		expect(payload.thin_index).toEqual(
