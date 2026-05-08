@@ -707,7 +707,11 @@ async function buildHealthPayload(env: Env): Promise<Record<string, unknown>> {
 		last_dream_proposal_run:
 			typeof dreamProposal?.run_id === "string" ? dreamProposal.run_id : null,
 		last_dream_proposal_at:
-			typeof dreamProposal?.run_at === "string" ? dreamProposal.run_at : null,
+			typeof dreamProposal?.run_at === "string"
+				? dreamProposal.run_at
+				: typeof dreamProposal?.created_at === "string"
+					? dreamProposal.created_at
+					: null,
 		last_dream_proposal_status:
 			typeof dreamProposal?.status === "string" ? dreamProposal.status : null,
 		last_dream_proposal_actor:

@@ -70,7 +70,7 @@ describe("Worker HTTP routes", () => {
 		};
 		const lastDreamProposal = {
 			run_id: "dpr_2026-03-28T07-10-00-000Z",
-			run_at: "2026-03-28T07:10:00.000Z",
+			created_at: "2026-03-28T07:10:00.000Z",
 			status: "proposal_ready",
 			actor_id: "scheduled:dream-governance",
 			risk_score: "low",
@@ -111,6 +111,7 @@ describe("Worker HTTP routes", () => {
 		expect(payload.last_dream_status).toBe("completed");
 		expect(payload.last_dream_archive_candidate_count).toBe(78);
 		expect(payload.last_dream_proposal_run).toBe("dpr_2026-03-28T07-10-00-000Z");
+		expect(payload.last_dream_proposal_at).toBe("2026-03-28T07:10:00.000Z");
 		expect(payload.last_dream_proposal_status).toBe("proposal_ready");
 		expect(payload.last_dream_proposal_actor).toBe("scheduled:dream-governance");
 		expect(payload.last_dream_proposal_operation_count).toBe(2);
