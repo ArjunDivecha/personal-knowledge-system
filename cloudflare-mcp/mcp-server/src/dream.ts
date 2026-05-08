@@ -42,6 +42,14 @@ interface ApplyDreamProposalOptions {
 	actorId: string;
 	reason: string;
 	operationIds?: string[] | null;
+	requireGradePass?: boolean | null;
+	gradeId?: string | null;
+}
+
+interface GradeDreamProposalOptions {
+	proposalId: string;
+	actorId: string;
+	rubricVersion?: string | null;
 }
 
 interface RollbackDreamApplyOptions {
@@ -2015,6 +2023,158 @@ export async function runDreamProposal(
 	return proposal;
 }
 
+function getDreamGradeKey(proposalId: string, gradeId?: string | null): string {
+	return gradeId
+		? `${DREAM_RUN_PREFIX}${proposalId}:grade:${gradeId}`
+		: `${DREAM_RUN_PREFIX}${proposalId}:grade`;
+}
+
+function buildGradeIssue(
+	code: string,
+	message: string,
+	operationId?: string | null,
+): Record<string, unknown> {
+	return {
+		code,
+		message,
+		operation_id: operationId ?? null,
+	};
+}
+
+function gradeDreamProposalRecord(
+	proposal: Record<string, unknown>,
+	options: { actorId: string; rubricVersion?: string | null },
+): Record<string, unknown> {
+	const gradedAt = new Date().toISOString();
+	const proposalId = typeof proposal.run_id === "string" ? proposal.run_id : "unknown_proposal";
+	const operations = toObjectArray(proposal.operations);
+	const candidateIds = new Set(toStringArray(proposal.candidate_ids));
+	const issues: Array<Record<string, unknown>> = [];
+	const allowedOperationTypes = new Set([
+		"archive_entry",
+		"promote_context_type",
+		"mark_contested",
+		"duplicate_merge",
+	]);
+
+	if (proposal.status !== "proposal_ready") {
+		issues.push(buildGradeIssue("proposal_not_ready", `Proposal status is ${String(proposal.status)}`));
+	}
+	if (candidateIds.size === 0 && operations.length > 0) {
+		issues.push(buildGradeIssue("missing_snapshot_candidates", "Mutating proposal has no candidate snapshot ids."));
+	}
+	if (!parseStoredObject(proposal.candidate_revisions) && operations.length > 0) {
+		issues.push(buildGradeIssue("missing_candidate_revisions", "Mutating proposal has no candidate revision map."));
+	}
+
+	const seenOperationIds = new Set<string>();
+	for (const operation of operations) {
+		const operationId = typeof operation.operation_id === "string" ? operation.operation_id : null;
+		const operationType = typeof operation.type === "string" ? operation.type : null;
+		if (!operationId) {
+			issues.push(buildGradeIssue("missing_operation_id", "Operation is missing operation_id."));
+		} else if (seenOperationIds.has(operationId)) {
+			issues.push(buildGradeIssue("duplicate_operation_id", "Operation id is duplicated.", operationId));
+		} else {
+			seenOperationIds.add(operationId);
+		}
+		if (!operationType || !allowedOperationTypes.has(operationType)) {
+			issues.push(buildGradeIssue("unsupported_operation_type", `Unsupported operation type ${String(operationType)}`, operationId));
+		}
+		const touchedIds = getOperationTouchedIds(operation);
+		if (touchedIds.length === 0) {
+			issues.push(buildGradeIssue("operation_touches_no_entries", "Operation does not identify any touched entries.", operationId));
+		}
+		for (const entryId of touchedIds) {
+			if (!candidateIds.has(entryId)) {
+				issues.push(buildGradeIssue("entry_outside_snapshot", `Operation touches ${entryId}, which is outside the proposal snapshot.`, operationId));
+			}
+		}
+		const expectedRevisions = getOperationExpectedRevisions(operation);
+		for (const entryId of touchedIds) {
+			if (expectedRevisions[entryId] === undefined) {
+				issues.push(buildGradeIssue("missing_expected_revision", `Operation is missing expected revision for ${entryId}.`, operationId));
+			}
+		}
+		if (!parseStoredObject(operation.rollback)) {
+			issues.push(buildGradeIssue("missing_rollback_metadata", "Operation is missing rollback metadata.", operationId));
+		}
+		const reason = typeof operation.reason === "string" ? operation.reason.trim() : "";
+		if (!reason) {
+			issues.push(buildGradeIssue("missing_reason", "Operation is missing a reason.", operationId));
+		}
+		if (!parseStoredObject(operation.evidence)) {
+			issues.push(buildGradeIssue("missing_evidence", "Operation is missing evidence.", operationId));
+		}
+	}
+
+	const counts = parseStoredObject(proposal.counts) ?? {};
+	const archiveLimit = toOptionalInteger(counts.archive_limit);
+	const promotionLimit = toOptionalInteger(counts.promotion_limit);
+	const archiveOps = operations.filter((operation) => operation.type === "archive_entry").length;
+	const promotionOps = operations.filter((operation) => operation.type === "promote_context_type").length;
+	if (archiveLimit !== null && archiveOps > archiveLimit) {
+		issues.push(buildGradeIssue("archive_limit_exceeded", `Archive operations ${archiveOps} exceed limit ${archiveLimit}.`));
+	}
+	if (promotionLimit !== null && promotionOps > promotionLimit) {
+		issues.push(buildGradeIssue("promotion_limit_exceeded", `Promotion operations ${promotionOps} exceed limit ${promotionLimit}.`));
+	}
+
+	const passed = issues.length === 0;
+	return {
+		schema_version: 1,
+		grade_id: `dpg_${gradedAt.replace(/[:.]/g, "-")}`,
+		proposal_id: proposalId,
+		graded_at: gradedAt,
+		graded_by: options.actorId,
+		rubric_version: options.rubricVersion ?? "deterministic-v1",
+		status: passed ? "passed" : "failed",
+		passed,
+		hard_fail_count: issues.length,
+		issues,
+		operation_count: operations.length,
+		operation_ids: operations
+			.map((operation) => operation.operation_id)
+			.filter((operationId): operationId is string => typeof operationId === "string"),
+		rubric: {
+			evidence_sufficiency: passed,
+			revision_safety: passed,
+			idempotency_safety: passed,
+			reversibility: passed,
+			blast_radius: passed,
+			retrieval_index_impact: passed,
+			policy_threshold_compliance: passed,
+			operator_review_requirement: operations.length > 0,
+		},
+		next_action: passed
+			? "Proposal passed deterministic hard gates and may be applied through apply_dream_proposal."
+			: "Fix or regenerate the proposal before applying.",
+	};
+}
+
+export async function gradeDreamProposal(
+	env: Env,
+	options: GradeDreamProposalOptions,
+): Promise<Record<string, unknown>> {
+	const redis = createRedisClient(env);
+	const proposal = parseStoredObject(await redis.get(`${DREAM_RUN_PREFIX}${options.proposalId}:proposal`)) ??
+		parseStoredObject(await redis.get(`${DREAM_RUN_PREFIX}${options.proposalId}`));
+	if (!proposal) {
+		return {
+			ok: false,
+			error: "proposal_not_found",
+			proposal_id: options.proposalId,
+		};
+	}
+	const grade = gradeDreamProposalRecord(proposal, {
+		actorId: options.actorId,
+		rubricVersion: options.rubricVersion,
+	});
+	await redis.set(getDreamGradeKey(options.proposalId), JSON.stringify(grade));
+	await redis.set(getDreamGradeKey(options.proposalId, String(grade.grade_id)), JSON.stringify(grade));
+	return grade;
+}
+
 function getEntryTypeFromId(entryId: string): EntryType {
 	return entryId.startsWith("pe_") ? "project" : "knowledge";
 }
@@ -2293,6 +2453,39 @@ export async function applyDreamProposal(
 		};
 		await storeMutationResult(redis, options.mutationId, result);
 		return result;
+	}
+
+	if (options.requireGradePass !== false) {
+		const grade = parseStoredObject(await redis.get(getDreamGradeKey(options.proposalId, options.gradeId))) ??
+			parseStoredObject(await redis.get(getDreamGradeKey(options.proposalId)));
+		if (!grade || grade.passed !== true || grade.status !== "passed") {
+			const result = {
+				ok: false,
+				error: "grade_required",
+				proposal_id: options.proposalId,
+				mutation_id: options.mutationId,
+				grade_status: grade?.status ?? null,
+				next_action: "Run grade_dream_proposal and ensure it passes before applying mutating operations.",
+			};
+			await storeMutationResult(redis, options.mutationId, result);
+			return result;
+		}
+		const gradedOperationIds = new Set(toStringArray(grade.operation_ids));
+		const ungradedOperationIds = operations
+			.map((operation) => operation.operation_id)
+			.filter((operationId): operationId is string => typeof operationId === "string")
+			.filter((operationId) => !gradedOperationIds.has(operationId));
+		if (ungradedOperationIds.length > 0) {
+			const result = {
+				ok: false,
+				error: "operation_not_graded",
+				proposal_id: options.proposalId,
+				mutation_id: options.mutationId,
+				operation_ids: ungradedOperationIds,
+			};
+			await storeMutationResult(redis, options.mutationId, result);
+			return result;
+		}
 	}
 
 	const touchedIds = [...new Set(operations.flatMap(getOperationTouchedIds))];

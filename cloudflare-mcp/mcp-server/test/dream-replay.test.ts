@@ -136,7 +136,7 @@ vi.mock("openai", () => ({
 	},
 }));
 
-import { applyDreamProposal, compactDreamRunRecordForStorage, rollbackDreamApply, runDreamCycle, runDreamProposal } from "../src/dream";
+import { applyDreamProposal, compactDreamRunRecordForStorage, gradeDreamProposal, rollbackDreamApply, runDreamCycle, runDreamProposal } from "../src/dream";
 
 function buildKnowledgeEntry(params: {
 	id: string;
@@ -423,6 +423,92 @@ describe("Dream replay logic", () => {
 		);
 	});
 
+	it("grades proposals with deterministic hard gates and stores the grade artifact", async () => {
+		const proposal = await runDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{
+				trigger: "local_test",
+				actorId: "test-operator",
+				archiveLimit: 0,
+				promotionLimit: 0,
+			},
+		);
+
+		const grade = await gradeDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{
+				proposalId: String(proposal.run_id),
+				actorId: "test-operator",
+			},
+		);
+
+		expect(grade.status).toBe("passed");
+		expect(grade.passed).toBe(true);
+		expect(grade.hard_fail_count).toBe(0);
+		expect(mockState.store.get(`dream:run:${String(proposal.run_id)}:grade`)).toBeTruthy();
+		expect(mockState.store.get(`dream:run:${String(proposal.run_id)}:grade:${String(grade.grade_id)}`)).toBeTruthy();
+	});
+
+	it("fails deterministic grade when a proposal references entries outside the snapshot", async () => {
+		const proposal = await runDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{
+				trigger: "local_test",
+				actorId: "test-operator",
+				archiveLimit: 0,
+				promotionLimit: 0,
+			},
+		);
+		const storedProposal = getStoredObject(`dream:run:${String(proposal.run_id)}:proposal`);
+		(storedProposal.operations as Array<Record<string, unknown>>).push({
+			operation_id: "dop_bad_external",
+			type: "archive_entry",
+			entry_id: "ke_outside_snapshot",
+			expected_revision: 0,
+			reason: "bad fixture",
+			evidence: { source: "test" },
+			rollback: { method: "restore_archived", entry_id: "ke_outside_snapshot" },
+		});
+		mockState.store.set(`dream:run:${String(proposal.run_id)}:proposal`, storedProposal);
+		mockState.store.set(`dream:run:${String(proposal.run_id)}`, storedProposal);
+
+		const grade = await gradeDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{
+				proposalId: String(proposal.run_id),
+				actorId: "test-operator",
+			},
+		);
+
+		expect(grade.status).toBe("failed");
+		expect(grade.passed).toBe(false);
+		expect(grade.issues as Array<Record<string, unknown>>).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ code: "entry_outside_snapshot", operation_id: "dop_bad_external" }),
+			]),
+		);
+	});
+
 	it("applies selected proposal operations after revision preflight", async () => {
 		const proposal = await runDreamProposal(
 			{
@@ -442,6 +528,15 @@ describe("Dream replay logic", () => {
 		const duplicateOperation = (proposal.operations as Array<Record<string, unknown>>)
 			.find((operation) => operation.type === "duplicate_merge");
 		expect(duplicateOperation).toBeTruthy();
+		await gradeDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{ proposalId: String(proposal.run_id), actorId: "test-operator" },
+		);
 
 		const result = await applyDreamProposal(
 			{
@@ -472,6 +567,48 @@ describe("Dream replay logic", () => {
 		expect(mockState.store.get("mutation_result:apply-proposal-test")).toBeTruthy();
 	});
 
+	it("refuses mutating proposal apply until deterministic grade passes", async () => {
+		const proposal = await runDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{
+				trigger: "local_test",
+				actorId: "test-operator",
+				archiveLimit: 0,
+				promotionLimit: 0,
+			},
+		);
+		const duplicateOperation = (proposal.operations as Array<Record<string, unknown>>)
+			.find((operation) => operation.type === "duplicate_merge");
+
+		const result = await applyDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{
+				proposalId: String(proposal.run_id),
+				mutationId: "apply-ungraded-proposal-test",
+				actorId: "test-operator",
+				reason: "should fail without grade",
+				operationIds: [String(duplicateOperation!.operation_id)],
+			},
+		);
+
+		expect(result.ok).toBe(false);
+		expect(result.error).toBe("grade_required");
+		expect(getStoredObject("knowledge:ke_dup_secondary").metadata).toEqual(
+			expect.objectContaining({ archived: false }),
+		);
+		expect(mockState.vectorDeletes).toEqual([]);
+	});
+
 	it("rejects stale proposal application before mutating anything", async () => {
 		const proposal = await runDreamProposal(
 			{
@@ -489,6 +626,15 @@ describe("Dream replay logic", () => {
 		);
 		const duplicateOperation = (proposal.operations as Array<Record<string, unknown>>)
 			.find((operation) => operation.type === "duplicate_merge");
+		await gradeDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{ proposalId: String(proposal.run_id), actorId: "test-operator" },
+		);
 		const primary = getStoredObject("knowledge:ke_dup_primary");
 		(primary.metadata as Record<string, unknown>).revision = 1;
 		mockState.store.set("knowledge:ke_dup_primary", primary);
@@ -535,6 +681,15 @@ describe("Dream replay logic", () => {
 		const contestedOperation = (proposal.operations as Array<Record<string, unknown>>)
 			.find((operation) => operation.type === "mark_contested");
 		expect(contestedOperation).toBeTruthy();
+		await gradeDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{ proposalId: String(proposal.run_id), actorId: "test-operator" },
+		);
 
 		const applyResult = await applyDreamProposal(
 			{
@@ -601,6 +756,15 @@ describe("Dream replay logic", () => {
 		);
 		const duplicateOperation = (proposal.operations as Array<Record<string, unknown>>)
 			.find((operation) => operation.type === "duplicate_merge");
+		await gradeDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{ proposalId: String(proposal.run_id), actorId: "test-operator" },
+		);
 		const applyResult = await applyDreamProposal(
 			{
 				UPSTASH_REDIS_REST_URL: "https://redis.test.local",

@@ -19,6 +19,7 @@ import {
 	archiveExistingEntry,
 	consolidateEntries,
 	createEntry,
+	gradeDreamProposal,
 	restoreArchivedEntry,
 	restoreEntry,
 	rollbackDreamApply,
@@ -1256,6 +1257,35 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 				},
 			);
 
+			// Tool: grade_dream_proposal
+			this.server.tool(
+				"grade_dream_proposal",
+				"Run deterministic hard-gate grading for a Dream proposal. Requires mcp:write scope; does not mutate entries or vectors.",
+				{
+					proposal_id: z.string().min(1).max(200).describe("Dream proposal run ID, usually dpr_..."),
+					rubric_version: z.string().min(1).max(100).optional().describe("Optional rubric version; defaults to deterministic-v1"),
+				},
+				MUTATING_TOOL_ANNOTATIONS,
+				async ({ proposal_id, rubric_version }) => {
+					try {
+						const actorId = await this.requireWriteAccess("grade_dream_proposal");
+						const result = await gradeDreamProposal(this.env, {
+							proposalId: proposal_id,
+							actorId,
+							rubricVersion: rubric_version,
+						});
+						return {
+							content: [{ type: "text", text: JSON.stringify(result) }],
+						};
+					} catch (error) {
+						const errMsg = error instanceof Error ? error.message : String(error);
+						return {
+							content: [{ type: "text", text: JSON.stringify({ error: errMsg }) }],
+						};
+					}
+				},
+			);
+
 			// Tool: apply_dream_proposal
 			this.server.tool(
 				"apply_dream_proposal",
@@ -1264,10 +1294,12 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 					proposal_id: z.string().min(1).max(200).describe("Dream proposal run ID, usually dpr_..."),
 					mutation_id: z.string().min(1).max(200).describe("Client-generated idempotency key for this apply request"),
 					reason: z.string().min(1).max(500).describe("Why this proposal is approved for application"),
+					require_grade_pass: z.boolean().optional().describe("Require stored deterministic grade pass before mutating; defaults to true"),
+					grade_id: z.string().min(1).max(200).optional().describe("Optional specific grade id to require"),
 					operation_ids: z.array(z.string().min(1).max(300)).max(100).optional().describe("Optional subset of proposal operation IDs to apply"),
 				},
 				MUTATING_TOOL_ANNOTATIONS,
-				async ({ proposal_id, mutation_id, reason, operation_ids }) => {
+				async ({ proposal_id, mutation_id, reason, require_grade_pass, grade_id, operation_ids }) => {
 					try {
 						const actorId = await this.requireWriteAccess("apply_dream_proposal");
 						const result = await applyDreamProposal(this.env, {
@@ -1276,6 +1308,8 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 							reason,
 							actorId,
 							operationIds: operation_ids,
+							requireGradePass: require_grade_pass,
+							gradeId: grade_id,
 						});
 						return {
 							content: [{ type: "text", text: JSON.stringify(result) }],
