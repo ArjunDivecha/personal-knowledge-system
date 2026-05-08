@@ -15,6 +15,7 @@ from typing import Any
 import requests
 
 from _memory_migration import append_report, utc_now_iso
+from _validation_ledger import ValidationGateRecord, write_validation_gate
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -779,6 +780,52 @@ def build_verify_env() -> dict[str, str]:
     return env
 
 
+def write_staging_validation_gate(report_path: Path, passed: bool, issues: list[str], report: dict[str, Any]) -> None:
+    env_backup = {
+        "UPSTASH_REDIS_REST_URL": os.getenv("UPSTASH_REDIS_REST_URL"),
+        "UPSTASH_REDIS_REST_TOKEN": os.getenv("UPSTASH_REDIS_REST_TOKEN"),
+    }
+    try:
+        sys.path.insert(0, str(REPO_ROOT / "distillation"))
+        from storage.redis_client import RedisClient  # noqa: PLC0415
+
+        os.environ["UPSTASH_REDIS_REST_URL"] = get_env_value("STAGING_UPSTASH_REDIS_REST_URL") or ""
+        os.environ["UPSTASH_REDIS_REST_TOKEN"] = get_env_value("STAGING_UPSTASH_REDIS_REST_TOKEN") or ""
+        if not os.environ["UPSTASH_REDIS_REST_URL"] or not os.environ["UPSTASH_REDIS_REST_TOKEN"]:
+            raise RuntimeError("Missing staging Redis env for validation ledger write")
+        redis_client = RedisClient()
+        write_validation_gate(
+            redis_client.client,
+            ValidationGateRecord(
+                gate="staging_e2e",
+                passed=passed,
+                issues=issues,
+                report_path=str(report_path),
+                details={
+                    "base_url": report.get("base_url"),
+                    "bundle": report.get("bundle"),
+                    "step_count": len(report.get("steps", [])),
+                    "rollback_drill": any(
+                        step.get("name") == "dream_lifecycle_rollback" and step.get("ok") is True
+                        for step in report.get("steps", [])
+                    ),
+                    "openai_read_only": any(
+                        step.get("name") == "openai_mcp_read_only_tools" and step.get("ok") is True
+                        for step in report.get("steps", [])
+                    ),
+                },
+            ),
+        )
+    except Exception as error:  # noqa: BLE001
+        print(f"WARNING: could not write staging validation ledger: {error}")
+    finally:
+        for key, value in env_backup.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run a staging smoke flow for the knowledge system")
     parser.add_argument("--base-url", required=True)
@@ -903,6 +950,13 @@ def main() -> int:
         step for step in report["steps"]
         if ("returncode" in step and step["returncode"] != 0) or ("ok" in step and not step["ok"])
     ]
+    if not args.dry_run:
+        write_staging_validation_gate(
+            report_path,
+            passed=not failed_steps,
+            issues=[str(step.get("name", "unknown_step")) for step in failed_steps],
+            report=report,
+        )
     return 1 if failed_steps else 0
 
 
