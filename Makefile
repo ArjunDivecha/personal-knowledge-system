@@ -2,6 +2,7 @@ REPO_ROOT := $(shell pwd)
 PYTHON := $(REPO_ROOT)/distillation/venv/bin/python
 WORKER_DIR := $(REPO_ROOT)/cloudflare-mcp/mcp-server
 FIXTURE_BUNDLE := $(REPO_ROOT)/tests/fixtures/sample_memory_fixture.json
+CHECK_OVERNIGHT_DREAM_ARGS ?=
 
 .PHONY: worker-typecheck worker-test verify-memory-full dream-live-canary check-overnight-dream test-python-checker seed-staging-dry-run staging-smoke-dry-run staging-smoke deploy-staging worker-secrets-staging
 
@@ -18,7 +19,7 @@ dream-live-canary:
 	cd "$(WORKER_DIR)" && npm run test:dream-live -- --count 3
 
 check-overnight-dream:
-	"$(PYTHON)" "$(REPO_ROOT)/scripts/check_overnight_dream_run.py"
+	"$(PYTHON)" "$(REPO_ROOT)/scripts/check_overnight_dream_run.py" $(CHECK_OVERNIGHT_DREAM_ARGS)
 
 test-python-checker:
 	"$(PYTHON)" -m unittest discover -s "$(REPO_ROOT)/tests/python" -p 'test_*.py'

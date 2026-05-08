@@ -48,6 +48,11 @@ def parse_args() -> argparse.Namespace:
         "--now-utc",
         help="Override current time for testing, in ISO 8601 UTC form such as 2026-03-28T15:00:00+00:00",
     )
+    parser.add_argument(
+        "--allow-on-demand",
+        action="store_true",
+        help="Allow an operator-triggered scheduled-equivalent proposal to validate the proposal path outside the cron start window.",
+    )
     return parser.parse_args()
 
 
@@ -249,6 +254,7 @@ def validate_dream_proposal(
     max_start_delay_minutes: int,
     expected_archive_limit: int,
     expected_promotion_limit: int,
+    allow_on_demand: bool = False,
 ) -> ValidationResult:
     issues: list[str] = []
     expected_boundary = most_recent_scheduled_boundary(now_utc, cron_hour_utc, cron_minute_utc)
@@ -274,8 +280,8 @@ def validate_dream_proposal(
     if dream_proposal.get("trigger") != "manual":
         issues.append(f"Dream proposal trigger is not manual proposal path: {dream_proposal.get('trigger')}")
 
-    if "dry_run" in dream_proposal:
-        issues.append("Dream proposal unexpectedly includes dry_run; scheduled governance should not use live Dream cycle")
+    if dream_proposal.get("dry_run") is not True:
+        issues.append("Dream proposal is not marked dry_run=true; scheduled governance should generate proposals without live mutation")
 
     operations = dream_proposal.get("operations")
     if not isinstance(operations, list):
@@ -308,7 +314,7 @@ def validate_dream_proposal(
             issues.append(
                 f"Latest scheduled Dream proposal is too old: {timestamp_field}={run_at.isoformat()} expected_after={expected_boundary.isoformat()}",
             )
-        if run_at > expected_latest_start:
+        if run_at > expected_latest_start and not allow_on_demand:
             issues.append(
                 f"Latest scheduled Dream proposal started later than expected window: {timestamp_field}={run_at.isoformat()} latest_expected={expected_latest_start.isoformat()}",
             )
@@ -339,6 +345,7 @@ def main() -> int:
         max_start_delay_minutes=args.max_start_delay_minutes,
         expected_archive_limit=args.expected_archive_limit,
         expected_promotion_limit=args.expected_promotion_limit,
+        allow_on_demand=args.allow_on_demand,
     )
 
     report = {

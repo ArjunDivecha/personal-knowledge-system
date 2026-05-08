@@ -38,6 +38,7 @@ class CheckOvernightDreamRunTests(unittest.TestCase):
             "status": "proposal_ready",
             "trigger": "manual",
             "actor_id": "scheduled:dream-governance",
+            "dry_run": True,
             "operations": [{"operation_id": "dop_archive_ke_test", "type": "archive_entry"}],
             "counts": {
                 "archive_limit": 10,
@@ -95,8 +96,41 @@ class CheckOvernightDreamRunTests(unittest.TestCase):
 
         self.assertFalse(result.passed)
         self.assertTrue(any("status is not proposal_ready" in issue for issue in result.issues))
-        self.assertTrue(any("unexpectedly includes dry_run" in issue for issue in result.issues))
+        self.assertTrue(any("actor is not scheduled governance" in issue for issue in result.issues))
         self.assertTrue(any("too old" in issue for issue in result.issues))
+
+    def test_validate_dream_proposal_allows_on_demand_operator_check(self) -> None:
+        now_utc = datetime(2026, 3, 28, 15, 0, tzinfo=UTC)
+        health = {
+            "status": "ok",
+        }
+        dream_proposal = {
+            "created_at": "2026-03-28T12:15:00+00:00",
+            "status": "proposal_ready",
+            "trigger": "manual",
+            "actor_id": "scheduled:dream-governance",
+            "dry_run": True,
+            "operations": [{"operation_id": "dop_archive_ke_test", "type": "archive_entry"}],
+            "counts": {
+                "archive_limit": 10,
+                "promotion_limit": 10,
+            },
+        }
+
+        result = validate_dream_proposal(
+            health=health,
+            dream_proposal=dream_proposal,
+            now_utc=now_utc,
+            cron_hour_utc=7,
+            cron_minute_utc=10,
+            max_start_delay_minutes=45,
+            expected_archive_limit=10,
+            expected_promotion_limit=10,
+            allow_on_demand=True,
+        )
+
+        self.assertTrue(result.passed)
+        self.assertEqual(result.issues, [])
 
 
 if __name__ == "__main__":
