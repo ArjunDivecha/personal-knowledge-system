@@ -132,6 +132,82 @@ class RepoAgentContextExporterTests(unittest.TestCase):
 
 
 class RepoAgentContextThinIndexTests(unittest.TestCase):
+    def test_normalize_knowledge_metadata_sets_default_injection_tier(self) -> None:
+        storage = StorageClient.__new__(StorageClient)
+
+        metadata = storage._normalize_knowledge_metadata(
+            {
+                "created_at": "2026-04-21T00:00:00",
+                "updated_at": "2026-04-21T01:00:00",
+                "context_type": "active_project",
+                "source_conversations": ["github:demo:readme"],
+            }
+        )
+
+        self.assertEqual(metadata["injection_tier"], 1)
+        self.assertEqual(metadata["mention_count"], 1)
+        self.assertEqual(metadata["first_seen"], "2026-04-21T00:00:00")
+        self.assertEqual(metadata["last_seen"], "2026-04-21T01:00:00")
+
+    def test_update_thin_index_rebuilds_canonical_counts_from_redis(self) -> None:
+        class FakeRedis:
+            def __init__(self):
+                self.values = {
+                    "knowledge:ke_repo_topic": {
+                        "id": "ke_repo_topic",
+                        "type": "knowledge",
+                        "domain": "repo workflow",
+                        "state": "active",
+                        "current_view": "Updated repo-specific summary",
+                        "confidence": "high",
+                        "positions": [],
+                        "key_insights": [],
+                        "knows_how_to": [],
+                        "open_questions": [],
+                        "related_repos": [
+                            {"repo": "ArjunDivecha/demo", "link_type": "explicit"}
+                        ],
+                        "related_knowledge": [],
+                        "evolution": [],
+                        "metadata": {
+                            "created_at": "2026-04-21T00:00:00",
+                            "updated_at": "2026-04-21T01:00:00",
+                            "source_conversations": ["github:demo:readme"],
+                            "source_messages": [],
+                            "classification_status": "pending",
+                            "context_type": "active_project",
+                            "mention_count": 1,
+                            "archived": False,
+                        },
+                    }
+                }
+
+            def scan(self, cursor, match: str, count: int = 100):
+                if match == "knowledge:*":
+                    return 0, ["knowledge:ke_repo_topic"]
+                if match == "project:*":
+                    return 0, []
+                return 0, []
+
+            def mget(self, *keys):
+                return [self.values[key] for key in keys]
+
+            def set(self, key: str, value: str):
+                self.values[key] = json.loads(value)
+
+        fake_redis = FakeRedis()
+        storage = StorageClient.__new__(StorageClient)
+        storage.redis = fake_redis
+
+        storage.update_thin_index([])
+
+        saved = fake_redis.values["index:current"]
+        self.assertEqual(saved["total_topic_count"], 1)
+        self.assertEqual(saved["total_project_count"], 0)
+        self.assertEqual(saved["tier_1_count"], 1)
+        self.assertEqual(saved["topics"][0]["id"], "ke_repo_topic")
+        self.assertEqual(saved["topics"][0]["injection_tier"], 1)
+
     def test_update_thin_index_refreshes_existing_entry(self) -> None:
         existing_index = {
             "generated_at": "2026-04-20T00:00:00",

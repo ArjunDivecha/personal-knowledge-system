@@ -19,8 +19,10 @@ OUTPUT FILES:
 
 import json
 import hashlib
+import sys
 from typing import Optional, Any
 from datetime import datetime
+from pathlib import Path
 
 from upstash_redis import Redis
 from upstash_vector import Index
@@ -35,6 +37,29 @@ from .config import (
     EMBEDDING_MODEL,
     EMBEDDING_DIMENSIONS,
 )
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DISTILLATION_ROOT = REPO_ROOT / "distillation"
+REDIS_MGET_BATCH_SIZE = 100
+VALID_CONTEXT_TYPES = {
+    "professional_identity",
+    "stated_preference",
+    "explicit_save",
+    "active_project",
+    "recurring_pattern",
+    "task_query",
+    "passing_reference",
+}
+DEFAULT_INJECTION_TIER_BY_CONTEXT_TYPE = {
+    "professional_identity": 1,
+    "stated_preference": 1,
+    "explicit_save": 1,
+    "active_project": 1,
+    "recurring_pattern": 2,
+    "task_query": 3,
+    "passing_reference": 3,
+}
 
 
 class StorageClient:
@@ -163,22 +188,31 @@ class StorageClient:
         meta = dict(metadata or {})
         updated_at = meta.get("updated_at") or meta.get("created_at") or datetime.utcnow().isoformat()
         created_at = meta.get("created_at") or updated_at
+        source_conversations = list(meta.get("source_conversations") or [])
+        source_messages = list(meta.get("source_messages") or [])
+        context_type = meta.get("context_type")
+        if context_type not in VALID_CONTEXT_TYPES:
+            context_type = None
+        mention_count = meta.get("mention_count")
+        if mention_count is None:
+            mention_count = len(source_conversations) if source_conversations else 1
+        mention_count = max(1, int(mention_count or 1))
 
         meta["created_at"] = created_at
         meta["updated_at"] = updated_at
-        meta["source_conversations"] = list(meta.get("source_conversations") or [])
-        meta["source_messages"] = list(meta.get("source_messages") or [])
+        meta["source_conversations"] = source_conversations
+        meta["source_messages"] = source_messages
         meta["access_count"] = int(meta.get("access_count", 0) or 0)
         meta["last_accessed"] = meta.get("last_accessed")
         meta["schema_version"] = int(meta.get("schema_version", 2) or 2)
         meta["classification_status"] = meta.get("classification_status") or "pending"
-        meta["context_type"] = meta.get("context_type")
-        meta["mention_count"] = meta.get("mention_count")
-        meta["first_seen"] = meta.get("first_seen")
-        meta["last_seen"] = meta.get("last_seen")
+        meta["context_type"] = context_type
+        meta["mention_count"] = mention_count
+        meta["first_seen"] = meta.get("first_seen") or created_at
+        meta["last_seen"] = meta.get("last_seen") or updated_at
         meta["auto_inferred"] = meta.get("auto_inferred")
         meta["source_weights"] = dict(meta.get("source_weights")) if isinstance(meta.get("source_weights"), dict) else {}
-        meta["injection_tier"] = meta.get("injection_tier")
+        meta["injection_tier"] = DEFAULT_INJECTION_TIER_BY_CONTEXT_TYPE.get(context_type) if context_type else None
         meta["salience_score"] = meta.get("salience_score")
         meta["last_consolidated"] = meta.get("last_consolidated")
         meta["consolidation_notes"] = list(meta.get("consolidation_notes") or [])
@@ -453,15 +487,61 @@ class StorageClient:
     def save_thin_index(self, index: dict):
         """Save the thin index."""
         self.redis.set("index:current", json.dumps(index))
-    
+
+    def _scan_keys(self, pattern: str) -> list[str]:
+        keys = []
+        cursor: int | str = 0
+        while True:
+            cursor, batch = self.redis.scan(cursor, match=pattern, count=100)
+            keys.extend(batch)
+            if cursor == 0 or cursor == "0":
+                return keys
+
+    def _iter_json_values(self, pattern: str):
+        keys = self._scan_keys(pattern)
+        for start in range(0, len(keys), REDIS_MGET_BATCH_SIZE):
+            batch = keys[start:start + REDIS_MGET_BATCH_SIZE]
+            for value in self.redis.mget(*batch):
+                if not value:
+                    continue
+                if isinstance(value, str):
+                    yield json.loads(value)
+                else:
+                    yield value
+
+    def rebuild_thin_index(self) -> dict:
+        """Rebuild the canonical thin index from all Redis entries."""
+        if str(DISTILLATION_ROOT) not in sys.path:
+            sys.path.insert(0, str(DISTILLATION_ROOT))
+
+        from models.entries import KnowledgeEntry, ProjectEntry
+        from pipeline.index import generate_thin_index
+
+        knowledge_entries = [
+            KnowledgeEntry.from_dict(entry)
+            for entry in self._iter_json_values("knowledge:*")
+        ]
+        project_entries = [
+            ProjectEntry.from_dict(entry)
+            for entry in self._iter_json_values("project:*")
+        ]
+        thin_index = generate_thin_index(knowledge_entries, project_entries)
+        thin_index_dict = thin_index.to_dict()
+        self.save_thin_index(thin_index_dict)
+        return thin_index_dict
+
     def update_thin_index(self, new_entries: list[dict]):
         """
         Update the thin index with new entries.
-        Adds new entries to the existing index.
-        
+        Rebuilds the canonical index from Redis so summary counts cannot drift.
+
         Args:
             new_entries: List of knowledge entry dicts to add
         """
+        if hasattr(self, "redis"):
+            self.rebuild_thin_index()
+            return
+
         current = self.get_thin_index()
         
         if current is None:
