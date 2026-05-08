@@ -1,6 +1,6 @@
 # PKS Dream Governance Rewrite PRD (v3)
 
-Status: Draft for R0 implementation
+Status: In implementation on branch `V2`
 Date: 2026-05-07
 Owner: Arjun / PKS Core
 Scope: PKS-native governance rewrite of Dream maintenance, not a wholesale platform migration.
@@ -36,16 +36,23 @@ The rewrite target is narrower and safer than the previous "complete rewrite" fr
 
 The current system is live and useful, but operational assurance is weaker than runtime availability.
 
-Known current facts:
+Known baseline facts at the start of the rewrite:
 
 - `/health` can be green while correctness gates fail.
-- `check_overnight_dream_run.py` currently fails because `UTC` is initialized after `main()` executes.
-- `verify_memory_consistency.py --full --strict` currently fails on legacy evolution records missing `delta`.
+- `check_overnight_dream_run.py` failed because `UTC` was initialized after `main()` executed.
+- `verify_memory_consistency.py --full --strict` failed on legacy evolution records missing `delta`.
 - Scheduled Dream is live but bounded in code:
   - `archiveLimit = 10`
   - `promotionLimit = 10`
   - cron: `10 7 * * *` UTC
 - Several older docs and probe scripts still describe or target stale workers.dev behavior.
+
+Current implementation notes:
+
+- The validation hotfixes are implemented and the local gates pass.
+- Scheduled Dream now generates proposal-first governance artifacts instead of direct live mutation.
+- Deterministic grading, bounded apply, and conflict-aware rollback are implemented.
+- The staging harness now targets the full R5 lifecycle and writes a `staging_e2e` validation gate.
 
 The product gap is not "no memory service." The gap is that PKS needs a trustworthy memory-governance layer:
 

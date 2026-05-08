@@ -114,12 +114,12 @@ Phase 4 notes:
 - [ ] Add Dream alert thresholds
 
 Phase 5 notes:
-- The nightly scheduled Dream path is now configured for full live runs of the currently implemented Dream engine, with no scheduled archive or promotion caps.
+- The nightly scheduled Dream path is now proposal-first. It generates bounded governance proposals with 10 archive / 10 promotion caps and does not directly mutate live entries.
 - Dream replay now includes deterministic duplicate merge and contradiction handling before promotion/archive decisions.
-- The latest public `dream:last_run` record can still show `dry_run: true` until the next scheduled execution after deployment.
+- The latest public proposal is exposed through `dream:proposal:last` and `/health` fields such as `last_dream_proposal_run`.
 - Live cron registration is active for `10 7 * * *` UTC, which is `00:10 PDT`.
 - Reversible archival writes and restore semantics are implemented behind the Dream engine and were verified on `2026-03-27` with a controlled single-entry archive/restore test.
-- Staging end-to-end validation on `2026-03-27` successfully covered: dry-run candidate discovery, live archive, MCP `restore_archived`, MCP `set_context_type`, and final strict consistency verification with `0` issues.
+- Staging end-to-end validation now targets the PRD R5 lifecycle: proposal, grade, bounded apply, post-apply verify, rollback, post-rollback verify, `/openai/mcp` read-only compatibility, and final strict consistency verification.
 
 ## Phase 6: Ingestion Hardening And Operator Tools
 
@@ -139,8 +139,8 @@ Phase 5 notes:
 - [x] Redis and vector metadata match on sampled entries
 - [ ] `search("investing")` ranks Tier 1 and Tier 2 above Tier 3
 - [x] Repeated retrieval increments access counters without races
-- [x] Dream dry run produces reversible archive candidates only
-- [x] Controlled live archive/restore preserves a timestamped snapshot and returns the entry to active state
+- [x] Dream proposal generation produces reversible archive candidates only
+- [x] Controlled proposal apply/rollback preserves apply artifacts and returns the entry to active state
 - [x] New write-capable MCP tools reject unauthorized calls
 
 ## Cloudflare Plan Notes

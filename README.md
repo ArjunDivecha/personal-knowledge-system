@@ -133,16 +133,20 @@ This is the software analog of strategic forgetting: preserve what matters, but 
 
 The most ambitious part of the design is the Dream job.
 
-Dream is partially live now. The scheduler, audit trail, candidate discovery loop, reversible archive/restore mechanics, deterministic duplicate merge, contradiction handling, and write-capable operator tools are implemented. The nightly Worker is now configured for full live runs of the currently implemented Dream engine. The remaining gap is broader, heavier replay logic rather than the basic replay loop itself. The intended structure is:
+Dream is partially live now. The scheduler, audit trail, candidate discovery loop, proposal generation, deterministic grading, bounded apply, rollback mechanics, deterministic duplicate merge, contradiction handling, and write-capable operator tools are implemented. The nightly Worker is configured proposal-first: it generates bounded governance proposals and does not directly mutate live entries. The remaining gap is completing and repeatedly validating the full staging/production lifecycle before any scheduled auto-apply policy is considered. The intended structure is:
 
 1. Survey
    Load active entries, compute salience, and bucket them into stable, active, weak, and decay candidates.
 2. Replay
    Scan recent activity for repeated topics, contradictions, promotion candidates, and duplicates.
-3. Consolidate
-   Upgrade context where warranted, merge duplicates, recompute salience, and log the changes.
-4. Prune
-   Archive weak, low-evidence, low-use entries into a reversible namespace instead of deleting them.
+3. Propose
+   Create a bounded mutation plan with evidence, expected revisions, and rollback metadata.
+4. Grade
+   Run deterministic hard gates before any live mutation is allowed.
+5. Apply And Verify
+   Apply only explicitly approved operations, then verify index/search/vector consistency.
+6. Roll Back
+   Restore from apply artifacts when current revisions still match the expected post-apply state.
 
 The point of Dream is not to erase the past. The point is to keep the active memory layer aligned with what remains useful.
 
@@ -342,7 +346,7 @@ Dream is the long-horizon maintenance loop. The idea is:
 - archive low-value memories with reversible pointers
 - rebuild the current self-model without re-injecting everything forever
 
-Dream is Phase 5 work. The live scheduler, audit output, reversible archive/restore path, and write-capable operator tools are implemented. The last recorded Dream run can still show `dry_run` if it predates the latest deploy, but the deployed scheduler is now set for full live runs of the currently implemented Dream path.
+Dream is Phase 5 work. The live scheduler, audit output, proposal artifacts, deterministic grading, reversible apply/rollback path, and write-capable operator tools are implemented. The deployed scheduler now generates proposal-first nightly governance runs with 10 archive / 10 promotion caps; scheduled live auto-apply is not enabled.
 
 ### Current Scheduling Model
 
@@ -366,18 +370,18 @@ is destroyed.
 
 ## What Is Live Today
 
-As of March 27, 2026, the live system has:
+As of May 8, 2026, the live system has:
 
-- `573` knowledge topics
-- `36` projects
+- `2,516` active knowledge topics
+- `34` active projects
 - schema version `2`
 - completed Phase 1, Phase 2, Phase 3, and Phase 4 of the current memory upgrade
 - `0` pending classifications in `classification:pending`
-- tier counts of `500` Tier 1, `24` Tier 2, `85` Tier 3
-- `0` archived entries at the time of the latest health check
-- latest recorded Dream run surfaced `78` archive candidates and may still show `dry_run` if it predates the latest deploy
-- the deployed scheduler is now configured for full live Dream runs on the next scheduled run
-- reversible archive snapshot and restore semantics have been verified on live data, and the full archive -> MCP restore -> MCP context override path has been validated on staging
+- thin-index counts of `1,798` Tier 1, `31` Tier 2, `721` Tier 3
+- `4,434` archived entries at the time of the latest health check
+- latest scheduled-equivalent Dream proposal surfaced `656` archive candidates and proposed `10` bounded archive operations
+- deterministic grading has passed for the latest production proposal
+- proposal-first overnight checks and full strict memory consistency pass against production
 
 Operationally, the following are live:
 
@@ -390,8 +394,9 @@ Operationally, the following are live:
 - write-capable MCP tools for `restore_archived` and `set_context_type`
 - remote scheduled Twitter/X ingestion with Redis-backed incremental state
 - remote scheduled GitHub ingestion with repo-attached Claude Code, Codex CLI, and Cursor context
-- nightly full-live Dream scheduler and audit records
-- reversible Dream archive snapshot and restore mechanics
+- nightly proposal-first Dream scheduler and audit records
+- deterministic Dream proposal grading
+- bounded Dream apply and conflict-aware rollback mechanics
 - deterministic duplicate merge and contradiction handling in Dream replay
 - `/health` and `/status` rollout endpoints
 
@@ -505,16 +510,21 @@ The root [Makefile](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/
 
 The long-term rule is simple: production is not the default test bed.
 
-The staging smoke path is now production-shaped. It covers:
+The staging smoke path is now governance-shaped. It covers:
 
 - fixture seeding into isolated staging Redis and Vector
 - staging Worker `/health`
 - unauthorized operator rejection
-- Dream dry-run on staging
-- bounded live Dream archive on staging
+- Dream proposal generation on staging
+- deterministic Dream proposal grading
+- bounded proposal apply on staging
+- post-apply verification
+- conflict-aware rollback on staging
+- post-rollback verification
+- validation-ledger recording for `staging_e2e`
+- `/openai/mcp` read-only compatibility
 - OAuth discovery, client registration, auth-code exchange, and bearer-token issuance
-- MCP `initialize`, `tools/list`, `get_index`, `search`, `get_context`, `get_dream_summary`, `restore_archived`, and `set_context_type`
-- health verification after archive and after restore
+- MCP `initialize`, `tools/list`, `get_index`, `search`, `get_context`, and `get_dream_summary`
 - final Redis vs Vector vs thin-index consistency verification
 
 There is now also a local Worker-runtime test layer under [cloudflare-mcp/mcp-server/test](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/knowledge-system/cloudflare-mcp/mcp-server/test). It runs inside Cloudflare's `workerd` runtime and covers:
@@ -524,7 +534,7 @@ There is now also a local Worker-runtime test layer under [cloudflare-mcp/mcp-se
 - OAuth discovery, client registration, auth-code exchange, and token issuance
 - MCP `initialize`, `tools/list`, `get_index`, and `get_dream_summary`
 - write-tool rejection without `mcp:write`
-- scheduled bounded-live Dream trigger wiring
+- scheduled proposal-first Dream trigger wiring
 
 That local test layer is automated in GitHub Actions at [.github/workflows/worker-runtime-tests.yml](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/knowledge-system/.github/workflows/worker-runtime-tests.yml).
 
