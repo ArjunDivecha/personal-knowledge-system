@@ -57,9 +57,6 @@ ARCHIVE_PATH = Path(
     )
 )
 
-# Create archive directory if it doesn't exist
-ARCHIVE_PATH.mkdir(parents=True, exist_ok=True)
-
 
 # -----------------------------------------------------------------------------
 # UPSTASH CREDENTIALS

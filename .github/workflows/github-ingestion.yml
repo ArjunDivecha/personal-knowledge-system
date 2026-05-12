@@ -58,6 +58,7 @@ jobs:
       GITHUB_API_KEY: ${{ secrets.PKS_GITHUB_API_KEY || github.token }}
       GITHUB_USERNAME: ${{ github.repository_owner }}
       PYTHONUNBUFFERED: "1"
+      ARCHIVE_PATH: /tmp/knowledge-system/archive
 
     steps:
       - name: Check out repository

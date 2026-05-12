@@ -45,6 +45,7 @@ jobs:
       TWITTER_BEARER_TOKEN: ${{ secrets.TWITTER_BEARER_TOKEN }}
       TWITTER_USERNAME: ${{ secrets.TWITTER_USERNAME }}
       PYTHONUNBUFFERED: "1"
+      ARCHIVE_PATH: /tmp/knowledge-system/archive
 
     steps:
       - name: Check out repository
