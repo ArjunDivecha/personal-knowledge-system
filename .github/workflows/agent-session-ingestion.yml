@@ -104,4 +104,4 @@ jobs:
           if [ -n "$LIMIT" ]; then
             args+=(--limit "$LIMIT")
           fi
-          .venv/bin/python agent_sessions/run.py "${args[@]}"
+          caffeinate -i .venv/bin/python agent_sessions/run.py "${args[@]}"
