@@ -1,6 +1,8 @@
-name: Agent Session Ingestion Backfill
+name: Agent Session Ingestion
 
 on:
+  schedule:
+    - cron: "10 6 * * *"
   repository_dispatch:
     types:
       - agent-session-ingestion-manual
