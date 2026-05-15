@@ -36,6 +36,8 @@ from core.config import (
     GITHUB_AGENT_CONTEXT_DIR,
     GITHUB_AGENT_CONTEXT_EXTENSIONS,
     GITHUB_MAX_AGENT_CONTEXT_FILES_PER_REPO,
+    GITHUB_MAX_MARKDOWN_FILES_PER_REPO,
+    GITHUB_MARKDOWN_SKIP_DIRS,
 )
 
 
@@ -383,7 +385,93 @@ class GitHubClient:
                 })
 
         return files_with_content
-    
+
+    def get_markdown_files(
+        self,
+        repo_name: str,
+        max_files: int = None,
+    ) -> list[dict]:
+        """
+        Get markdown documentation files from a repo, excluding README.md and
+        the .pks/agent-context/ subtree (handled by separate extractors).
+
+        Priority order:
+          1. High-value named files: CLAUDE.md, AGENTS.md, CONTRIBUTING.md,
+             ARCHITECTURE.md, any file matching adr-*.md / *decision*.md
+          2. Files in a docs/ directory
+          3. All other .md / .markdown files
+
+        Returns list of {path, content} dicts.
+        """
+        max_files = max_files or GITHUB_MAX_MARKDOWN_FILES_PER_REPO
+        agent_context_prefix = GITHUB_AGENT_CONTEXT_DIR.strip("/") + "/"
+
+        tree = self.get_repo_tree(repo_name)
+        if not tree:
+            return []
+
+        readme_lower_names = {"readme.md", "readme.markdown", "readme.rst", "readme"}
+
+        def _is_candidate(f: dict) -> bool:
+            path = f["path"]
+            path_lower = path.lower()
+
+            # Skip README (handled separately)
+            filename = path.split("/")[-1].lower()
+            if filename in readme_lower_names:
+                return False
+
+            # Skip agent-context artifacts (handled separately)
+            if path.startswith(agent_context_prefix):
+                return False
+
+            # Skip non-markdown
+            if not (path_lower.endswith(".md") or path_lower.endswith(".markdown")):
+                return False
+
+            # Skip files in noisy dirs
+            top_dir = path.split("/")[0].lower() if "/" in path else ""
+            if top_dir in GITHUB_MARKDOWN_SKIP_DIRS:
+                return False
+
+            # Skip very large files (auto-generated docs, etc.)
+            if f.get("size", 0) > 100_000:
+                return False
+
+            return True
+
+        def _priority(f: dict) -> int:
+            """Lower number = higher priority."""
+            filename = f["path"].split("/")[-1].lower()
+            path_lower = f["path"].lower()
+            high_value_names = {
+                "claude.md", "agents.md", "contributing.md", "architecture.md",
+                "design.md", "decisions.md", "technical.md", "overview.md",
+                "changelog.md", "history.md",
+            }
+            if filename in high_value_names:
+                return 0
+            if "adr" in filename or "decision" in path_lower:
+                return 1
+            if path_lower.startswith("docs/"):
+                return 2
+            return 3
+
+        candidates = [f for f in tree if _is_candidate(f)]
+        candidates.sort(key=_priority)
+        candidates = candidates[:max_files]
+
+        files_with_content = []
+        for f in candidates:
+            content = self.get_file_content(repo_name, f["path"])
+            if content and len(content.strip()) > 80:
+                files_with_content.append({
+                    "path": f["path"],
+                    "content": content,
+                })
+
+        return files_with_content
+
     # -------------------------------------------------------------------------
     # STATISTICS
     # -------------------------------------------------------------------------

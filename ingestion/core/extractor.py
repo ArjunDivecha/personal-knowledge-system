@@ -361,6 +361,168 @@ JSON format:
             print(f"  Error extracting from commits: {e}")
             return []
 
+    def extract_from_markdown_files(
+        self,
+        files: list[dict],
+        repo_name: str,
+        repo_url: Optional[str] = None,
+        repo_full_name: Optional[str] = None,
+    ) -> list[dict]:
+        """
+        Extract knowledge from markdown documentation files (non-README).
+
+        Each file is sent individually so Claude can interpret it in context
+        of the file's purpose (AGENTS.md vs CONTRIBUTING.md vs ADR vs docs).
+
+        Args:
+            files: List of {path, content} dicts
+        Returns:
+            List of knowledge entry dicts.
+        """
+        repo_full_name = repo_full_name or repo_name
+        repo_url = repo_url or f"https://github.com/{repo_full_name}"
+
+        all_entries: list[dict] = []
+        now = datetime.utcnow().isoformat()
+
+        for file in files:
+            path = file.get("path", "")
+            content = file.get("content", "")
+            if not content or len(content) < 80:
+                continue
+
+            prompt = f"""Analyze this markdown file from the repository "{repo_name}" and extract durable knowledge.
+
+File path: {path}
+Repository: {repo_full_name}
+
+CONTENT:
+{content[:8000]}
+
+Extract knowledge entries that would be valuable to remember for future work:
+1. **Technical decisions or design choices** — why something was built this way
+2. **Workflow or process knowledge** — how the author works, contributes, or deploys
+3. **Architecture or system understanding** — how the system is structured
+4. **Constraints, gotchas, or lessons learned** — things that would surprise a newcomer
+5. **Active context or open questions** — TODOs, known issues, next steps with rationale
+
+IMPORTANT:
+- Focus on insights that are specific to this repo, not generic best practices
+- Skip boilerplate or obvious information (e.g. "run npm install to set up")
+- Return empty [] if the file has no extractable knowledge
+- Confidence: "high" if explicitly stated, "medium" if clearly implied, "low" if inferred
+
+JSON format:
+[
+  {{
+    "domain": "specific topic",
+    "current_view": "1-3 sentence summary of the durable knowledge",
+    "confidence": "high|medium|low",
+    "key_insights": [
+      {{"insight": "...", "evidence_snippet": "quote from file"}}
+    ],
+    "capabilities": ["optional: what this shows the author knows how to do"],
+    "open_questions": ["optional: unresolved question or risk mentioned"]
+  }}
+]"""
+
+            try:
+                response = self.client.messages.create(
+                    model=EXTRACTION_MODEL,
+                    max_tokens=3000,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+
+                raw_entries = self._extract_json_array(response.content[0].text)
+                conversation_id = f"github:{repo_full_name}:docs:{path}"
+
+                for raw in raw_entries:
+                    domain = raw.get("domain", "").strip()
+                    current_view = raw.get("current_view", "").strip()
+                    if not domain or not current_view:
+                        continue
+
+                    entry_id = self._generate_repo_scoped_id(
+                        repo_full_name=repo_full_name,
+                        domain=domain,
+                        source_type=f"github_markdown:{path}",
+                    )
+
+                    entry = {
+                        "id": entry_id,
+                        "type": "knowledge",
+                        "domain": domain,
+                        "subdomain": None,
+                        "state": "active",
+                        "detail_level": "full",
+                        "current_view": current_view,
+                        "confidence": raw.get("confidence", "medium"),
+                        "positions": [],
+                        "key_insights": [
+                            {
+                                "insight": item.get("insight", ""),
+                                "evidence": {
+                                    "conversation_id": conversation_id,
+                                    "message_ids": [],
+                                    "snippet": item.get("evidence_snippet", "")[:240],
+                                },
+                            }
+                            for item in raw.get("key_insights", [])
+                            if isinstance(item, dict) and item.get("insight")
+                        ],
+                        "knows_how_to": [
+                            {
+                                "capability": cap,
+                                "evidence": {
+                                    "conversation_id": conversation_id,
+                                    "message_ids": [],
+                                    "snippet": f"Documented in {path}",
+                                },
+                            }
+                            for cap in raw.get("capabilities", [])
+                            if cap
+                        ],
+                        "open_questions": [
+                            {"question": q, "status": "open"}
+                            for q in raw.get("open_questions", [])
+                            if q
+                        ],
+                        "related_repos": [
+                            {
+                                "repo": repo_full_name,
+                                "path": path,
+                                "link_type": "explicit",
+                                "confidence": 1.0,
+                                "evidence": f"Extracted from {path}",
+                            }
+                        ],
+                        "related_knowledge": [],
+                        "evolution": [],
+                        "metadata": {
+                            "created_at": now,
+                            "updated_at": now,
+                            "source_conversations": [conversation_id],
+                            "source_messages": [],
+                            "access_count": 0,
+                            "last_accessed": None,
+                            "project": repo_name,
+                            "source_type": "github_markdown",
+                            "context_type": "active_project",
+                            "github_repo": repo_full_name,
+                            "github_url": repo_url,
+                            "markdown_path": path,
+                        },
+                        "full_content_ref": f"{repo_url}/blob/HEAD/{path}",
+                    }
+
+                    all_entries.append(entry)
+
+            except Exception as e:
+                print(f"  Error extracting from {path}: {e}")
+                continue
+
+        return all_entries
+
     def extract_from_agent_context_artifact(
         self,
         artifact_content: str,

@@ -213,6 +213,8 @@ def run_github_ingestion(
         "readme_entries": 0,
         "commit_entries": 0,
         "code_entries": 0,
+        "markdown_entries": 0,
+        "markdown_files": 0,
         "agent_context_entries": 0,
         "agent_context_files": 0,
         "errors": 0,
@@ -293,6 +295,24 @@ def run_github_ingestion(
                         print(f"{len(entries)} entries from {len(code_files)} files")
                     else:
                         print("no code files")
+
+                # Extract from markdown documentation files (non-README)
+                print("  → Markdown docs...", end=" ", flush=True)
+                md_files = github.get_markdown_files(repo_name)
+                if md_files:
+                    entries = extractor.extract_from_markdown_files(
+                        md_files,
+                        repo_name,
+                        repo_url=repo_url,
+                        repo_full_name=repo_full_name,
+                    )
+                    repo_entries.extend(entries)
+                    baseline_entry_count += len(entries)
+                    stats["markdown_entries"] += len(entries)
+                    stats["markdown_files"] += len(md_files)
+                    print(f"{len(entries)} entries from {len(md_files)} files")
+                else:
+                    print("none found")
 
             print("  → Agent context...", end=" ", flush=True)
             agent_context_files = github.get_agent_context_files(repo_name)
@@ -408,6 +428,8 @@ def run_github_ingestion(
     print(f"Entries from READMEs:   {stats['readme_entries']}")
     print(f"Entries from commits:   {stats['commit_entries']}")
     print(f"Entries from code:      {stats['code_entries']}")
+    print(f"Markdown docs files:    {stats['markdown_files']}")
+    print(f"Markdown docs entries:  {stats['markdown_entries']}")
     print(f"Agent context files:    {stats['agent_context_files']}")
     print(f"Agent context entries:  {stats['agent_context_entries']}")
     print(f"Total entries:          {len(all_entries)}")

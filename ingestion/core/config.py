@@ -99,6 +99,13 @@ GITHUB_AGENT_CONTEXT_DIR = ".pks/agent-context"
 GITHUB_AGENT_CONTEXT_EXTENSIONS = {".md", ".markdown", ".json"}
 GITHUB_MAX_AGENT_CONTEXT_FILES_PER_REPO = 20
 
+# Markdown doc ingestion (separate from README and agent-context artifacts)
+GITHUB_MAX_MARKDOWN_FILES_PER_REPO = 15  # Max .md files to ingest per repo
+GITHUB_MARKDOWN_SKIP_DIRS = {            # Top-level directory prefixes to exclude
+    "node_modules", "vendor", "dist", "build", ".git",
+    "site-packages", "__pycache__",
+}
+
 # Gmail extraction settings
 GMAIL_MIN_CONTENT_LENGTH = 150          # Skip emails shorter than this
 GMAIL_SINCE_YEAR = 2020                 # Only process emails from this year onwards
