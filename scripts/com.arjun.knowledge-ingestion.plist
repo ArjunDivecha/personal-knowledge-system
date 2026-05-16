@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.arjun.knowledge-ingestion</string>
+
+    <!-- caffeinate -i prevents Mac sleep for the full duration of the run -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/caffeinate</string>
+        <string>-i</string>
+        <string>/Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system/scripts/run_nightly_ingestion.sh</string>
+    </array>
+
+    <!-- Run at 23:00 local time every day -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>23</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system/ingestion/logs/launchd_stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system/ingestion/logs/launchd_stderr.log</string>
+
+    <!-- Do not fire immediately on login, only on schedule -->
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

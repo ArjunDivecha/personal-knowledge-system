@@ -18,6 +18,7 @@ upstash-vector>=0.3.0
 
 # LLM APIs
 anthropic>=0.18.0
+claude-agent-sdk>=0.0.14  # Agent SDK for local Mac runs (Max subscription billing)
 openai>=1.0.0
 
 # Data processing

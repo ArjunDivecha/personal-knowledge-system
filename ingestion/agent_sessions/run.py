@@ -74,13 +74,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-import anthropic
 from upstash_redis import Redis
 from core.storage import StorageClient
 from github.client import GitHubClient
 from agent_sessions.parsers import parse_claude_code, parse_codex
 from agent_sessions.github_linker import GitHubLinker
 from core.config import UPSTASH_REDIS_REST_TOKEN, UPSTASH_REDIS_REST_URL
+from core.sdk_client import sdk_query
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -250,7 +250,6 @@ Session conversation:
 
 def distill(
     turns: list[dict],
-    client: anthropic.Anthropic,
     github_info: Optional[dict] = None,
 ) -> list[dict]:
     """
@@ -258,7 +257,6 @@ def distill(
 
     Args:
         turns: Parsed conversation turns
-        client: Anthropic API client
         github_info: Optional GitHub repo info from GitHubLinker
 
     Returns:
@@ -292,24 +290,19 @@ def distill(
             github_context += f"\nREADME excerpt: {readme_excerpt}"
 
     try:
-        resp = client.messages.create(
-            model=DISTILL_MODEL,
+        raw = sdk_query(
+            DISTILL_PROMPT.format(
+                source=source,
+                project=project,
+                github_context=github_context,
+                conversation=conv,
+            ),
             max_tokens=1500,
-            messages=[{
-                "role": "user",
-                "content": DISTILL_PROMPT.format(
-                    source=source,
-                    project=project,
-                    github_context=github_context,
-                    conversation=conv,
-                ),
-            }],
         )
     except Exception as e:
-        raise DistillationFailure(f"Anthropic request failed: {e}") from e
+        raise DistillationFailure(f"SDK request failed: {e}") from e
 
     try:
-        raw = resp.content[0].text
         return _parse_json_array_response(raw)
     except Exception as e:
         raise DistillationFailure(f"JSON parse failed: {e}") from e
@@ -451,7 +444,6 @@ def process_file(
     path: Path,
     source_type: str,
     state: dict,
-    anthropic_client: anthropic.Anthropic,
     storage: StorageClient,
     linker: GitHubLinker,
     dry_run: bool = False,
@@ -463,7 +455,6 @@ def process_file(
         path: Path to the JSONL file
         source_type: "claude_code" or "codex_cli"
         state: Processing state dict (modified in place)
-        anthropic_client: Anthropic API client
         storage: StorageClient instance
         linker: GitHubLinker for repo detection
         dry_run: If True, don't save to storage
@@ -508,7 +499,7 @@ def process_file(
     # Distill knowledge. If distillation itself fails, leave the checkpoint
     # unchanged so the next run can retry the same session window.
     try:
-        entries = distill(turns, anthropic_client, github_info)
+        entries = distill(turns, github_info)
     except DistillationFailure as exc:
         log.warning(
             "  Distillation failed; leaving checkpoint unchanged for retry: "
@@ -592,8 +583,7 @@ def main():
         log.error("Refusing to fall back to local/default state on this runner.")
         sys.exit(1)
 
-    # Initialize clients
-    anthropic_client = anthropic.Anthropic()  # Uses ANTHROPIC_API_KEY from env
+    # Initialize storage (inference handled via sdk_client / Max subscription)
     storage = StorageClient()
 
     if not args.dry_run:
@@ -637,7 +627,7 @@ def main():
     for i, (path, source_type) in enumerate(files_to_process):
         try:
             saved = process_file(
-                path, source_type, state, anthropic_client, storage, linker, args.dry_run
+                path, source_type, state, storage, linker, args.dry_run
             )
             total_saved += saved
             if saved > 0:

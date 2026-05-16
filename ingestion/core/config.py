@@ -153,8 +153,9 @@ def validate_config() -> list[str]:
         errors.append("UPSTASH_VECTOR_REST_URL not set")
     if not UPSTASH_VECTOR_REST_TOKEN:
         errors.append("UPSTASH_VECTOR_REST_TOKEN not set")
-    if not ANTHROPIC_API_KEY:
-        errors.append("ANTHROPIC_API_KEY not set")
+    if not ANTHROPIC_API_KEY and os.getenv("CI"):
+        # On CI (GitHub Actions), the API key is required for cloud fallback runs
+        errors.append("ANTHROPIC_API_KEY not set (required on CI)")
     if not OPENAI_API_KEY:
         errors.append("OPENAI_API_KEY not set")
     

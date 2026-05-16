@@ -1,8 +1,6 @@
 name: GitHub Ingestion
 
 on:
-  schedule:
-    - cron: "10 6 * * *"
   repository_dispatch:
     types:
       - github-ingestion-manual

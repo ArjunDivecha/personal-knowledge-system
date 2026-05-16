@@ -31,9 +31,8 @@ import json
 from datetime import datetime
 from typing import Optional
 
-import anthropic
-
-from core.config import ANTHROPIC_API_KEY, EXTRACTION_MODEL
+from core.config import EXTRACTION_MODEL  # kept for reference; not passed to SDK
+from core.sdk_client import sdk_query
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +61,6 @@ class TweetExtractor:
     """
 
     def __init__(self):
-        self.client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         self.last_error: Optional[str] = None
 
     # -------------------------------------------------------------------------
@@ -283,12 +281,7 @@ JSON format:
         """
         try:
             self.last_error = None
-            response = self.client.messages.create(
-                model=EXTRACTION_MODEL,
-                max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            text = response.content[0].text
+            text = sdk_query(prompt, max_tokens=2000)
             start = text.find("[")
             end = text.rfind("]") + 1
             if start == -1 or end == 0:

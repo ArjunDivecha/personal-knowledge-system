@@ -1,8 +1,6 @@
 name: Twitter Ingestion
 
 on:
-  schedule:
-    - cron: "40 5 * * *"
   workflow_dispatch:
     inputs:
       dry_run:

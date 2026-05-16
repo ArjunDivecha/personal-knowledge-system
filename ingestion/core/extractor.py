@@ -23,9 +23,8 @@ import re
 from typing import Optional
 from datetime import datetime
 
-import anthropic
-
-from .config import ANTHROPIC_API_KEY, EXTRACTION_MODEL
+from .config import EXTRACTION_MODEL  # kept for reference; not passed to SDK
+from .sdk_client import sdk_query
 
 
 class Extractor:
@@ -37,8 +36,8 @@ class Extractor:
     """
     
     def __init__(self):
-        """Initialize Anthropic client."""
-        self.client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        """Auth handled via macOS Keychain through sdk_client; no client object needed."""
+        pass
     
     def _generate_id(self, content: str, source_type: str) -> str:
         """Generate a unique ID for a knowledge entry."""
@@ -133,21 +132,14 @@ JSON format:
 ]"""
         
         try:
-            response = self.client.messages.create(
-                model=EXTRACTION_MODEL,
-                max_tokens=4000,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            
-            # Extract JSON from response
-            text = response.content[0].text
-            
+            text = sdk_query(prompt, max_tokens=4000)
+
             # Find JSON array in response
             start = text.find("[")
             end = text.rfind("]") + 1
             if start == -1 or end == 0:
                 return []
-            
+
             raw_entries = json.loads(text[start:end])
             
             # Convert to proper entry format
@@ -283,13 +275,7 @@ JSON format:
 ]"""
         
         try:
-            response = self.client.messages.create(
-                model=EXTRACTION_MODEL,
-                max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            
-            text = response.content[0].text
+            text = sdk_query(prompt, max_tokens=2000)
             start = text.find("[")
             end = text.rfind("]") + 1
             if start == -1 or end == 0:
@@ -427,13 +413,7 @@ JSON format:
 ]"""
 
             try:
-                response = self.client.messages.create(
-                    model=EXTRACTION_MODEL,
-                    max_tokens=3000,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-
-                raw_entries = self._extract_json_array(response.content[0].text)
+                raw_entries = self._extract_json_array(sdk_query(prompt, max_tokens=3000))
                 conversation_id = f"github:{repo_full_name}:docs:{path}"
 
                 for raw in raw_entries:
@@ -592,13 +572,7 @@ JSON format:
 ]"""
 
         try:
-            response = self.client.messages.create(
-                model=EXTRACTION_MODEL,
-                max_tokens=3000,
-                messages=[{"role": "user", "content": prompt}]
-            )
-
-            raw_entries = self._extract_json_array(response.content[0].text)
+            raw_entries = self._extract_json_array(sdk_query(prompt, max_tokens=3000))
             entries = []
             now = datetime.utcnow().isoformat()
             conversation_id = f"github:{repo_full_name}:agent-context:{artifact_path}"
@@ -749,13 +723,7 @@ JSON format:
 ]"""
         
         try:
-            response = self.client.messages.create(
-                model=EXTRACTION_MODEL,
-                max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            
-            text = response.content[0].text
+            text = sdk_query(prompt, max_tokens=2000)
             start = text.find("[")
             end = text.rfind("]") + 1
             if start == -1 or end == 0:
@@ -906,13 +874,7 @@ JSON format:
 ]"""
         
         try:
-            response = self.client.messages.create(
-                model=EXTRACTION_MODEL,
-                max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            
-            text = response.content[0].text
+            text = sdk_query(prompt, max_tokens=2000)
             start = text.find("[")
             end = text.rfind("]") + 1
             if start == -1 or end == 0:
