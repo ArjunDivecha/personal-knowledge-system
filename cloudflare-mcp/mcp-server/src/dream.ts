@@ -388,6 +388,14 @@ function normalizeEntry(raw: unknown, entryType: EntryType): Record<string, unkn
 			typeof metadata.last_consolidated === "string" ? metadata.last_consolidated : null,
 		consolidation_notes: toStringArray(metadata.consolidation_notes),
 		revision: toOptionalInteger(metadata.revision) ?? 0,
+		// Layer 2 quarantine: suppresses auto-injection without changing tier.
+		// Cleared by any retrieval reinforcement.
+		injection_quarantine: Boolean(metadata.injection_quarantine),
+		quarantined_at:
+			typeof metadata.quarantined_at === "string" ? metadata.quarantined_at : null,
+		// Layer 2 demote streak: counts consecutive nights below tier threshold.
+		// Stored so quarantine + demote rules can fire deterministically.
+		quarantine_streak_nights: toOptionalInteger(metadata.quarantine_streak_nights) ?? 0,
 	};
 
 	return {
@@ -3264,6 +3272,73 @@ async function markEntryContested(
 		conflicting_with: conflictingWith,
 		reasons,
 	};
+}
+
+// ---------------------------------------------------------------------------
+// Layer 2 helpers — quarantine + demote (Dream + forgetting design v5).
+// Pure metadata transformations. The Stage 3 cycle invokes these and
+// persists the entry. Each helper returns a brief audit record describing
+// the change for inclusion in the apply log.
+// ---------------------------------------------------------------------------
+
+/**
+ * Mark an entry as injection-quarantined. The retrieval search layer
+ * (Layer 0 / search tool) should treat quarantined entries as not eligible
+ * for auto-injection while still being returnable to direct queries.
+ * Tier is NOT changed — quarantine is reversible by access reinforcement.
+ */
+export function quarantineEntryMetadata(
+	metadata: Record<string, unknown>,
+	timestamp: string,
+): { changed: boolean; previous: boolean } {
+	const previous = Boolean(metadata.injection_quarantine);
+	if (previous) {
+		return { changed: false, previous };
+	}
+	metadata.injection_quarantine = true;
+	metadata.quarantined_at = timestamp;
+	return { changed: true, previous };
+}
+
+/**
+ * Clear quarantine. Called whenever an entry is retrieved (any access
+ * reinforces the entry — the rule is "reversible by retrieval").
+ */
+export function liftQuarantineMetadata(
+	metadata: Record<string, unknown>,
+): { changed: boolean } {
+	if (!metadata.injection_quarantine) {
+		return { changed: false };
+	}
+	metadata.injection_quarantine = false;
+	metadata.quarantined_at = null;
+	metadata.quarantine_streak_nights = 0;
+	return { changed: true };
+}
+
+/**
+ * Demote a tier by exactly one step (1→2 or 2→3). Tier 3 cannot be
+ * demoted further by this helper (eligible-for-archive is handled
+ * separately by Layer 1).
+ * Returns the new tier (unchanged if already 3).
+ */
+export function demoteTierMetadata(
+	metadata: Record<string, unknown>,
+	timestamp: string,
+): { changed: boolean; from: 1 | 2 | 3; to: 1 | 2 | 3 } {
+	const currentTier = resolveStoredInjectionTier(metadata);
+	if (currentTier === 3) {
+		return { changed: false, from: 3, to: 3 };
+	}
+	const newTier: 1 | 2 | 3 = currentTier === 1 ? 2 : 3;
+	metadata.injection_tier = newTier;
+	metadata.last_consolidated = timestamp;
+	// Demotion clears the quarantine flag (the entry has moved tier; the
+	// streak counter resets so it can earn its way back via reinforcement).
+	metadata.injection_quarantine = false;
+	metadata.quarantined_at = null;
+	metadata.quarantine_streak_nights = 0;
+	return { changed: true, from: currentTier, to: newTier };
 }
 
 async function promoteEntry(
