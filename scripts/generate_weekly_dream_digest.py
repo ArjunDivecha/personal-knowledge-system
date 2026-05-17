@@ -144,27 +144,37 @@ def parse_ts(value: Any) -> datetime | None:
 def collect_runs(
     url: str, token: str, start: datetime, end: datetime
 ) -> dict[str, list[dict[str, Any]]]:
-    """Collect dr_* (cycle) and dpr_* (proposal) records overlapping the week."""
+    """Collect dpr_* (proposal) and dr_* (cycle) records overlapping the week.
+
+    Records live at `dream:run:<run_id>`. Auxiliary keys like
+    `dream:run:<run_id>:events` and `dream:run:<run_id>:proposal` are
+    side-tables and skipped here.
+    """
     out: dict[str, list[dict[str, Any]]] = {"cycle": [], "proposal": []}
-    # Existing key shape in this repo: dream runs are stored under specific
-    # keys we don't know all of. We'll be defensive and scan a few patterns.
-    for pattern, bucket in [("dream:run:*", "cycle"), ("dream:proposal:*", "proposal")]:
-        keys = redis_scan_keys(url, token, pattern)
-        for k in keys:
-            raw = redis_get(url, token, k)
-            if not raw:
-                continue
-            try:
-                rec = raw if isinstance(raw, dict) else json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            ts = parse_ts(rec.get("run_at") or rec.get("created_at"))
-            if not ts:
-                continue
-            if start <= ts < end:
-                out[bucket].append(rec)
-    out["cycle"].sort(key=lambda r: r.get("run_at", ""))
-    out["proposal"].sort(key=lambda r: r.get("created_at", ""))
+    keys = redis_scan_keys(url, token, "dream:run:*")
+    for k in keys:
+        # Skip side-tables.
+        if k.endswith(":events") or k.endswith(":proposal"):
+            continue
+        raw = redis_get(url, token, k)
+        if not raw:
+            continue
+        try:
+            rec = raw if isinstance(raw, dict) else json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        # Guard: only dict records have run metadata fields. Skip lists / strings.
+        if not isinstance(rec, dict):
+            continue
+        ts = parse_ts(rec.get("run_at") or rec.get("created_at"))
+        if not ts:
+            continue
+        if start <= ts < end:
+            run_id = rec.get("run_id", "")
+            bucket = "proposal" if isinstance(run_id, str) and run_id.startswith("dpr_") else "cycle"
+            out[bucket].append(rec)
+    out["cycle"].sort(key=lambda r: r.get("run_at") or r.get("created_at") or "")
+    out["proposal"].sort(key=lambda r: r.get("created_at") or r.get("run_at") or "")
     return out
 
 
@@ -179,6 +189,8 @@ def collect_judge_history(
         try:
             rec = raw if isinstance(raw, dict) else json.loads(raw)
         except json.JSONDecodeError:
+            continue
+        if not isinstance(rec, dict):
             continue
         ts = parse_ts(rec.get("settled_at"))
         if not ts:
