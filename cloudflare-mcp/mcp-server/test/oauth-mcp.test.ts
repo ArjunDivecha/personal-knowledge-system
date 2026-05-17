@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import fxSimple from "./fixtures/fxtwitter-simple.json";
 
 const redisMock = vi.hoisted(() => ({
 	get: vi.fn(),
@@ -397,6 +398,10 @@ beforeEach(() => {
 	});
 });
 
+afterEach(() => {
+	vi.unstubAllGlobals();
+});
+
 describe("OAuth and MCP integration", () => {
 	it("serves OAuth protected resource metadata for OpenAI endpoints", async () => {
 		const response = await dispatch(
@@ -497,6 +502,9 @@ describe("OAuth and MCP integration", () => {
 					"list_dream_runs",
 					"get_dream_run",
 					"get_dream_events",
+					"read_tweet",
+					"read_thread",
+					"health",
 					"run_dream_proposal",
 					"grade_dream_proposal",
 					"apply_dream_proposal",
@@ -616,6 +624,48 @@ describe("OAuth and MCP integration", () => {
 		const listRunsText = (((listRunsEnvelope.result as Record<string, unknown>).content as Array<Record<string, unknown>>)[0].text as string);
 		const listRuns = JSON.parse(listRunsText) as Record<string, any>;
 		expect(listRuns.runs[0].run_id).toBe("dr_2026-03-28T03-00-00-000Z");
+
+		const fetchMock = vi.fn(async () => Response.json(fxSimple));
+		vi.stubGlobal("fetch", fetchMock);
+		const readTweetResponse = await dispatch(
+			new IncomingRequest(`${baseUrl}/mcp`, {
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${accessToken}`,
+					accept: "application/json, text/event-stream",
+					"content-type": "application/json",
+					"mcp-session-id": sessionId!,
+				},
+				body: JSON.stringify({
+					jsonrpc: "2.0",
+					id: 7,
+					method: "tools/call",
+					params: {
+						name: "read_tweet",
+						arguments: { url: "https://x.com/jack/status/20?s=20" },
+					},
+				}),
+			}),
+		);
+		const readTweetEnvelope = await readRpcEnvelope(readTweetResponse);
+		const readTweetText = (((readTweetEnvelope.result as Record<string, unknown>).content as Array<Record<string, unknown>>)[0].text as string);
+		const tweet = JSON.parse(readTweetText) as Record<string, any>;
+		expect(tweet).toMatchObject({
+			id: "20",
+			text: "just setting up my twttr",
+			source_api: "fxtwitter",
+			author: { username: "jack" },
+		});
+		expect(fetchMock).toHaveBeenCalledWith(
+			"https://api.fxtwitter.com/2/status/20?about_account=1",
+			expect.objectContaining({
+				headers: expect.objectContaining({
+					accept: "application/json",
+					"user-agent": expect.stringContaining("Mozilla/5.0"),
+				}),
+			}),
+		);
+		expect(redisStore["tweet_reader:queue"]).toBeTruthy();
 	});
 
 	it("grants write scope for standard /mcp OAuth requests", async () => {
@@ -717,6 +767,9 @@ describe("OAuth and MCP integration", () => {
 				"list_dream_runs",
 				"get_dream_run",
 				"get_dream_events",
+				"read_tweet",
+				"read_thread",
+				"health",
 				"github",
 			]),
 			);

@@ -1,0 +1,29 @@
+{
+	"code": 200,
+	"status": {
+		"type": "status",
+		"url": "https://x.com/jack/status/20",
+		"id": "20",
+		"text": "just setting up my twttr",
+		"author": {
+			"screen_name": "jack",
+			"id": "12",
+			"followers": 7509981,
+			"name": "jack",
+			"verification": {
+				"verified": true,
+				"type": "individual"
+			}
+		},
+		"replies": 17883,
+		"reposts": 126246,
+		"likes": 309901,
+		"bookmarks": 21453,
+		"quotes": 6477,
+		"created_at": "Tue Mar 21 20:50:14 +0000 2006",
+		"created_timestamp": 1142974214,
+		"views": null,
+		"community_note": null,
+		"media": {}
+	}
+}

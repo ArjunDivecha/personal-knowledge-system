@@ -28,6 +28,10 @@ import {
 	updateEntry,
 } from "./dream";
 import { formatConsolidationNote } from "./consolidation";
+import { getCachedTweet, enqueueTweetRead, setCachedTweet } from "./tweets/cache";
+import { checkTweetUpstreams, fetchFxThread, fetchTweetWithFallback } from "./tweets/fetchers";
+import { TweetReaderError, type ReadThreadOutput, type ReadTweetOutput } from "./tweets/types";
+import { normalizeTweetUrl } from "./tweets/url-parser";
 
 // GitHub accounts to query
 const GITHUB_ACCOUNTS = ['arjun-via', 'ArjunDivecha'];
@@ -71,6 +75,8 @@ const DREAM_LAST_RUN_KEY = "dream:last_run";
 const DREAM_LAST_ATTEMPT_KEY = "dream:last_attempt";
 const DREAM_RUN_PREFIX = "dream:run:";
 const DREAM_RUN_INDEX_KEY = "dream:runs:index";
+const DEFAULT_TWEET_TIMEOUT_MS = 4000;
+const DEFAULT_TWEET_CACHE_TTL_SECONDS = 300;
 const AUTHORIZATION_SERVER_METADATA_PATHS = new Set([
 	"/.well-known/oauth-authorization-server",
 	"/.well-known/openid-configuration",
@@ -94,6 +100,12 @@ type AuthProps = {
 	userId?: string;
 	scope?: string;
 	scopes?: string[];
+};
+
+type McpToolResult = {
+	content: Array<{ type: "text"; text: string }>;
+	structuredContent?: Record<string, unknown>;
+	isError?: boolean;
 };
 
 function getBaseUrl(url: URL): string {
@@ -219,6 +231,51 @@ function toOptionalNumber(value: unknown): number | null {
 function toOptionalInteger(value: unknown): number | null {
 	const parsed = toOptionalNumber(value);
 	return parsed === null ? null : Math.trunc(parsed);
+}
+
+function readPositiveIntegerEnv(
+	value: string | undefined,
+	defaultValue: number,
+	options: { min: number; max: number },
+): number {
+	if (!value) return defaultValue;
+	const parsed = Number(value);
+	if (!Number.isInteger(parsed)) return defaultValue;
+	return Math.min(Math.max(parsed, options.min), options.max);
+}
+
+function getTweetTimeoutMs(env: Env): number {
+	return readPositiveIntegerEnv(env.TWEET_READER_TIMEOUT_MS, DEFAULT_TWEET_TIMEOUT_MS, {
+		min: 500,
+		max: 10_000,
+	});
+}
+
+function getTweetCacheTtlSeconds(env: Env): number {
+	return readPositiveIntegerEnv(
+		env.TWEET_READER_CACHE_TTL_SECONDS,
+		DEFAULT_TWEET_CACHE_TTL_SECONDS,
+		{ min: 30, max: 3600 },
+	);
+}
+
+function toolJson(payload: object): McpToolResult {
+	return {
+		structuredContent: payload as Record<string, unknown>,
+		content: [{ type: "text", text: JSON.stringify(payload) }],
+	};
+}
+
+function toolError(message: string): McpToolResult {
+	return {
+		isError: true,
+		content: [{ type: "text", text: message }],
+	};
+}
+
+function tweetReaderErrorMessage(error: unknown): string {
+	if (error instanceof TweetReaderError) return error.message;
+	return error instanceof Error ? error.message : String(error);
 }
 
 function toSourceWeights(value: unknown): Record<string, number> {
@@ -879,6 +936,52 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 		};
 	}
 
+	private async readTweet(url: string, includeMediaAlt: boolean): Promise<ReadTweetOutput> {
+		const timeoutMs = getTweetTimeoutMs(this.env);
+		const normalizedUrl = await normalizeTweetUrl(url, timeoutMs);
+		const redis = this.getRedis(this.env);
+		try {
+			const cached = await getCachedTweet(redis, normalizedUrl, includeMediaAlt);
+			if (cached) {
+				this.ctx.waitUntil(enqueueTweetRead(redis, cached, normalizedUrl, "hit").catch(() => undefined));
+				return cached;
+			}
+		} catch {
+			// Cache must never block public tweet reads.
+		}
+
+		const tweet = await fetchTweetWithFallback(normalizedUrl, {
+			includeMediaAlt,
+			timeoutMs,
+		});
+		try {
+			await setCachedTweet(redis, tweet, includeMediaAlt, getTweetCacheTtlSeconds(this.env));
+		} catch {
+			// Upstream success is more important than a cache write.
+		}
+		this.ctx.waitUntil(enqueueTweetRead(redis, tweet, normalizedUrl, "miss").catch(() => undefined));
+		return tweet;
+	}
+
+	private async readThread(url: string, maxDepth: number): Promise<ReadThreadOutput> {
+		const timeoutMs = getTweetTimeoutMs(this.env);
+		const normalizedUrl = await normalizeTweetUrl(url, timeoutMs);
+		const thread = await fetchFxThread(normalizedUrl, {
+			includeMediaAlt: true,
+			timeoutMs,
+		});
+		const limitedTweets = thread.tweets.slice(0, maxDepth);
+		const limited = {
+			...thread,
+			root: limitedTweets[0] ?? thread.root,
+			tweets: limitedTweets,
+			count: limitedTweets.length,
+		};
+		const redis = this.getRedis(this.env);
+		this.ctx.waitUntil(enqueueTweetRead(redis, limited.root, normalizedUrl, "miss").catch(() => undefined));
+		return limited;
+	}
+
 	private async requireWriteAccess(action: string, limit: number = WRITE_TOOL_RATE_LIMIT): Promise<string> {
 		const authProps = this.getAuthProps();
 		const userId = authProps.userId;
@@ -1173,6 +1276,62 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 				return {
 					content: [{ type: "text", text: JSON.stringify(await getValidationStatus(redis)) }],
 				};
+			},
+		);
+
+		this.server.tool(
+			"read_tweet",
+			"Read a public X/Twitter post from a URL. Returns full text, author, timestamp, engagement metrics, media URLs, community note, directly quoted post, and X Article body when available. Use when the user pastes any x.com or twitter.com status link, including mobile.x.com, twitter.com, x.com/i/status, fxtwitter, vxtwitter, fixupx, nitter, or t.co links.",
+			{
+				url: z.string().min(1).max(2048).describe("The X/Twitter status URL to read."),
+				include_media_alt: z.boolean().default(true).describe("Include image/video alt text when upstream APIs provide it."),
+			},
+			OPEN_WORLD_READ_ONLY_TOOL_ANNOTATIONS,
+			async ({ url, include_media_alt }) => {
+				try {
+					const tweet = await this.readTweet(url, include_media_alt);
+					return toolJson(tweet);
+				} catch (error) {
+					return toolError(tweetReaderErrorMessage(error));
+				}
+			},
+		);
+
+		this.server.tool(
+			"read_thread",
+			"Read a public self-thread from any X/Twitter status URL in the thread. Returns the root post plus same-author continuation replies in order when FxTwitter exposes the unrolled thread. Use when the user asks to read, summarize, or quote a whole Twitter/X thread.",
+			{
+				url: z.string().min(1).max(2048).describe("Any X/Twitter status URL from the thread."),
+				max_depth: z.number().int().min(1).max(100).default(25).describe("Maximum number of same-author thread posts to return."),
+			},
+			OPEN_WORLD_READ_ONLY_TOOL_ANNOTATIONS,
+			async ({ url, max_depth }) => {
+				try {
+					const thread = await this.readThread(url, max_depth);
+					return toolJson(thread);
+				} catch (error) {
+					return toolError(tweetReaderErrorMessage(error));
+				}
+			},
+		);
+
+		this.server.tool(
+			"health",
+			"Check the Personal Knowledge MCP and tweet reader upstream health. Returns build metadata and FxTwitter/VxTwitter/ADHX probe statuses.",
+			{},
+			READ_ONLY_TOOL_ANNOTATIONS,
+			async () => {
+				const payload = {
+					status: "ok",
+					build: this.env.BUILD_SHA ?? "unknown",
+					tweet_reader: {
+						timeout_ms: getTweetTimeoutMs(this.env),
+						cache_ttl_seconds: getTweetCacheTtlSeconds(this.env),
+						queue_key: "tweet_reader:queue",
+						upstream_status: await checkTweetUpstreams(1500),
+					},
+				};
+				return toolJson(payload);
 			},
 		);
 

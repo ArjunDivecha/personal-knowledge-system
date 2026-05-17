@@ -1,0 +1,50 @@
+{
+	"title": "A long-form note",
+	"content": {
+		"blocks": [
+			{
+				"key": "a",
+				"text": "This is bold and clear.",
+				"type": "unstyled",
+				"inlineStyleRanges": [{ "offset": 8, "length": 4, "style": "Bold" }],
+				"entityRanges": []
+			},
+			{
+				"key": "b",
+				"text": "First point",
+				"type": "ordered-list-item",
+				"inlineStyleRanges": [],
+				"entityRanges": []
+			},
+			{
+				"key": "c",
+				"text": "Second point",
+				"type": "ordered-list-item",
+				"inlineStyleRanges": [],
+				"entityRanges": []
+			},
+			{
+				"key": "d",
+				"text": "",
+				"type": "atomic",
+				"inlineStyleRanges": [],
+				"entityRanges": [{ "offset": 0, "length": 0, "key": 0 }]
+			},
+			{
+				"key": "e",
+				"text": "Final note",
+				"type": "unordered-list-item",
+				"inlineStyleRanges": [],
+				"entityRanges": []
+			}
+		],
+		"entityMap": {
+			"0": {
+				"type": "IMAGE",
+				"data": {
+					"url": "https://pbs.twimg.com/media/example.jpg"
+				}
+			}
+		}
+	}
+}
