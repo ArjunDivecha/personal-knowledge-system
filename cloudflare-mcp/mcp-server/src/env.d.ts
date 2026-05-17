@@ -19,6 +19,11 @@ declare global {
 		DREAM_HARD_DELETE_DAILY_CAP?: string;
 		// Optional override for Opus judge model used by Mac-side script.
 		DREAM_OPUS_MODEL?: string;
+		// Tweets module (src/tweets/) — referenced by readTweet/readThread tool.
+		TWEET_READER_TIMEOUT_MS?: string;
+		TWEET_READER_CACHE_TTL_SECONDS?: string;
+		// Wrangler injects this at build time when configured.
+		BUILD_SHA?: string;
 		MCP_OBJECT: DurableObjectNamespace<import("./index").KnowledgeMCP>;
 		OPENAI_MCP_OBJECT: DurableObjectNamespace<import("./index").OpenAIKnowledgeMCP>;
 		OAUTH_KV: KVNamespace;
