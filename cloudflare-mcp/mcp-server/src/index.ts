@@ -2532,6 +2532,69 @@ const defaultHandler = {
 			}
 		}
 
+		// ─────────────────────────────────────────────────────────────────
+		// Judge queue (Mac-side judge script consumes these)
+		// ─────────────────────────────────────────────────────────────────
+
+		// GET /ops/dream/judge_queue — list pending judge items with payloads.
+		if (url.pathname === "/ops/dream/judge_queue" && request.method === "GET") {
+			if (!isAuthorizedOperatorRequest(request, env)) {
+				return Response.json({ error: "Unauthorized" }, { status: 401 });
+			}
+			try {
+				const redis = createRedisClient(env);
+				const { listPendingOpIds, getJudgeItem, getJudgeVerdict } = await import("./judgeQueue");
+				const opIds = await listPendingOpIds(redis, 200);
+				const items = await Promise.all(
+					opIds.map(async (opId) => ({
+						op_id: opId,
+						item: await getJudgeItem(redis, opId),
+						verdict: await getJudgeVerdict(redis, opId),
+					})),
+				);
+				return Response.json({
+					pending_count: opIds.length,
+					items,
+				}, { headers: { "Content-Type": "application/json" } });
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				return Response.json({ error: msg }, { status: 500 });
+			}
+		}
+
+		// POST /ops/dream/judge_verdict — Mac script posts a verdict.
+		// Body: { op_id, verdict: "apply" | "skip", reason, judge_model, judge_source }
+		if (url.pathname === "/ops/dream/judge_verdict" && request.method === "POST") {
+			if (!isAuthorizedOperatorRequest(request, env)) {
+				return Response.json({ error: "Unauthorized" }, { status: 401 });
+			}
+			try {
+				const body = await request.json();
+				const parsed = z.object({
+					op_id: z.string().min(1),
+					verdict: z.enum(["apply", "skip"]),
+					reason: z.string().min(1).max(2000),
+					judge_model: z.string().min(1).max(100),
+					judge_source: z.enum(["claude_cli", "anthropic_api"]),
+				}).parse(body);
+				const redis = createRedisClient(env);
+				const { judgeVerdictKey } = await import("./judgeQueue");
+				const record = {
+					...parsed,
+					judged_at: new Date().toISOString(),
+				};
+				await redis.set(judgeVerdictKey(parsed.op_id), JSON.stringify(record));
+				return Response.json({
+					ok: true,
+					op_id: parsed.op_id,
+					accepted_at: record.judged_at,
+				}, { headers: { "Content-Type": "application/json" } });
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				return Response.json({ error: msg }, { status: 500 });
+			}
+		}
+
 		// POST /ops/dream/clear_kill_flag — clear an active kill flag so the
 		// affected mode can resume operating per its env-var setting.
 		// Body: { mode: "DREAM_AUTO_APPLY_MODE" | "RETRIEVAL_POLICY_MODE" }

@@ -9,6 +9,15 @@ import {
 } from "./salience";
 import { formatConsolidationNote } from "./consolidation";
 import { recordDestructiveAction } from "./tripwires";
+import {
+	type JudgeQueueItem,
+	type PendingVerdict,
+	buildJudgeRubric,
+	enqueueJudgeItem,
+	isDuplicateMergeBorderline,
+	readPendingVerdicts,
+	settleJudgeItem,
+} from "./judgeQueue";
 
 type EntryType = "knowledge" | "project";
 type DreamStatus = "completed" | "skipped_no_backfill" | "skipped_locked" | "failed";
@@ -4915,9 +4924,118 @@ export async function runDreamCycle(
 		const { duplicatePlans, contradictionPlans } = buildReplayPlans(replayEntries);
 		const mergedEntries: Array<Record<string, unknown>> = [];
 		const contradictionEntries: Array<Record<string, unknown>> = [];
+		const judgeQueueSummary = {
+			enqueued: [] as Array<Record<string, unknown>>,
+			verdicts_applied: [] as Array<Record<string, unknown>>,
+			verdicts_skipped: [] as Array<Record<string, unknown>>,
+			opus_mode: env.DREAM_OPUS_MODE === "on" ? "on" : "off",
+		};
+
+		// Layer 3/4 — read any pending verdicts from the offline judge (Mac
+		// script) and act on them. Only runs when DREAM_OPUS_MODE === "on";
+		// otherwise verdicts stay pending until the operator enables Opus mode.
+		if (!options.dryRun && env.DREAM_OPUS_MODE === "on") {
+			try {
+				const pendingVerdicts: PendingVerdict[] = await readPendingVerdicts(redis);
+				for (const { item, verdict } of pendingVerdicts) {
+					if (verdict.verdict === "apply") {
+						// For now the only supported borderline op is duplicate_merge.
+						// Future op types (promote/demote/hard_delete) plug in here.
+						if (item.op_type === "duplicate_merge_borderline") {
+							const plan = item.payload as unknown as DuplicateMergePlan;
+							try {
+								const result = await applyDuplicateMergePlan(redis, vector, plan, runId, startedAt);
+								mergedEntries.push({ ...result, judge_op_id: item.op_id });
+								await settleJudgeItem(redis, item.op_id, "applied", { verdict, run_id: runId });
+								judgeQueueSummary.verdicts_applied.push({
+									op_id: item.op_id,
+									op_type: item.op_type,
+									verdict_reason: verdict.reason,
+								});
+							} catch (e) {
+								await settleJudgeItem(redis, item.op_id, "stale", {
+									verdict,
+									error: e instanceof Error ? e.message : String(e),
+								});
+							}
+						} else {
+							// Unsupported op type — settle as stale.
+							await settleJudgeItem(redis, item.op_id, "stale", {
+								verdict,
+								reason: "unsupported_op_type_in_this_worker_version",
+							});
+						}
+					} else {
+						await settleJudgeItem(redis, item.op_id, "skipped", { verdict });
+						judgeQueueSummary.verdicts_skipped.push({
+							op_id: item.op_id,
+							op_type: item.op_type,
+							verdict_reason: verdict.reason,
+						});
+					}
+				}
+			} catch (e) {
+				console.error("[judge_queue] verdict consumption failed", e);
+			}
+		}
 
 		if (!options.dryRun) {
 			for (const plan of duplicatePlans) {
+				// Layer 3 split: borderline (any access > 0) routes to judge.
+				// Bright-line (all access == 0) auto-applies.
+				const canonicalAccess = plan.canonical.accessCount ?? 0;
+				const dupAccess = plan.duplicates.map((d) => d.accessCount ?? 0);
+				const borderline = isDuplicateMergeBorderline({
+					canonicalAccessCount: canonicalAccess,
+					duplicateAccessCounts: dupAccess,
+				});
+				if (borderline && env.DREAM_OPUS_MODE === "on") {
+					// Enqueue for Mac-side judge to decide on next run.
+					const opId = `op_${runId}_dup_${plan.canonical.id}`;
+					const item: JudgeQueueItem = {
+						op_id: opId,
+						op_type: "duplicate_merge_borderline",
+						proposal_run_id: runId,
+						enqueued_at: startedAt,
+						target_entry_ids: [plan.canonical.id, ...plan.duplicates.map((d) => d.id)],
+						rubric: buildJudgeRubric("duplicate_merge_borderline"),
+						payload: {
+							fingerprint: plan.fingerprint,
+							canonical: {
+								id: plan.canonical.id,
+								type: plan.canonical.type,
+								label: plan.canonical.label,
+								access_count: plan.canonical.accessCount,
+								salience: plan.canonical.salienceScore,
+								current_view:
+									typeof plan.canonical.entry.current_view === "string"
+										? plan.canonical.entry.current_view
+										: null,
+							},
+							duplicates: plan.duplicates.map((d) => ({
+								id: d.id,
+								type: d.type,
+								label: d.label,
+								access_count: d.accessCount,
+								salience: d.salienceScore,
+								current_view:
+									typeof d.entry.current_view === "string" ? d.entry.current_view : null,
+							})),
+						},
+					};
+					const enqueued = await enqueueJudgeItem(redis, item);
+					if (enqueued) {
+						judgeQueueSummary.enqueued.push({
+							op_id: opId,
+							op_type: item.op_type,
+							canonical_id: plan.canonical.id,
+							duplicate_ids: plan.duplicates.map((d) => d.id),
+						});
+					}
+					// Don't auto-apply this plan; the judge will decide later.
+					continue;
+				}
+				// Bright-line: auto-apply.
 				mergedEntries.push(await applyDuplicateMergePlan(redis, vector, plan, runId, startedAt));
 			}
 
@@ -5094,6 +5212,16 @@ export async function runDreamCycle(
 					cap_hit: layer2Summary.cap_hit,
 					quarantined_entries: layer2Summary.quarantined,
 					demoted_entries: layer2Summary.demoted,
+				},
+				judge_queue: {
+					status: options.dryRun ? "skipped_dry_run" : "completed",
+					opus_mode: judgeQueueSummary.opus_mode,
+					enqueued_count: judgeQueueSummary.enqueued.length,
+					verdicts_applied_count: judgeQueueSummary.verdicts_applied.length,
+					verdicts_skipped_count: judgeQueueSummary.verdicts_skipped.length,
+					enqueued: judgeQueueSummary.enqueued,
+					verdicts_applied: judgeQueueSummary.verdicts_applied,
+					verdicts_skipped: judgeQueueSummary.verdicts_skipped,
 				},
 			},
 			counts: {
