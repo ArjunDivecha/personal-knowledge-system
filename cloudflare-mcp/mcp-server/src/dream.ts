@@ -8,6 +8,7 @@ import {
 	resolveStoredInjectionTier,
 } from "./salience";
 import { formatConsolidationNote } from "./consolidation";
+import { recordDestructiveAction } from "./tripwires";
 
 type EntryType = "knowledge" | "project";
 type DreamStatus = "completed" | "skipped_no_backfill" | "skipped_locked" | "failed";
@@ -3590,6 +3591,9 @@ async function archiveEntry(
 	archivedEntry.metadata.salience_score = archivedEntry.salienceScore;
 	await persistEntry(redis, vector, archivedEntry, { skipVector: true });
 	await deleteVectorEntry(vector, entry.id);
+
+	// Anomaly tripwire: bump the daily destructive-action counter (best-effort).
+	await recordDestructiveAction(redis);
 
 	return {
 		id: entry.id,

@@ -36,6 +36,13 @@ import {
 	type TopicBucket,
 	type QueryIntent,
 } from "./retrievalPolicy";
+import {
+	checkDestructiveTripwire,
+	checkRetrievalTripwire,
+	getEffectiveMode,
+	recordSearchQuery,
+	setKillFlag,
+} from "./tripwires";
 
 // GitHub accounts to query
 const GITHUB_ACCOUNTS = ['arjun-via', 'ArjunDivecha'];
@@ -1829,9 +1836,15 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 					});
 
 					// Layer 0: classify query intent once for use across all candidates.
-					// When mode=="off", the penalty helpers return 1.0 regardless.
+					// The effective mode combines operator intent (env var) with any
+					// active anomaly-tripwire kill flag: off wins.
+					const retrievalEffective = await getEffectiveMode(
+						redis,
+						this.env.RETRIEVAL_POLICY_MODE,
+						"RETRIEVAL_POLICY_MODE",
+					);
 					const retrievalPolicyMode: "off" | "on" =
-						this.env.RETRIEVAL_POLICY_MODE === "on" ? "on" : "off";
+						retrievalEffective.effective === "on" ? "on" : "off";
 					const queryIntent: QueryIntent = classifyQueryIntent(query);
 
 					const rankedResults = await Promise.all(results.map(async (result) => {
@@ -1954,6 +1967,12 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 						this.scheduleReconsolidation(entryType, result.id);
 					}
 
+					// Tripwire bookkeeping: record query + hit status for the
+					// retrieval-collapse anomaly check. A "hit" means at least
+					// one result was returned to the caller (passed all filters).
+					const wasHit = topResults.length > 0;
+					await recordSearchQuery(redis, wasHit);
+
 					return {
 						content: [{
 							type: "text",
@@ -1963,6 +1982,9 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 								tier_filter: tier_filter ?? null,
 								retrieval_policy: {
 									mode: retrievalPolicyMode,
+									env_mode: retrievalEffective.env_value,
+									kill_flag_active: retrievalEffective.tripped,
+									kill_flag_record: retrievalEffective.trip_record,
 									query_intent: queryIntent.bucket,
 									query_confidence: queryIntent.confidence,
 									matched_keywords: queryIntent.matchedKeywords,
@@ -2476,6 +2498,68 @@ const defaultHandler = {
 			}
 		}
 
+		// ─────────────────────────────────────────────────────────────────
+		// Anomaly tripwires (Dream + forgetting design)
+		// ─────────────────────────────────────────────────────────────────
+
+		// GET /ops/dream/tripwire_status — inspect kill flags and the recent
+		// destructive + retrieval signals. Operator-token authenticated.
+		if (url.pathname === "/ops/dream/tripwire_status" && request.method === "GET") {
+			if (!isAuthorizedOperatorRequest(request, env)) {
+				return Response.json({ error: "Unauthorized" }, { status: 401 });
+			}
+			try {
+				const redis = createRedisClient(env);
+				const [destructiveCheck, retrievalCheck, autoApplyMode, retrievalPolicyMode] = await Promise.all([
+					checkDestructiveTripwire(redis),
+					checkRetrievalTripwire(redis),
+					getEffectiveMode(redis, env.DREAM_AUTO_APPLY_MODE, "DREAM_AUTO_APPLY_MODE"),
+					getEffectiveMode(redis, env.RETRIEVAL_POLICY_MODE, "RETRIEVAL_POLICY_MODE"),
+				]);
+				return Response.json({
+					modes: {
+						DREAM_AUTO_APPLY_MODE: autoApplyMode,
+						RETRIEVAL_POLICY_MODE: retrievalPolicyMode,
+					},
+					tripwires: {
+						destructive_action_volume: destructiveCheck,
+						retrieval_hit_collapse: retrievalCheck,
+					},
+				}, { headers: { "Content-Type": "application/json" } });
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				return Response.json({ error: msg }, { status: 500 });
+			}
+		}
+
+		// POST /ops/dream/clear_kill_flag — clear an active kill flag so the
+		// affected mode can resume operating per its env-var setting.
+		// Body: { mode: "DREAM_AUTO_APPLY_MODE" | "RETRIEVAL_POLICY_MODE" }
+		if (url.pathname === "/ops/dream/clear_kill_flag" && request.method === "POST") {
+			if (!isAuthorizedOperatorRequest(request, env)) {
+				return Response.json({ error: "Unauthorized" }, { status: 401 });
+			}
+			try {
+				const body = await request.json();
+				const parsed = z.object({
+					mode: z.enum(["DREAM_AUTO_APPLY_MODE", "RETRIEVAL_POLICY_MODE"]),
+					reason: z.string().min(1).max(500).optional(),
+				}).parse(body);
+				const redis = createRedisClient(env);
+				const { clearKillFlag } = await import("./tripwires");
+				await clearKillFlag(redis, parsed.mode);
+				return Response.json({
+					ok: true,
+					cleared: parsed.mode,
+					cleared_at: new Date().toISOString(),
+					reason: parsed.reason ?? null,
+				}, { headers: { "Content-Type": "application/json" } });
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				return Response.json({ error: msg }, { status: 500 });
+			}
+		}
+
 		// OAuth discovery endpoints for MCP clients and OIDC-style probes used by some connector UIs.
 		if (AUTHORIZATION_SERVER_METADATA_PATHS.has(url.pathname)) {
 			return new Response(JSON.stringify(buildAuthorizationServerMetadata(baseUrl)), {
@@ -2570,13 +2654,57 @@ export default {
 		return withCors(request, response);
 	},
 	async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-		// Dream + forgetting design: when DREAM_AUTO_APPLY_MODE === "full",
-		// switch from proposal-only to the full cycle that also applies
-		// duplicate merges, promotions, archives, and Layer 2 quarantine
-		// + tier-demote operations. Default "off" preserves the prior
-		// proposal-only behavior so existing monitoring (dpr_* records)
-		// continues to work unchanged.
-		const autoApplyMode = env.DREAM_AUTO_APPLY_MODE === "full" ? "full" : "off";
+		// =========================================================================
+		// 1. Anomaly tripwires (run before deciding whether to auto-apply).
+		// =========================================================================
+		// If either tripwire fires, write a kill flag to Redis and force the
+		// affected mode to "off" for this run. The flag persists until the
+		// operator clears it via the dream:clear_kill_flag MCP tool.
+		const tripwireRedis = createRedisForTripwires(env);
+		if (tripwireRedis) {
+			try {
+				const destructive = await checkDestructiveTripwire(tripwireRedis);
+				if (destructive.tripped && destructive.reason) {
+					await setKillFlag(tripwireRedis, "DREAM_AUTO_APPLY_MODE", {
+						tripped_at: new Date().toISOString(),
+						reason: destructive.reason,
+						source_tripwire: "destructive_spike",
+					});
+					console.warn(
+						`[tripwire] DREAM_AUTO_APPLY_MODE auto-flipped off: ${destructive.reason}`,
+						JSON.stringify(destructive.day_counts),
+					);
+				}
+				const retrieval = await checkRetrievalTripwire(tripwireRedis);
+				if (retrieval.tripped && retrieval.reason) {
+					await setKillFlag(tripwireRedis, "RETRIEVAL_POLICY_MODE", {
+						tripped_at: new Date().toISOString(),
+						reason: retrieval.reason,
+						source_tripwire: "retrieval_collapse",
+					});
+					console.warn(
+						`[tripwire] RETRIEVAL_POLICY_MODE auto-flipped off: ${retrieval.reason}`,
+						JSON.stringify(retrieval.day_ratios),
+					);
+				}
+			} catch (e) {
+				// Tripwire failures should never block the cycle.
+				console.error("[tripwire] check failed", e);
+			}
+		}
+
+		// =========================================================================
+		// 2. Effective-mode resolution + cycle dispatch.
+		// =========================================================================
+		// Dream + forgetting design: when the effective DREAM_AUTO_APPLY_MODE is
+		// "full", switch from proposal-only to the full cycle that also applies
+		// duplicate merges, promotions, archives, and Layer 2 quarantine + tier
+		// demotion. Effective mode combines operator intent (env var) with any
+		// active kill flag (machine override): off wins.
+		const effective = tripwireRedis
+			? await getEffectiveMode(tripwireRedis, env.DREAM_AUTO_APPLY_MODE, "DREAM_AUTO_APPLY_MODE")
+			: { effective: env.DREAM_AUTO_APPLY_MODE === "full" ? ("full" as const) : ("off" as const), env_value: env.DREAM_AUTO_APPLY_MODE ?? "off", tripped: false, trip_record: null };
+		const autoApplyMode = effective.effective;
 		const promise =
 			autoApplyMode === "full"
 				? runDreamCycle(env, {
@@ -2593,7 +2721,7 @@ export default {
 					actorId: "scheduled:dream-governance",
 					archiveLimit: SCHEDULED_DREAM_ARCHIVE_LIMIT,
 					promotionLimit: SCHEDULED_DREAM_PROMOTION_LIMIT,
-					note: `Nightly Dream governance proposal. cron=${controller.cron} scheduled_time=${controller.scheduledTime}`,
+					note: `Nightly Dream governance proposal. cron=${controller.cron} scheduled_time=${controller.scheduledTime}${effective.tripped ? " (FALLBACK: kill flag active)" : ""}`,
 				});
 		ctx.waitUntil(promise);
 		const result = await promise;
@@ -2602,3 +2730,13 @@ export default {
 		}
 	},
 };
+
+// Lazy redis client for tripwire bookkeeping. Returns null on missing creds
+// so tests that don't set Upstash env vars still run.
+function createRedisForTripwires(env: Env): Redis | null {
+	if (!env.UPSTASH_REDIS_REST_URL || !env.UPSTASH_REDIS_REST_TOKEN) return null;
+	return new Redis({
+		url: env.UPSTASH_REDIS_REST_URL,
+		token: env.UPSTASH_REDIS_REST_TOKEN,
+	});
+}
