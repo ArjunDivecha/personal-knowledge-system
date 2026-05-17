@@ -62,6 +62,17 @@ log "--- Agent sessions ingestion starting ---"
 log "--- Agent sessions ingestion done ---"
 
 # --------------------------------------------------------------------------
+# Dream judge (border-case ops queued by the Cloudflare Worker)
+# Uses `claude` CLI for subscription billing; falls back to Anthropic API
+# with a logged warning if the CLI is unavailable. Always exits 0 unless
+# something catastrophic happens — a stalled judge queue is not fatal to
+# nightly ingestion.
+# --------------------------------------------------------------------------
+log "--- Dream judge starting ---"
+"$VENV/bin/python" "$INGESTION/dream_judge/run.py" 2>&1 | tee -a "$LOG" || log "Dream judge exited with non-zero status (see log)"
+log "--- Dream judge done ---"
+
+# --------------------------------------------------------------------------
 # Log rotation: keep 30 days
 # --------------------------------------------------------------------------
 find "$LOG_DIR" -name "*.log" -mtime +30 -delete

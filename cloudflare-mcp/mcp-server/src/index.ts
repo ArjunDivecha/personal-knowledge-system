@@ -32,6 +32,21 @@ import { getCachedTweet, enqueueTweetRead, setCachedTweet } from "./tweets/cache
 import { checkTweetUpstreams, fetchFxThread, fetchTweetWithFallback } from "./tweets/fetchers";
 import { TweetReaderError, type ReadThreadOutput, type ReadTweetOutput } from "./tweets/types";
 import { normalizeTweetUrl } from "./tweets/url-parser";
+import {
+	classifyEntryTopic,
+	classifyQueryIntent,
+	computeCrossContextPenalty,
+	computeQuarantinePenalty,
+	type TopicBucket,
+	type QueryIntent,
+} from "./retrievalPolicy";
+import {
+	checkDestructiveTripwire,
+	checkRetrievalTripwire,
+	getEffectiveMode,
+	recordSearchQuery,
+	setKillFlag,
+} from "./tripwires";
 
 // GitHub accounts to query
 const GITHUB_ACCOUNTS = ['arjun-via', 'ArjunDivecha'];
@@ -1118,6 +1133,24 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 		updatedMetadata.last_consolidated = now;
 		updatedMetadata.salience_score = computeSalience(updatedEntry);
 
+		// Layer 2 quarantine is reversible by retrieval reinforcement: any
+		// access (which is what reconsolidate represents) lifts the quarantine
+		// flag and resets the streak so the entry can re-earn its tier.
+		if (updatedMetadata.injection_quarantine) {
+			updatedMetadata.injection_quarantine = false;
+			updatedMetadata.quarantined_at = null;
+			updatedMetadata.quarantine_streak_nights = 0;
+			appendConsolidationNote(
+				updatedMetadata,
+				formatConsolidationNote({
+					timestamp: now,
+					source: "reconsolidation",
+					action: "lift_quarantine",
+					detail: `quarantine cleared after access (access_count=${accessCount})`,
+				}),
+			);
+		}
+
 		await redis.set(entryKey, JSON.stringify(updatedEntry));
 		await vector.update({
 			id: entryId,
@@ -1961,6 +1994,18 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 						includeMetadata: true,
 					});
 
+					// Layer 0: classify query intent once for use across all candidates.
+					// The effective mode combines operator intent (env var) with any
+					// active anomaly-tripwire kill flag: off wins.
+					const retrievalEffective = await getEffectiveMode(
+						redis,
+						this.env.RETRIEVAL_POLICY_MODE,
+						"RETRIEVAL_POLICY_MODE",
+					);
+					const retrievalPolicyMode: "off" | "on" =
+						retrievalEffective.effective === "on" ? "on" : "off";
+					const queryIntent: QueryIntent = classifyQueryIntent(query);
+
 					const rankedResults = await Promise.all(results.map(async (result) => {
 						const vectorMetadata = parseStoredObject(result.metadata) ?? {};
 						const entryType: EntryType =
@@ -1988,13 +2033,49 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 							...vectorMetadata,
 							...entryMetadata,
 						});
-						const finalScore = computeSearchScore({
+						const baseScore = computeSearchScore({
 							similarity: result.score,
 							recency: recencyScore,
 							salience: salienceScore,
 							tier: effectiveTier,
 							sourceWeight,
 						});
+
+						// Layer 0 penalties (no-op when RETRIEVAL_POLICY_MODE !== "on").
+						const entryBucket: TopicBucket = classifyEntryTopic({
+							label: getEntryLabel(entry),
+							domain:
+								typeof (entry as Record<string, unknown>).domain === "string"
+									? ((entry as Record<string, unknown>).domain as string)
+									: null,
+							currentView:
+								typeof (entry as Record<string, unknown>).current_view === "string"
+									? ((entry as Record<string, unknown>).current_view as string)
+									: null,
+							source:
+								typeof entryMetadata.source === "string"
+									? entryMetadata.source
+									: typeof entryMetadata.source_type === "string"
+										? entryMetadata.source_type
+										: null,
+							project:
+								typeof entryMetadata.project === "string" ? entryMetadata.project : null,
+							githubRepo:
+								typeof entryMetadata.github_repo === "string"
+									? entryMetadata.github_repo
+									: null,
+						});
+						const crossContextPenalty = computeCrossContextPenalty({
+							mode: retrievalPolicyMode,
+							queryIntent,
+							entryBucket,
+						});
+						const quarantinePenalty = computeQuarantinePenalty({
+							mode: retrievalPolicyMode,
+							isQuarantined: Boolean(entryMetadata.injection_quarantine),
+						});
+						const policyMultiplier = crossContextPenalty * quarantinePenalty;
+						const finalScore = Math.round(baseScore * policyMultiplier * 10000) / 10000;
 
 						return {
 							id: String(result.id),
@@ -2013,7 +2094,11 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 							similarity_score: result.score,
 							recency_score: recencyScore,
 							source_weight: sourceWeight,
+							base_score: baseScore,
+							policy_multiplier: policyMultiplier,
 							final_score: finalScore,
+							topic_bucket: entryBucket,
+							quarantined: Boolean(entryMetadata.injection_quarantine),
 							updated: updatedAt ?? null,
 							metadata: {
 								classification_status: entryMetadata.classification_status,
@@ -2024,6 +2109,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 								github_repo: typeof entryMetadata.github_repo === "string" ? entryMetadata.github_repo : null,
 								artifact_path: typeof entryMetadata.artifact_path === "string" ? entryMetadata.artifact_path : null,
 								archived: false,
+								injection_quarantine: Boolean(entryMetadata.injection_quarantine),
 							},
 						};
 					}));
@@ -2040,6 +2126,12 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 						this.scheduleReconsolidation(entryType, result.id);
 					}
 
+					// Tripwire bookkeeping: record query + hit status for the
+					// retrieval-collapse anomaly check. A "hit" means at least
+					// one result was returned to the caller (passed all filters).
+					const wasHit = topResults.length > 0;
+					await recordSearchQuery(redis, wasHit);
+
 					return {
 						content: [{
 							type: "text",
@@ -2047,7 +2139,16 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 								results: topResults,
 								query,
 								tier_filter: tier_filter ?? null,
-								scoring: "ranked by retrieval tier, then a weighted score of semantic similarity, recency, salience, and source weight; archived entries excluded by default"
+								retrieval_policy: {
+									mode: retrievalPolicyMode,
+									env_mode: retrievalEffective.env_value,
+									kill_flag_active: retrievalEffective.tripped,
+									kill_flag_record: retrievalEffective.trip_record,
+									query_intent: queryIntent.bucket,
+									query_confidence: queryIntent.confidence,
+									matched_keywords: queryIntent.matchedKeywords,
+								},
+								scoring: "ranked by retrieval tier, then a weighted score of semantic similarity, recency, salience, source weight, and (when RETRIEVAL_POLICY_MODE=on) Layer 0 cross-context + quarantine penalties; archived entries excluded by default"
 							})
 						}],
 					};
@@ -2556,6 +2657,131 @@ const defaultHandler = {
 			}
 		}
 
+		// ─────────────────────────────────────────────────────────────────
+		// Anomaly tripwires (Dream + forgetting design)
+		// ─────────────────────────────────────────────────────────────────
+
+		// GET /ops/dream/tripwire_status — inspect kill flags and the recent
+		// destructive + retrieval signals. Operator-token authenticated.
+		if (url.pathname === "/ops/dream/tripwire_status" && request.method === "GET") {
+			if (!isAuthorizedOperatorRequest(request, env)) {
+				return Response.json({ error: "Unauthorized" }, { status: 401 });
+			}
+			try {
+				const redis = createRedisClient(env);
+				const [destructiveCheck, retrievalCheck, autoApplyMode, retrievalPolicyMode] = await Promise.all([
+					checkDestructiveTripwire(redis),
+					checkRetrievalTripwire(redis),
+					getEffectiveMode(redis, env.DREAM_AUTO_APPLY_MODE, "DREAM_AUTO_APPLY_MODE"),
+					getEffectiveMode(redis, env.RETRIEVAL_POLICY_MODE, "RETRIEVAL_POLICY_MODE"),
+				]);
+				return Response.json({
+					modes: {
+						DREAM_AUTO_APPLY_MODE: autoApplyMode,
+						RETRIEVAL_POLICY_MODE: retrievalPolicyMode,
+					},
+					tripwires: {
+						destructive_action_volume: destructiveCheck,
+						retrieval_hit_collapse: retrievalCheck,
+					},
+				}, { headers: { "Content-Type": "application/json" } });
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				return Response.json({ error: msg }, { status: 500 });
+			}
+		}
+
+		// ─────────────────────────────────────────────────────────────────
+		// Judge queue (Mac-side judge script consumes these)
+		// ─────────────────────────────────────────────────────────────────
+
+		// GET /ops/dream/judge_queue — list pending judge items with payloads.
+		if (url.pathname === "/ops/dream/judge_queue" && request.method === "GET") {
+			if (!isAuthorizedOperatorRequest(request, env)) {
+				return Response.json({ error: "Unauthorized" }, { status: 401 });
+			}
+			try {
+				const redis = createRedisClient(env);
+				const { listPendingOpIds, getJudgeItem, getJudgeVerdict } = await import("./judgeQueue");
+				const opIds = await listPendingOpIds(redis, 200);
+				const items = await Promise.all(
+					opIds.map(async (opId) => ({
+						op_id: opId,
+						item: await getJudgeItem(redis, opId),
+						verdict: await getJudgeVerdict(redis, opId),
+					})),
+				);
+				return Response.json({
+					pending_count: opIds.length,
+					items,
+				}, { headers: { "Content-Type": "application/json" } });
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				return Response.json({ error: msg }, { status: 500 });
+			}
+		}
+
+		// POST /ops/dream/judge_verdict — Mac script posts a verdict.
+		// Body: { op_id, verdict: "apply" | "skip", reason, judge_model, judge_source }
+		if (url.pathname === "/ops/dream/judge_verdict" && request.method === "POST") {
+			if (!isAuthorizedOperatorRequest(request, env)) {
+				return Response.json({ error: "Unauthorized" }, { status: 401 });
+			}
+			try {
+				const body = await request.json();
+				const parsed = z.object({
+					op_id: z.string().min(1),
+					verdict: z.enum(["apply", "skip"]),
+					reason: z.string().min(1).max(2000),
+					judge_model: z.string().min(1).max(100),
+					judge_source: z.enum(["claude_cli", "anthropic_api"]),
+				}).parse(body);
+				const redis = createRedisClient(env);
+				const { judgeVerdictKey } = await import("./judgeQueue");
+				const record = {
+					...parsed,
+					judged_at: new Date().toISOString(),
+				};
+				await redis.set(judgeVerdictKey(parsed.op_id), JSON.stringify(record));
+				return Response.json({
+					ok: true,
+					op_id: parsed.op_id,
+					accepted_at: record.judged_at,
+				}, { headers: { "Content-Type": "application/json" } });
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				return Response.json({ error: msg }, { status: 500 });
+			}
+		}
+
+		// POST /ops/dream/clear_kill_flag — clear an active kill flag so the
+		// affected mode can resume operating per its env-var setting.
+		// Body: { mode: "DREAM_AUTO_APPLY_MODE" | "RETRIEVAL_POLICY_MODE" }
+		if (url.pathname === "/ops/dream/clear_kill_flag" && request.method === "POST") {
+			if (!isAuthorizedOperatorRequest(request, env)) {
+				return Response.json({ error: "Unauthorized" }, { status: 401 });
+			}
+			try {
+				const body = await request.json();
+				const parsed = z.object({
+					mode: z.enum(["DREAM_AUTO_APPLY_MODE", "RETRIEVAL_POLICY_MODE"]),
+					reason: z.string().min(1).max(500).optional(),
+				}).parse(body);
+				const redis = createRedisClient(env);
+				const { clearKillFlag } = await import("./tripwires");
+				await clearKillFlag(redis, parsed.mode);
+				return Response.json({
+					ok: true,
+					cleared: parsed.mode,
+					cleared_at: new Date().toISOString(),
+					reason: parsed.reason ?? null,
+				}, { headers: { "Content-Type": "application/json" } });
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				return Response.json({ error: msg }, { status: 500 });
+			}
+		}
+
 		// OAuth discovery endpoints for MCP clients and OIDC-style probes used by some connector UIs.
 		if (AUTHORIZATION_SERVER_METADATA_PATHS.has(url.pathname)) {
 			return new Response(JSON.stringify(buildAuthorizationServerMetadata(baseUrl)), {
@@ -2650,13 +2876,75 @@ export default {
 		return withCors(request, response);
 	},
 	async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-		const promise = runDreamProposal(env, {
-			trigger: "manual",
-			actorId: "scheduled:dream-governance",
-			archiveLimit: SCHEDULED_DREAM_ARCHIVE_LIMIT,
-			promotionLimit: SCHEDULED_DREAM_PROMOTION_LIMIT,
-			note: `Nightly Dream governance proposal. cron=${controller.cron} scheduled_time=${controller.scheduledTime}`,
-		});
+		// =========================================================================
+		// 1. Anomaly tripwires (run before deciding whether to auto-apply).
+		// =========================================================================
+		// If either tripwire fires, write a kill flag to Redis and force the
+		// affected mode to "off" for this run. The flag persists until the
+		// operator clears it via the dream:clear_kill_flag MCP tool.
+		const tripwireRedis = createRedisForTripwires(env);
+		if (tripwireRedis) {
+			try {
+				const destructive = await checkDestructiveTripwire(tripwireRedis);
+				if (destructive.tripped && destructive.reason) {
+					await setKillFlag(tripwireRedis, "DREAM_AUTO_APPLY_MODE", {
+						tripped_at: new Date().toISOString(),
+						reason: destructive.reason,
+						source_tripwire: "destructive_spike",
+					});
+					console.warn(
+						`[tripwire] DREAM_AUTO_APPLY_MODE auto-flipped off: ${destructive.reason}`,
+						JSON.stringify(destructive.day_counts),
+					);
+				}
+				const retrieval = await checkRetrievalTripwire(tripwireRedis);
+				if (retrieval.tripped && retrieval.reason) {
+					await setKillFlag(tripwireRedis, "RETRIEVAL_POLICY_MODE", {
+						tripped_at: new Date().toISOString(),
+						reason: retrieval.reason,
+						source_tripwire: "retrieval_collapse",
+					});
+					console.warn(
+						`[tripwire] RETRIEVAL_POLICY_MODE auto-flipped off: ${retrieval.reason}`,
+						JSON.stringify(retrieval.day_ratios),
+					);
+				}
+			} catch (e) {
+				// Tripwire failures should never block the cycle.
+				console.error("[tripwire] check failed", e);
+			}
+		}
+
+		// =========================================================================
+		// 2. Effective-mode resolution + cycle dispatch.
+		// =========================================================================
+		// Dream + forgetting design: when the effective DREAM_AUTO_APPLY_MODE is
+		// "full", switch from proposal-only to the full cycle that also applies
+		// duplicate merges, promotions, archives, and Layer 2 quarantine + tier
+		// demotion. Effective mode combines operator intent (env var) with any
+		// active kill flag (machine override): off wins.
+		const effective = tripwireRedis
+			? await getEffectiveMode(tripwireRedis, env.DREAM_AUTO_APPLY_MODE, "DREAM_AUTO_APPLY_MODE")
+			: { effective: env.DREAM_AUTO_APPLY_MODE === "full" ? ("full" as const) : ("off" as const), env_value: env.DREAM_AUTO_APPLY_MODE ?? "off", tripped: false, trip_record: null };
+		const autoApplyMode = effective.effective;
+		const promise =
+			autoApplyMode === "full"
+				? runDreamCycle(env, {
+					dryRun: false,
+					trigger: "scheduled",
+					cron: controller.cron,
+					scheduledTime: controller.scheduledTime,
+					archiveLimit: SCHEDULED_DREAM_ARCHIVE_LIMIT,
+					promotionLimit: SCHEDULED_DREAM_PROMOTION_LIMIT,
+					note: `Nightly Dream cycle (auto-apply=full). cron=${controller.cron} scheduled_time=${controller.scheduledTime}`,
+				})
+				: runDreamProposal(env, {
+					trigger: "manual",
+					actorId: "scheduled:dream-governance",
+					archiveLimit: SCHEDULED_DREAM_ARCHIVE_LIMIT,
+					promotionLimit: SCHEDULED_DREAM_PROMOTION_LIMIT,
+					note: `Nightly Dream governance proposal. cron=${controller.cron} scheduled_time=${controller.scheduledTime}${effective.tripped ? " (FALLBACK: kill flag active)" : ""}`,
+				});
 		ctx.waitUntil(promise);
 		const result = await promise;
 		if (result.status === "skipped_no_backfill" || result.status === "skipped_locked") {
@@ -2664,3 +2952,13 @@ export default {
 		}
 	},
 };
+
+// Lazy redis client for tripwire bookkeeping. Returns null on missing creds
+// so tests that don't set Upstash env vars still run.
+function createRedisForTripwires(env: Env): Redis | null {
+	if (!env.UPSTASH_REDIS_REST_URL || !env.UPSTASH_REDIS_REST_TOKEN) return null;
+	return new Redis({
+		url: env.UPSTASH_REDIS_REST_URL,
+		token: env.UPSTASH_REDIS_REST_TOKEN,
+	});
+}

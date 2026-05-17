@@ -8,6 +8,16 @@ import {
 	resolveStoredInjectionTier,
 } from "./salience";
 import { formatConsolidationNote } from "./consolidation";
+import { recordDestructiveAction } from "./tripwires";
+import {
+	type JudgeQueueItem,
+	type PendingVerdict,
+	buildJudgeRubric,
+	enqueueJudgeItem,
+	isDuplicateMergeBorderline,
+	readPendingVerdicts,
+	settleJudgeItem,
+} from "./judgeQueue";
 
 type EntryType = "knowledge" | "project";
 type DreamStatus = "completed" | "skipped_no_backfill" | "skipped_locked" | "failed";
@@ -388,6 +398,14 @@ function normalizeEntry(raw: unknown, entryType: EntryType): Record<string, unkn
 			typeof metadata.last_consolidated === "string" ? metadata.last_consolidated : null,
 		consolidation_notes: toStringArray(metadata.consolidation_notes),
 		revision: toOptionalInteger(metadata.revision) ?? 0,
+		// Layer 2 quarantine: suppresses auto-injection without changing tier.
+		// Cleared by any retrieval reinforcement.
+		injection_quarantine: Boolean(metadata.injection_quarantine),
+		quarantined_at:
+			typeof metadata.quarantined_at === "string" ? metadata.quarantined_at : null,
+		// Layer 2 demote streak: counts consecutive nights below tier threshold.
+		// Stored so quarantine + demote rules can fire deterministically.
+		quarantine_streak_nights: toOptionalInteger(metadata.quarantine_streak_nights) ?? 0,
 	};
 
 	return {
@@ -3266,6 +3284,217 @@ async function markEntryContested(
 	};
 }
 
+// ---------------------------------------------------------------------------
+// Layer 2 helpers — quarantine + demote (Dream + forgetting design v5).
+// Pure metadata transformations. The Stage 3 cycle invokes these and
+// persists the entry. Each helper returns a brief audit record describing
+// the change for inclusion in the apply log.
+// ---------------------------------------------------------------------------
+
+/**
+ * Mark an entry as injection-quarantined. The retrieval search layer
+ * (Layer 0 / search tool) should treat quarantined entries as not eligible
+ * for auto-injection while still being returnable to direct queries.
+ * Tier is NOT changed — quarantine is reversible by access reinforcement.
+ */
+export function quarantineEntryMetadata(
+	metadata: Record<string, unknown>,
+	timestamp: string,
+): { changed: boolean; previous: boolean } {
+	const previous = Boolean(metadata.injection_quarantine);
+	if (previous) {
+		return { changed: false, previous };
+	}
+	metadata.injection_quarantine = true;
+	metadata.quarantined_at = timestamp;
+	return { changed: true, previous };
+}
+
+/**
+ * Clear quarantine. Called whenever an entry is retrieved (any access
+ * reinforces the entry — the rule is "reversible by retrieval").
+ */
+export function liftQuarantineMetadata(
+	metadata: Record<string, unknown>,
+): { changed: boolean } {
+	if (!metadata.injection_quarantine) {
+		return { changed: false };
+	}
+	metadata.injection_quarantine = false;
+	metadata.quarantined_at = null;
+	metadata.quarantine_streak_nights = 0;
+	return { changed: true };
+}
+
+/**
+ * Demote a tier by exactly one step (1→2 or 2→3). Tier 3 cannot be
+ * demoted further by this helper (eligible-for-archive is handled
+ * separately by Layer 1).
+ * Returns the new tier (unchanged if already 3).
+ */
+export function demoteTierMetadata(
+	metadata: Record<string, unknown>,
+	timestamp: string,
+): { changed: boolean; from: 1 | 2 | 3; to: 1 | 2 | 3 } {
+	const currentTier = resolveStoredInjectionTier(metadata);
+	if (currentTier === 3) {
+		return { changed: false, from: 3, to: 3 };
+	}
+	const newTier: 1 | 2 | 3 = currentTier === 1 ? 2 : 3;
+	metadata.injection_tier = newTier;
+	metadata.last_consolidated = timestamp;
+	// Demotion clears the quarantine flag (the entry has moved tier; the
+	// streak counter resets so it can earn its way back via reinforcement).
+	metadata.injection_quarantine = false;
+	metadata.quarantined_at = null;
+	metadata.quarantine_streak_nights = 0;
+	return { changed: true, from: currentTier, to: newTier };
+}
+
+// =============================================================================
+// Layer 2 — quarantine + demote (Dream + forgetting design)
+// =============================================================================
+// Thresholds chosen per the design doc. Kept in code (not policy.json) for
+// now — easy to move to shared/memory_policy.json once tuned.
+// =============================================================================
+
+/** Salience floor below which the entry starts a "below-threshold" streak. */
+export const LAYER2_QUARANTINE_SALIENCE_THRESHOLD = 0.15;
+/** Consecutive nights below threshold before quarantine fires. */
+export const LAYER2_QUARANTINE_AFTER_NIGHTS = 3;
+/** Total consecutive nights below threshold before tier demotion fires. */
+export const LAYER2_DEMOTE_AFTER_NIGHTS = 10; // = 3 quarantine + 7 demote
+/** Hard cap on Layer 2 mutations per cycle run (quarantine + demote combined). */
+export const LAYER2_PER_RUN_CAP = 100;
+
+/**
+ * Run the Layer 2 quarantine + tier-demotion phase across all entries.
+ *
+ * Rule per entry (tier-1 and tier-2 only — tier 3 is already at the floor):
+ *   - If salience >= threshold     → streak resets to 0.
+ *   - If salience < threshold      → streak increments by 1.
+ *     - streak == LAYER2_QUARANTINE_AFTER_NIGHTS and not quarantined → quarantine.
+ *     - streak >= LAYER2_DEMOTE_AFTER_NIGHTS and quarantined         → demote tier.
+ *     - else                                                          → streak only.
+ *
+ * Quarantine is NOT lifted by this phase — the search path lifts it on
+ * retrieval reinforcement (see reconsolidateEntry in index.ts).
+ *
+ * Returns a summary suitable for inclusion in the Dream run record.
+ */
+export async function applyLayer2QuarantineAndDemote(
+	redis: Redis,
+	vector: Index,
+	entries: LoadedEntry[],
+	timestamp: string,
+): Promise<{
+	quarantined: Array<Record<string, unknown>>;
+	demoted: Array<Record<string, unknown>>;
+	streak_reset: number;
+	streak_increment: number;
+	processed: number;
+	cap_hit: boolean;
+}> {
+	const quarantined: Array<Record<string, unknown>> = [];
+	const demoted: Array<Record<string, unknown>> = [];
+	let streakReset = 0;
+	let streakIncrement = 0;
+	let processed = 0;
+	let capHit = false;
+
+	for (const entry of entries) {
+		if (processed >= LAYER2_PER_RUN_CAP) {
+			capHit = true;
+			break;
+		}
+		const tier = resolveStoredInjectionTier(entry.metadata);
+		if (tier === 3) continue; // already at floor; archive path handles further decay
+
+		const salience =
+			typeof entry.salienceScore === "number" ? entry.salienceScore : computeSalience(entry.entry);
+		const currentStreak = toOptionalInteger(entry.metadata.quarantine_streak_nights) ?? 0;
+		const wasQuarantined = Boolean(entry.metadata.injection_quarantine);
+
+		if (salience >= LAYER2_QUARANTINE_SALIENCE_THRESHOLD) {
+			// Salience recovered — reset streak only if non-zero (avoid pointless writes).
+			if (currentStreak > 0) {
+				entry.metadata.quarantine_streak_nights = 0;
+				await persistEntry(redis, vector, entry);
+				streakReset += 1;
+				processed += 1;
+			}
+			continue;
+		}
+
+		// Below threshold — increment streak and act on the new value.
+		const newStreak = currentStreak + 1;
+		entry.metadata.quarantine_streak_nights = newStreak;
+
+		if (newStreak >= LAYER2_DEMOTE_AFTER_NIGHTS && wasQuarantined) {
+			const result = demoteTierMetadata(entry.metadata, timestamp);
+			if (result.changed) {
+				appendConsolidationNote(
+					entry.metadata,
+					formatConsolidationNote({
+						timestamp,
+						source: "dream",
+						action: "demote_tier",
+						detail: `tier ${result.from} -> ${result.to} after ${newStreak} nights below ${LAYER2_QUARANTINE_SALIENCE_THRESHOLD}`,
+					}),
+				);
+				await persistEntry(redis, vector, entry);
+				demoted.push({
+					id: entry.id,
+					type: entry.type,
+					label: entry.label,
+					from_tier: result.from,
+					to_tier: result.to,
+					salience,
+					streak_nights: newStreak,
+				});
+				processed += 1;
+			}
+		} else if (newStreak >= LAYER2_QUARANTINE_AFTER_NIGHTS && !wasQuarantined) {
+			const result = quarantineEntryMetadata(entry.metadata, timestamp);
+			if (result.changed) {
+				appendConsolidationNote(
+					entry.metadata,
+					formatConsolidationNote({
+						timestamp,
+						source: "dream",
+						action: "quarantine_entry",
+						detail: `tier ${tier} after ${newStreak} nights below ${LAYER2_QUARANTINE_SALIENCE_THRESHOLD}`,
+					}),
+				);
+				await persistEntry(redis, vector, entry);
+				quarantined.push({
+					id: entry.id,
+					type: entry.type,
+					label: entry.label,
+					tier,
+					salience,
+					streak_nights: newStreak,
+				});
+				processed += 1;
+			}
+		} else {
+			// Just persist streak increment — no tier/quarantine change yet.
+			await persistEntry(redis, vector, entry);
+			streakIncrement += 1;
+			processed += 1;
+		}
+	}
+
+	return {
+		quarantined,
+		demoted,
+		streak_reset: streakReset,
+		streak_increment: streakIncrement,
+		processed,
+		cap_hit: capHit,
+	};
+}
+
 async function promoteEntry(
 	redis: Redis,
 	vector: Index,
@@ -3371,6 +3600,9 @@ async function archiveEntry(
 	archivedEntry.metadata.salience_score = archivedEntry.salienceScore;
 	await persistEntry(redis, vector, archivedEntry, { skipVector: true });
 	await deleteVectorEntry(vector, entry.id);
+
+	// Anomaly tripwire: bump the daily destructive-action counter (best-effort).
+	await recordDestructiveAction(redis);
 
 	return {
 		id: entry.id,
@@ -4692,9 +4924,118 @@ export async function runDreamCycle(
 		const { duplicatePlans, contradictionPlans } = buildReplayPlans(replayEntries);
 		const mergedEntries: Array<Record<string, unknown>> = [];
 		const contradictionEntries: Array<Record<string, unknown>> = [];
+		const judgeQueueSummary = {
+			enqueued: [] as Array<Record<string, unknown>>,
+			verdicts_applied: [] as Array<Record<string, unknown>>,
+			verdicts_skipped: [] as Array<Record<string, unknown>>,
+			opus_mode: env.DREAM_OPUS_MODE === "on" ? "on" : "off",
+		};
+
+		// Layer 3/4 — read any pending verdicts from the offline judge (Mac
+		// script) and act on them. Only runs when DREAM_OPUS_MODE === "on";
+		// otherwise verdicts stay pending until the operator enables Opus mode.
+		if (!options.dryRun && env.DREAM_OPUS_MODE === "on") {
+			try {
+				const pendingVerdicts: PendingVerdict[] = await readPendingVerdicts(redis);
+				for (const { item, verdict } of pendingVerdicts) {
+					if (verdict.verdict === "apply") {
+						// For now the only supported borderline op is duplicate_merge.
+						// Future op types (promote/demote/hard_delete) plug in here.
+						if (item.op_type === "duplicate_merge_borderline") {
+							const plan = item.payload as unknown as DuplicateMergePlan;
+							try {
+								const result = await applyDuplicateMergePlan(redis, vector, plan, runId, startedAt);
+								mergedEntries.push({ ...result, judge_op_id: item.op_id });
+								await settleJudgeItem(redis, item.op_id, "applied", { verdict, run_id: runId });
+								judgeQueueSummary.verdicts_applied.push({
+									op_id: item.op_id,
+									op_type: item.op_type,
+									verdict_reason: verdict.reason,
+								});
+							} catch (e) {
+								await settleJudgeItem(redis, item.op_id, "stale", {
+									verdict,
+									error: e instanceof Error ? e.message : String(e),
+								});
+							}
+						} else {
+							// Unsupported op type — settle as stale.
+							await settleJudgeItem(redis, item.op_id, "stale", {
+								verdict,
+								reason: "unsupported_op_type_in_this_worker_version",
+							});
+						}
+					} else {
+						await settleJudgeItem(redis, item.op_id, "skipped", { verdict });
+						judgeQueueSummary.verdicts_skipped.push({
+							op_id: item.op_id,
+							op_type: item.op_type,
+							verdict_reason: verdict.reason,
+						});
+					}
+				}
+			} catch (e) {
+				console.error("[judge_queue] verdict consumption failed", e);
+			}
+		}
 
 		if (!options.dryRun) {
 			for (const plan of duplicatePlans) {
+				// Layer 3 split: borderline (any access > 0) routes to judge.
+				// Bright-line (all access == 0) auto-applies.
+				const canonicalAccess = plan.canonical.accessCount ?? 0;
+				const dupAccess = plan.duplicates.map((d) => d.accessCount ?? 0);
+				const borderline = isDuplicateMergeBorderline({
+					canonicalAccessCount: canonicalAccess,
+					duplicateAccessCounts: dupAccess,
+				});
+				if (borderline && env.DREAM_OPUS_MODE === "on") {
+					// Enqueue for Mac-side judge to decide on next run.
+					const opId = `op_${runId}_dup_${plan.canonical.id}`;
+					const item: JudgeQueueItem = {
+						op_id: opId,
+						op_type: "duplicate_merge_borderline",
+						proposal_run_id: runId,
+						enqueued_at: startedAt,
+						target_entry_ids: [plan.canonical.id, ...plan.duplicates.map((d) => d.id)],
+						rubric: buildJudgeRubric("duplicate_merge_borderline"),
+						payload: {
+							fingerprint: plan.fingerprint,
+							canonical: {
+								id: plan.canonical.id,
+								type: plan.canonical.type,
+								label: plan.canonical.label,
+								access_count: plan.canonical.accessCount,
+								salience: plan.canonical.salienceScore,
+								current_view:
+									typeof plan.canonical.entry.current_view === "string"
+										? plan.canonical.entry.current_view
+										: null,
+							},
+							duplicates: plan.duplicates.map((d) => ({
+								id: d.id,
+								type: d.type,
+								label: d.label,
+								access_count: d.accessCount,
+								salience: d.salienceScore,
+								current_view:
+									typeof d.entry.current_view === "string" ? d.entry.current_view : null,
+							})),
+						},
+					};
+					const enqueued = await enqueueJudgeItem(redis, item);
+					if (enqueued) {
+						judgeQueueSummary.enqueued.push({
+							op_id: opId,
+							op_type: item.op_type,
+							canonical_id: plan.canonical.id,
+							duplicate_ids: plan.duplicates.map((d) => d.id),
+						});
+					}
+					// Don't auto-apply this plan; the judge will decide later.
+					continue;
+				}
+				// Bright-line: auto-apply.
 				mergedEntries.push(await applyDuplicateMergePlan(redis, vector, plan, runId, startedAt));
 			}
 
@@ -4784,17 +5125,40 @@ export async function runDreamCycle(
 				? archiveCandidates.slice(0, options.archiveLimit)
 				: archiveCandidates;
 		const archivedEntries: Array<Record<string, unknown>> = [];
+		let layer2Summary: Awaited<ReturnType<typeof applyLayer2QuarantineAndDemote>> = {
+			quarantined: [],
+			demoted: [],
+			streak_reset: 0,
+			streak_increment: 0,
+			processed: 0,
+			cap_hit: false,
+		};
 		if (!options.dryRun) {
 			for (const entry of archiveCandidatesLimited) {
 				archivedEntries.push(
 					await archiveEntry(redis, vector, entry, runId, startedAt, archiveReason),
 				);
 			}
+
+			// Layer 2 — quarantine + tier demote (synaptic weakening before pruning).
+			// Runs over the same loaded entries snapshot. Note that entries archived
+			// above are still in this array but already at tier 3 or with archived=true
+			// (the helper skips tier 3 and resolveStoredInjectionTier wouldn't return
+			// a demotable tier for an archived entry).
+			layer2Summary = await applyLayer2QuarantineAndDemote(
+				redis,
+				vector,
+				allEntries,
+				startedAt,
+			);
+
 			if (
 				mergedEntries.length > 0 ||
 				contradictionEntries.length > 0 ||
 				promotedEntries.length > 0 ||
-				archivedEntries.length > 0
+				archivedEntries.length > 0 ||
+				layer2Summary.quarantined.length > 0 ||
+				layer2Summary.demoted.length > 0
 			) {
 				await rebuildThinIndexSafely(redis, runId);
 			}
@@ -4838,6 +5202,27 @@ export async function runDreamCycle(
 					archive_limit: options.archiveLimit ?? null,
 					archived_count: archivedEntries.length,
 				},
+				layer2_quarantine_and_demote: {
+					status: options.dryRun ? "skipped_dry_run" : "completed",
+					quarantined_count: layer2Summary.quarantined.length,
+					demoted_count: layer2Summary.demoted.length,
+					streak_reset_count: layer2Summary.streak_reset,
+					streak_increment_count: layer2Summary.streak_increment,
+					per_run_cap: LAYER2_PER_RUN_CAP,
+					cap_hit: layer2Summary.cap_hit,
+					quarantined_entries: layer2Summary.quarantined,
+					demoted_entries: layer2Summary.demoted,
+				},
+				judge_queue: {
+					status: options.dryRun ? "skipped_dry_run" : "completed",
+					opus_mode: judgeQueueSummary.opus_mode,
+					enqueued_count: judgeQueueSummary.enqueued.length,
+					verdicts_applied_count: judgeQueueSummary.verdicts_applied.length,
+					verdicts_skipped_count: judgeQueueSummary.verdicts_skipped.length,
+					enqueued: judgeQueueSummary.enqueued,
+					verdicts_applied: judgeQueueSummary.verdicts_applied,
+					verdicts_skipped: judgeQueueSummary.verdicts_skipped,
+				},
 			},
 			counts: {
 				total_entries: allEntries.length,
@@ -4857,6 +5242,8 @@ export async function runDreamCycle(
 				promoted: promotedEntries.length,
 				promotion_limit: options.promotionLimit ?? null,
 				archive_limit: options.archiveLimit ?? null,
+				quarantined: layer2Summary.quarantined.length,
+				demoted: layer2Summary.demoted.length,
 			},
 			duplicate_plans: duplicatePlans.map((plan) => ({
 				canonical_id: plan.canonical.id,
