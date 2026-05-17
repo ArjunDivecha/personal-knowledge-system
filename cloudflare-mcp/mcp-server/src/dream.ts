@@ -4942,8 +4942,29 @@ export async function runDreamCycle(
 						// For now the only supported borderline op is duplicate_merge.
 						// Future op types (promote/demote/hard_delete) plug in here.
 						if (item.op_type === "duplicate_merge_borderline") {
-							const plan = item.payload as unknown as DuplicateMergePlan;
+							// Re-load the live entries by ID. The queue payload is a
+							// trimmed snapshot from enqueue time; applyDuplicateMergePlan
+							// needs full LoadedEntry objects with current metadata.
 							try {
+								if (!item.target_entry_ids || item.target_entry_ids.length < 2) {
+									throw new Error("invalid_target_entry_ids");
+								}
+								const loadedMap = await loadTouchedEntries(redis, item.target_entry_ids);
+								const canonicalId = item.target_entry_ids[0];
+								const duplicateIds = item.target_entry_ids.slice(1);
+								const canonical = loadedMap.get(canonicalId);
+								const duplicates = duplicateIds
+									.map((id) => loadedMap.get(id))
+									.filter((e): e is LoadedEntry => e !== undefined);
+								if (!canonical || duplicates.length === 0) {
+									throw new Error("entries_no_longer_available");
+								}
+								const payloadObj = item.payload as Record<string, unknown> | undefined;
+								const fingerprint =
+									typeof payloadObj?.fingerprint === "string"
+										? (payloadObj.fingerprint as string)
+										: `judge:${canonicalId}`;
+								const plan: DuplicateMergePlan = { fingerprint, canonical, duplicates };
 								const result = await applyDuplicateMergePlan(redis, vector, plan, runId, startedAt);
 								mergedEntries.push({ ...result, judge_op_id: item.op_id });
 								await settleJudgeItem(redis, item.op_id, "applied", { verdict, run_id: runId });
