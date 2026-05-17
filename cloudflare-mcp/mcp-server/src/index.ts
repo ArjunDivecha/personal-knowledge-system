@@ -28,6 +28,14 @@ import {
 	updateEntry,
 } from "./dream";
 import { formatConsolidationNote } from "./consolidation";
+import {
+	classifyEntryTopic,
+	classifyQueryIntent,
+	computeCrossContextPenalty,
+	computeQuarantinePenalty,
+	type TopicBucket,
+	type QueryIntent,
+} from "./retrievalPolicy";
 
 // GitHub accounts to query
 const GITHUB_ACCOUNTS = ['arjun-via', 'ArjunDivecha'];
@@ -1802,6 +1810,12 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 						includeMetadata: true,
 					});
 
+					// Layer 0: classify query intent once for use across all candidates.
+					// When mode=="off", the penalty helpers return 1.0 regardless.
+					const retrievalPolicyMode: "off" | "on" =
+						this.env.RETRIEVAL_POLICY_MODE === "on" ? "on" : "off";
+					const queryIntent: QueryIntent = classifyQueryIntent(query);
+
 					const rankedResults = await Promise.all(results.map(async (result) => {
 						const vectorMetadata = parseStoredObject(result.metadata) ?? {};
 						const entryType: EntryType =
@@ -1829,13 +1843,49 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 							...vectorMetadata,
 							...entryMetadata,
 						});
-						const finalScore = computeSearchScore({
+						const baseScore = computeSearchScore({
 							similarity: result.score,
 							recency: recencyScore,
 							salience: salienceScore,
 							tier: effectiveTier,
 							sourceWeight,
 						});
+
+						// Layer 0 penalties (no-op when RETRIEVAL_POLICY_MODE !== "on").
+						const entryBucket: TopicBucket = classifyEntryTopic({
+							label: getEntryLabel(entry),
+							domain:
+								typeof (entry as Record<string, unknown>).domain === "string"
+									? ((entry as Record<string, unknown>).domain as string)
+									: null,
+							currentView:
+								typeof (entry as Record<string, unknown>).current_view === "string"
+									? ((entry as Record<string, unknown>).current_view as string)
+									: null,
+							source:
+								typeof entryMetadata.source === "string"
+									? entryMetadata.source
+									: typeof entryMetadata.source_type === "string"
+										? entryMetadata.source_type
+										: null,
+							project:
+								typeof entryMetadata.project === "string" ? entryMetadata.project : null,
+							githubRepo:
+								typeof entryMetadata.github_repo === "string"
+									? entryMetadata.github_repo
+									: null,
+						});
+						const crossContextPenalty = computeCrossContextPenalty({
+							mode: retrievalPolicyMode,
+							queryIntent,
+							entryBucket,
+						});
+						const quarantinePenalty = computeQuarantinePenalty({
+							mode: retrievalPolicyMode,
+							isQuarantined: Boolean(entryMetadata.injection_quarantine),
+						});
+						const policyMultiplier = crossContextPenalty * quarantinePenalty;
+						const finalScore = Math.round(baseScore * policyMultiplier * 10000) / 10000;
 
 						return {
 							id: String(result.id),
@@ -1854,7 +1904,11 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 							similarity_score: result.score,
 							recency_score: recencyScore,
 							source_weight: sourceWeight,
+							base_score: baseScore,
+							policy_multiplier: policyMultiplier,
 							final_score: finalScore,
+							topic_bucket: entryBucket,
+							quarantined: Boolean(entryMetadata.injection_quarantine),
 							updated: updatedAt ?? null,
 							metadata: {
 								classification_status: entryMetadata.classification_status,
@@ -1865,6 +1919,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 								github_repo: typeof entryMetadata.github_repo === "string" ? entryMetadata.github_repo : null,
 								artifact_path: typeof entryMetadata.artifact_path === "string" ? entryMetadata.artifact_path : null,
 								archived: false,
+								injection_quarantine: Boolean(entryMetadata.injection_quarantine),
 							},
 						};
 					}));
@@ -1888,7 +1943,13 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 								results: topResults,
 								query,
 								tier_filter: tier_filter ?? null,
-								scoring: "ranked by retrieval tier, then a weighted score of semantic similarity, recency, salience, and source weight; archived entries excluded by default"
+								retrieval_policy: {
+									mode: retrievalPolicyMode,
+									query_intent: queryIntent.bucket,
+									query_confidence: queryIntent.confidence,
+									matched_keywords: queryIntent.matchedKeywords,
+								},
+								scoring: "ranked by retrieval tier, then a weighted score of semantic similarity, recency, salience, source weight, and (when RETRIEVAL_POLICY_MODE=on) Layer 0 cross-context + quarantine penalties; archived entries excluded by default"
 							})
 						}],
 					};
