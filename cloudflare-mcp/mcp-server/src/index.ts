@@ -1023,6 +1023,24 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 		updatedMetadata.last_consolidated = now;
 		updatedMetadata.salience_score = computeSalience(updatedEntry);
 
+		// Layer 2 quarantine is reversible by retrieval reinforcement: any
+		// access (which is what reconsolidate represents) lifts the quarantine
+		// flag and resets the streak so the entry can re-earn its tier.
+		if (updatedMetadata.injection_quarantine) {
+			updatedMetadata.injection_quarantine = false;
+			updatedMetadata.quarantined_at = null;
+			updatedMetadata.quarantine_streak_nights = 0;
+			appendConsolidationNote(
+				updatedMetadata,
+				formatConsolidationNote({
+					timestamp: now,
+					source: "reconsolidation",
+					action: "lift_quarantine",
+					detail: `quarantine cleared after access (access_count=${accessCount})`,
+				}),
+			);
+		}
+
 		await redis.set(entryKey, JSON.stringify(updatedEntry));
 		await vector.update({
 			id: entryId,
@@ -2552,13 +2570,31 @@ export default {
 		return withCors(request, response);
 	},
 	async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-		const promise = runDreamProposal(env, {
-			trigger: "manual",
-			actorId: "scheduled:dream-governance",
-			archiveLimit: SCHEDULED_DREAM_ARCHIVE_LIMIT,
-			promotionLimit: SCHEDULED_DREAM_PROMOTION_LIMIT,
-			note: `Nightly Dream governance proposal. cron=${controller.cron} scheduled_time=${controller.scheduledTime}`,
-		});
+		// Dream + forgetting design: when DREAM_AUTO_APPLY_MODE === "full",
+		// switch from proposal-only to the full cycle that also applies
+		// duplicate merges, promotions, archives, and Layer 2 quarantine
+		// + tier-demote operations. Default "off" preserves the prior
+		// proposal-only behavior so existing monitoring (dpr_* records)
+		// continues to work unchanged.
+		const autoApplyMode = env.DREAM_AUTO_APPLY_MODE === "full" ? "full" : "off";
+		const promise =
+			autoApplyMode === "full"
+				? runDreamCycle(env, {
+					dryRun: false,
+					trigger: "scheduled",
+					cron: controller.cron,
+					scheduledTime: controller.scheduledTime,
+					archiveLimit: SCHEDULED_DREAM_ARCHIVE_LIMIT,
+					promotionLimit: SCHEDULED_DREAM_PROMOTION_LIMIT,
+					note: `Nightly Dream cycle (auto-apply=full). cron=${controller.cron} scheduled_time=${controller.scheduledTime}`,
+				})
+				: runDreamProposal(env, {
+					trigger: "manual",
+					actorId: "scheduled:dream-governance",
+					archiveLimit: SCHEDULED_DREAM_ARCHIVE_LIMIT,
+					promotionLimit: SCHEDULED_DREAM_PROMOTION_LIMIT,
+					note: `Nightly Dream governance proposal. cron=${controller.cron} scheduled_time=${controller.scheduledTime}`,
+				});
 		ctx.waitUntil(promise);
 		const result = await promise;
 		if (result.status === "skipped_no_backfill" || result.status === "skipped_locked") {

@@ -3341,6 +3341,150 @@ export function demoteTierMetadata(
 	return { changed: true, from: currentTier, to: newTier };
 }
 
+// =============================================================================
+// Layer 2 — quarantine + demote (Dream + forgetting design)
+// =============================================================================
+// Thresholds chosen per the design doc. Kept in code (not policy.json) for
+// now — easy to move to shared/memory_policy.json once tuned.
+// =============================================================================
+
+/** Salience floor below which the entry starts a "below-threshold" streak. */
+export const LAYER2_QUARANTINE_SALIENCE_THRESHOLD = 0.15;
+/** Consecutive nights below threshold before quarantine fires. */
+export const LAYER2_QUARANTINE_AFTER_NIGHTS = 3;
+/** Total consecutive nights below threshold before tier demotion fires. */
+export const LAYER2_DEMOTE_AFTER_NIGHTS = 10; // = 3 quarantine + 7 demote
+/** Hard cap on Layer 2 mutations per cycle run (quarantine + demote combined). */
+export const LAYER2_PER_RUN_CAP = 100;
+
+/**
+ * Run the Layer 2 quarantine + tier-demotion phase across all entries.
+ *
+ * Rule per entry (tier-1 and tier-2 only — tier 3 is already at the floor):
+ *   - If salience >= threshold     → streak resets to 0.
+ *   - If salience < threshold      → streak increments by 1.
+ *     - streak == LAYER2_QUARANTINE_AFTER_NIGHTS and not quarantined → quarantine.
+ *     - streak >= LAYER2_DEMOTE_AFTER_NIGHTS and quarantined         → demote tier.
+ *     - else                                                          → streak only.
+ *
+ * Quarantine is NOT lifted by this phase — the search path lifts it on
+ * retrieval reinforcement (see reconsolidateEntry in index.ts).
+ *
+ * Returns a summary suitable for inclusion in the Dream run record.
+ */
+export async function applyLayer2QuarantineAndDemote(
+	redis: Redis,
+	vector: Index,
+	entries: LoadedEntry[],
+	timestamp: string,
+): Promise<{
+	quarantined: Array<Record<string, unknown>>;
+	demoted: Array<Record<string, unknown>>;
+	streak_reset: number;
+	streak_increment: number;
+	processed: number;
+	cap_hit: boolean;
+}> {
+	const quarantined: Array<Record<string, unknown>> = [];
+	const demoted: Array<Record<string, unknown>> = [];
+	let streakReset = 0;
+	let streakIncrement = 0;
+	let processed = 0;
+	let capHit = false;
+
+	for (const entry of entries) {
+		if (processed >= LAYER2_PER_RUN_CAP) {
+			capHit = true;
+			break;
+		}
+		const tier = resolveStoredInjectionTier(entry.metadata);
+		if (tier === 3) continue; // already at floor; archive path handles further decay
+
+		const salience =
+			typeof entry.salienceScore === "number" ? entry.salienceScore : computeSalience(entry.entry);
+		const currentStreak = toOptionalInteger(entry.metadata.quarantine_streak_nights) ?? 0;
+		const wasQuarantined = Boolean(entry.metadata.injection_quarantine);
+
+		if (salience >= LAYER2_QUARANTINE_SALIENCE_THRESHOLD) {
+			// Salience recovered — reset streak only if non-zero (avoid pointless writes).
+			if (currentStreak > 0) {
+				entry.metadata.quarantine_streak_nights = 0;
+				await persistEntry(redis, vector, entry);
+				streakReset += 1;
+				processed += 1;
+			}
+			continue;
+		}
+
+		// Below threshold — increment streak and act on the new value.
+		const newStreak = currentStreak + 1;
+		entry.metadata.quarantine_streak_nights = newStreak;
+
+		if (newStreak >= LAYER2_DEMOTE_AFTER_NIGHTS && wasQuarantined) {
+			const result = demoteTierMetadata(entry.metadata, timestamp);
+			if (result.changed) {
+				appendConsolidationNote(
+					entry.metadata,
+					formatConsolidationNote({
+						timestamp,
+						source: "dream",
+						action: "demote_tier",
+						detail: `tier ${result.from} -> ${result.to} after ${newStreak} nights below ${LAYER2_QUARANTINE_SALIENCE_THRESHOLD}`,
+					}),
+				);
+				await persistEntry(redis, vector, entry);
+				demoted.push({
+					id: entry.id,
+					type: entry.type,
+					label: entry.label,
+					from_tier: result.from,
+					to_tier: result.to,
+					salience,
+					streak_nights: newStreak,
+				});
+				processed += 1;
+			}
+		} else if (newStreak >= LAYER2_QUARANTINE_AFTER_NIGHTS && !wasQuarantined) {
+			const result = quarantineEntryMetadata(entry.metadata, timestamp);
+			if (result.changed) {
+				appendConsolidationNote(
+					entry.metadata,
+					formatConsolidationNote({
+						timestamp,
+						source: "dream",
+						action: "quarantine_entry",
+						detail: `tier ${tier} after ${newStreak} nights below ${LAYER2_QUARANTINE_SALIENCE_THRESHOLD}`,
+					}),
+				);
+				await persistEntry(redis, vector, entry);
+				quarantined.push({
+					id: entry.id,
+					type: entry.type,
+					label: entry.label,
+					tier,
+					salience,
+					streak_nights: newStreak,
+				});
+				processed += 1;
+			}
+		} else {
+			// Just persist streak increment — no tier/quarantine change yet.
+			await persistEntry(redis, vector, entry);
+			streakIncrement += 1;
+			processed += 1;
+		}
+	}
+
+	return {
+		quarantined,
+		demoted,
+		streak_reset: streakReset,
+		streak_increment: streakIncrement,
+		processed,
+		cap_hit: capHit,
+	};
+}
+
 async function promoteEntry(
 	redis: Redis,
 	vector: Index,
@@ -4859,17 +5003,40 @@ export async function runDreamCycle(
 				? archiveCandidates.slice(0, options.archiveLimit)
 				: archiveCandidates;
 		const archivedEntries: Array<Record<string, unknown>> = [];
+		let layer2Summary: Awaited<ReturnType<typeof applyLayer2QuarantineAndDemote>> = {
+			quarantined: [],
+			demoted: [],
+			streak_reset: 0,
+			streak_increment: 0,
+			processed: 0,
+			cap_hit: false,
+		};
 		if (!options.dryRun) {
 			for (const entry of archiveCandidatesLimited) {
 				archivedEntries.push(
 					await archiveEntry(redis, vector, entry, runId, startedAt, archiveReason),
 				);
 			}
+
+			// Layer 2 — quarantine + tier demote (synaptic weakening before pruning).
+			// Runs over the same loaded entries snapshot. Note that entries archived
+			// above are still in this array but already at tier 3 or with archived=true
+			// (the helper skips tier 3 and resolveStoredInjectionTier wouldn't return
+			// a demotable tier for an archived entry).
+			layer2Summary = await applyLayer2QuarantineAndDemote(
+				redis,
+				vector,
+				allEntries,
+				startedAt,
+			);
+
 			if (
 				mergedEntries.length > 0 ||
 				contradictionEntries.length > 0 ||
 				promotedEntries.length > 0 ||
-				archivedEntries.length > 0
+				archivedEntries.length > 0 ||
+				layer2Summary.quarantined.length > 0 ||
+				layer2Summary.demoted.length > 0
 			) {
 				await rebuildThinIndexSafely(redis, runId);
 			}
@@ -4913,6 +5080,17 @@ export async function runDreamCycle(
 					archive_limit: options.archiveLimit ?? null,
 					archived_count: archivedEntries.length,
 				},
+				layer2_quarantine_and_demote: {
+					status: options.dryRun ? "skipped_dry_run" : "completed",
+					quarantined_count: layer2Summary.quarantined.length,
+					demoted_count: layer2Summary.demoted.length,
+					streak_reset_count: layer2Summary.streak_reset,
+					streak_increment_count: layer2Summary.streak_increment,
+					per_run_cap: LAYER2_PER_RUN_CAP,
+					cap_hit: layer2Summary.cap_hit,
+					quarantined_entries: layer2Summary.quarantined,
+					demoted_entries: layer2Summary.demoted,
+				},
 			},
 			counts: {
 				total_entries: allEntries.length,
@@ -4932,6 +5110,8 @@ export async function runDreamCycle(
 				promoted: promotedEntries.length,
 				promotion_limit: options.promotionLimit ?? null,
 				archive_limit: options.archiveLimit ?? null,
+				quarantined: layer2Summary.quarantined.length,
+				demoted: layer2Summary.demoted.length,
 			},
 			duplicate_plans: duplicatePlans.map((plan) => ({
 				canonical_id: plan.canonical.id,

@@ -43,7 +43,7 @@ beforeEach(() => {
 });
 
 describe("Scheduled Dream runner", () => {
-	it("generates a nightly Dream governance proposal without live mutation", async () => {
+	it("default (DREAM_AUTO_APPLY_MODE unset): proposal-only via runDreamProposal", async () => {
 		const controller = createScheduledController({
 			cron: "10 7 * * *",
 			scheduledTime: Date.parse("2026-03-28T07:10:00.000Z"),
@@ -66,5 +66,48 @@ describe("Scheduled Dream runner", () => {
 			}),
 		);
 		expect(dreamMock.runDreamCycle).not.toHaveBeenCalled();
+	});
+
+	it("DREAM_AUTO_APPLY_MODE=off: still proposal-only", async () => {
+		const controller = createScheduledController({
+			cron: "10 7 * * *",
+			scheduledTime: Date.parse("2026-03-28T07:10:00.000Z"),
+		});
+		const ctx = createExecutionContext();
+
+		const testEnv = { ...getTestEnv(), DREAM_AUTO_APPLY_MODE: "off" as const };
+		await worker.scheduled(controller, testEnv, ctx);
+		await waitOnExecutionContext(ctx);
+
+		expect(dreamMock.runDreamProposal).toHaveBeenCalledTimes(1);
+		expect(dreamMock.runDreamCycle).not.toHaveBeenCalled();
+	});
+
+	it("DREAM_AUTO_APPLY_MODE=full: live cycle via runDreamCycle", async () => {
+		const controller = createScheduledController({
+			cron: "10 7 * * *",
+			scheduledTime: Date.parse("2026-03-28T07:10:00.000Z"),
+		});
+		const ctx = createExecutionContext();
+
+		const testEnv = { ...getTestEnv(), DREAM_AUTO_APPLY_MODE: "full" as const };
+		await worker.scheduled(controller, testEnv, ctx);
+		await waitOnExecutionContext(ctx);
+
+		expect(dreamMock.runDreamProposal).not.toHaveBeenCalled();
+		expect(dreamMock.runDreamCycle).toHaveBeenCalledWith(
+			expect.objectContaining({
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+			}),
+			expect.objectContaining({
+				dryRun: false,
+				trigger: "scheduled",
+				cron: "10 7 * * *",
+				scheduledTime: 1774681800000,
+				archiveLimit: 10,
+				promotionLimit: 10,
+				note: expect.stringContaining("auto-apply=full"),
+			}),
+		);
 	});
 });
