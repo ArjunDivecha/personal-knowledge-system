@@ -28,7 +28,7 @@ import json
 import uuid
 import argparse
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -48,6 +48,8 @@ from models import (
 )
 from prompts.extraction import build_extraction_prompt
 from utils.llm import call_claude_json, count_tokens, chunk_text
+from utils.signal_flags import EXPLICIT_SAVE_FLAG, add_signal_flag, has_explicit_save_marker
+from .corrections import CorrectionEvent, build_correction_entries, detect_correction_events
 from .filter import FilteredConversation
 
 
@@ -65,6 +67,7 @@ class ExtractionResult:
     output_tokens: int
     validation_errors: list[str]
     success: bool
+    correction_events: list[CorrectionEvent] = field(default_factory=list)
     error: Optional[str] = None
 
 
@@ -142,6 +145,35 @@ def validate_extraction(
                     errors.append(f"Project entry {i}, decision {j}: Invalid message_ids: {invalid}")
     
     return errors
+
+
+def explicit_save_message_ids(conversation: NormalizedConversation) -> set[str]:
+    """Find user turns that explicitly ask the memory system to retain something."""
+    return {
+        message.message_id
+        for message in conversation.messages
+        if message.role == "user" and has_explicit_save_marker(message.content)
+    }
+
+
+def apply_explicit_save_flags(
+    entries: list[KnowledgeEntry],
+    conversation: NormalizedConversation,
+) -> None:
+    """Mark extracted entries whose evidence includes an explicit-save user turn."""
+    marker_message_ids = explicit_save_message_ids(conversation)
+    if not marker_message_ids:
+        return
+
+    for entry in entries:
+        if not entry.metadata:
+            continue
+        source_message_ids = set(entry.metadata.source_messages or [])
+        if marker_message_ids.intersection(source_message_ids):
+            entry.metadata.signal_flags = add_signal_flag(
+                entry.metadata.signal_flags,
+                EXPLICIT_SAVE_FLAG,
+            )
 
 
 # -----------------------------------------------------------------------------
@@ -384,6 +416,13 @@ def extract_from_conversation(
                     knowledge_entries.append(entry)
             except Exception as e:
                 validation_errors.append(f"Failed to convert knowledge entry: {e}")
+        apply_explicit_save_flags(knowledge_entries, conversation)
+
+        correction_result = detect_correction_events(conversation)
+        input_tokens += correction_result.input_tokens
+        output_tokens += correction_result.output_tokens
+        validation_errors.extend(correction_result.errors)
+        knowledge_entries.extend(build_correction_entries(correction_result.events))
         
         project_entries = []
         for entry_data in data.get("project_entries", []):
@@ -407,6 +446,7 @@ def extract_from_conversation(
             output_tokens=output_tokens,
             validation_errors=validation_errors,
             success=True,
+            correction_events=correction_result.events,
         )
         
     except json.JSONDecodeError as e:
@@ -549,4 +589,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -96,6 +96,9 @@ interface ContradictionPlan {
 	entryIds: string[];
 	label: string;
 	reasons: string[];
+	proposalKind?: string;
+	operationId?: string;
+	evidence?: Record<string, unknown>;
 }
 
 interface ArchivedSnapshot {
@@ -187,6 +190,7 @@ const DREAM_LAST_ATTEMPT_KEY = "dream:last_attempt";
 const DREAM_RUN_PREFIX = "dream:run:";
 const DREAM_RUN_INDEX_KEY = "dream:runs:index";
 const DREAM_LAST_PROPOSAL_KEY = "dream:proposal:last";
+const CORRECTION_CONTEST_HINT_PREFIX = "dream:contest_hint:";
 const ARCHIVED_PREFIX = "archived";
 const DREAM_LOCK_TTL_SECONDS = 30 * 60;
 const DREAM_LOCK_STALE_AFTER_SECONDS = 5 * 60;
@@ -717,6 +721,65 @@ function buildReplayPlans(entries: LoadedEntry[]): {
 	}
 
 	return { duplicatePlans, contradictionPlans };
+}
+
+function safeOperationIdPart(value: string): string {
+	return value.replace(/[^a-zA-Z0-9_:-]/g, "_").slice(0, 120);
+}
+
+async function loadCorrectionContestPlans(
+	redis: Redis,
+	entriesById: Map<string, LoadedEntry>,
+	alreadyContestedEntryIds: Set<string>,
+): Promise<ContradictionPlan[]> {
+	const keys = await scanKeys(redis, `${CORRECTION_CONTEST_HINT_PREFIX}*`);
+	if (keys.length === 0) return [];
+
+	const hints = await mgetBatched<unknown>(redis, keys);
+	const plans: ContradictionPlan[] = [];
+	for (let index = 0; index < keys.length; index += 1) {
+		const key = keys[index];
+		const hint = parseStoredObject(hints[index]);
+		if (!hint) continue;
+		const status = typeof hint.status === "string" ? hint.status : "pending";
+		if (status !== "pending") continue;
+		if (hint.proposal_kind !== "contest" || hint.source !== "correction_event") continue;
+
+		const entryId = typeof hint.target_entry_id === "string" ? hint.target_entry_id : null;
+		const eventId = typeof hint.event_id === "string" ? hint.event_id : key.slice(CORRECTION_CONTEST_HINT_PREFIX.length);
+		if (!entryId || alreadyContestedEntryIds.has(entryId)) continue;
+
+		const entry = entriesById.get(entryId);
+		if (!entry || entry.type !== "knowledge" || getTopicState(entry.entry) !== "active") continue;
+
+		const correctedBelief = typeof hint.corrected_belief === "string" ? hint.corrected_belief : "";
+		const newBelief = typeof hint.new_belief === "string" ? hint.new_belief : "";
+		const reason = typeof hint.reason === "string" && hint.reason.length > 0
+			? hint.reason
+			: "user correction contradicts prior memory";
+		plans.push({
+			entryIds: [entryId],
+			label: entry.label,
+			reasons: [reason],
+			proposalKind: "contest",
+			operationId: `dop_contest_${safeOperationIdPart(eventId)}_${safeOperationIdPart(entryId)}`,
+			evidence: {
+				correction_hint_key: key,
+				event_id: eventId,
+				conversation_id: hint.conversation_id ?? null,
+				message_id: hint.message_id ?? null,
+				corrected_belief: correctedBelief,
+				new_belief: newBelief,
+				correction_confidence: hint.correction_confidence ?? null,
+				judge_confidence: hint.judge_confidence ?? null,
+				similarity: hint.similarity ?? null,
+				reasons: [reason],
+				target: summarizeProposalEntry(entry),
+			},
+		});
+	}
+
+	return plans;
 }
 
 function mergeStringArraysUnique(...values: unknown[]): string[] {
@@ -1865,14 +1928,18 @@ function buildDreamProposalOperations(
 			]),
 		);
 		operations.push({
-			operation_id: `dop_contest_${plan.entryIds.join("_")}`,
+			operation_id: plan.operationId ?? `dop_contest_${plan.entryIds.join("_")}`,
 			type: "mark_contested",
+			...(plan.proposalKind ? { proposal_kind: plan.proposalKind } : {}),
 			entry_ids: plan.entryIds,
 			expected_revisions: expectedRevisions,
-			reason: "Dream detected contradictory views that require operator review before consolidation.",
+			reason: plan.proposalKind === "contest"
+				? "A user correction appears to contradict this prior memory; contest it for operator review."
+				: "Dream detected contradictory views that require operator review before consolidation.",
 			evidence: {
 				label: plan.label,
 				reasons: plan.reasons,
+				...(plan.evidence ?? {}),
 			},
 			rollback: {
 				method: "update_entry",
@@ -1955,7 +2022,11 @@ export async function runDreamProposal(
 	const candidateEntries = candidateIdFilter
 		? allEntries.filter((entry) => candidateIdFilter.has(entry.id))
 		: allEntries;
-	const { duplicatePlans, contradictionPlans } = buildReplayPlans(candidateEntries);
+	const { duplicatePlans, contradictionPlans: replayContradictionPlans } = buildReplayPlans(candidateEntries);
+	const entriesById = new Map(candidateEntries.map((entry) => [entry.id, entry]));
+	const replayContestedIds = new Set(replayContradictionPlans.flatMap((plan) => plan.entryIds));
+	const correctionContestPlans = await loadCorrectionContestPlans(redis, entriesById, replayContestedIds);
+	const contradictionPlans = [...replayContradictionPlans, ...correctionContestPlans];
 	const promotionCandidates = candidateEntries
 		.filter(isPromotionCandidate)
 		.sort(comparePromotionPriority);
@@ -1981,7 +2052,6 @@ export async function runDreamProposal(
 		bucketCounts[classifyBucket(entry)] += 1;
 	}
 
-	const entriesById = new Map(candidateEntries.map((entry) => [entry.id, entry]));
 	const operations = buildDreamProposalOperations(
 		duplicatePlans,
 		contradictionPlans,
@@ -2027,6 +2097,7 @@ export async function runDreamProposal(
 			candidate_entries: candidateEntries.length,
 			duplicate_merge_candidates: duplicatePlans.length,
 			contradictions_detected: contradictionPlans.length,
+			correction_contest_candidates: correctionContestPlans.length,
 			promotion_candidates: promotionCandidates.length,
 			promotion_limit: options.promotionLimit ?? null,
 			archive_candidates: archiveCandidates.length,
@@ -2308,6 +2379,31 @@ function getOperationReason(operation: Record<string, unknown>, fallback: string
 		: fallback;
 }
 
+async function markCorrectionContestHintApplied(
+	redis: Redis,
+	operation: Record<string, unknown>,
+	applyRunId: string,
+	timestamp: string,
+): Promise<void> {
+	try {
+		if (operation.proposal_kind !== "contest") return;
+		const evidence = parseStoredObject(operation.evidence);
+		const hintKey = typeof evidence?.correction_hint_key === "string" ? evidence.correction_hint_key : null;
+		if (!hintKey || !hintKey.startsWith(CORRECTION_CONTEST_HINT_PREFIX)) return;
+		const hint = parseStoredObject(await redis.get(hintKey));
+		if (!hint) return;
+		await redis.set(hintKey, JSON.stringify({
+			...hint,
+			status: "applied",
+			applied_at: timestamp,
+			applied_run_id: applyRunId,
+			operation_id: operation.operation_id ?? null,
+		}));
+	} catch (error) {
+		console.error("[dream] failed to mark correction contest hint applied", error);
+	}
+}
+
 async function applyDreamProposalOperation(
 	redis: Redis,
 	vector: Index,
@@ -2370,6 +2466,7 @@ async function applyDreamProposalOperation(
 				),
 			);
 		}
+		await markCorrectionContestHintApplied(redis, operation, applyRunId, timestamp);
 		return { ok: true, operation_id: operationId, type: operationType, results };
 	}
 
@@ -4921,7 +5018,11 @@ export async function runDreamCycle(
 		const replayEntries = candidateIdFilter
 			? allEntries.filter((entry) => candidateIdFilter.has(entry.id))
 			: allEntries;
-		const { duplicatePlans, contradictionPlans } = buildReplayPlans(replayEntries);
+		const { duplicatePlans, contradictionPlans: replayContradictionPlans } = buildReplayPlans(replayEntries);
+		const replayEntriesById = new Map(replayEntries.map((entry) => [entry.id, entry]));
+		const replayContestedIds = new Set(replayContradictionPlans.flatMap((plan) => plan.entryIds));
+		const correctionContestPlans = await loadCorrectionContestPlans(redis, replayEntriesById, replayContestedIds);
+		const contradictionPlans = [...replayContradictionPlans, ...correctionContestPlans];
 		const mergedEntries: Array<Record<string, unknown>> = [];
 		const contradictionEntries: Array<Record<string, unknown>> = [];
 		const judgeQueueSummary = {
@@ -5203,6 +5304,7 @@ export async function runDreamCycle(
 					duplicate_merge_count: mergedEntries.length,
 					merged_entries: mergedEntries,
 					contradiction_count: contradictionPlans.length,
+					correction_contest_count: correctionContestPlans.length,
 					contradiction_entries: contradictionEntries,
 					promotion_candidate_count: promotionCandidates.length,
 					promoted_count: promotedEntries.length,
@@ -5258,6 +5360,7 @@ export async function runDreamCycle(
 				duplicate_merge_candidates: duplicatePlans.length,
 				merged_duplicates: mergedEntries.length,
 				contradictions_detected: contradictionPlans.length,
+				correction_contest_candidates: correctionContestPlans.length,
 				entries_marked_contested: contradictionEntries.length,
 				promotion_candidates: promotionCandidates.length,
 				promoted: promotedEntries.length,

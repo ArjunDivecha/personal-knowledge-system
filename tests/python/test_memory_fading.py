@@ -12,7 +12,9 @@ if str(DISTILLATION_ROOT) not in sys.path:
     sys.path.insert(0, str(DISTILLATION_ROOT))
 
 from models.entries import KnowledgeEntry, KnowledgeMetadata
-from utils.salience import compute_salience, load_memory_policy, resolve_stored_tier
+from utils.salience import compute_salience, evaluate_salience_fixtures, load_memory_policy, resolve_stored_tier
+
+UTC = timezone.utc
 
 
 def build_knowledge_entry(
@@ -24,6 +26,7 @@ def build_knowledge_entry(
     access_count: int = 0,
     last_seen: str = "2026-03-28T00:00:00+00:00",
     last_accessed: str | None = None,
+    signal_flags: list[str] | None = None,
 ) -> KnowledgeEntry:
     return KnowledgeEntry(
         id=entry_id,
@@ -35,6 +38,7 @@ def build_knowledge_entry(
             updated_at=last_seen,
             source_conversations=["conv-1"],
             source_messages=["msg-1"],
+            signal_flags=signal_flags or [],
             access_count=access_count,
             last_accessed=last_accessed,
             schema_version=2,
@@ -67,6 +71,10 @@ def is_archive_candidate(entry: KnowledgeEntry, *, now: datetime) -> bool:
 
 
 class MemoryFadingTests(unittest.TestCase):
+    def test_shared_salience_fixtures_match_python_runtime(self) -> None:
+        for result in evaluate_salience_fixtures():
+            self.assertEqual(result["actual"], result["expected"], result["name"])
+
     def test_professional_identity_does_not_decay_over_time(self) -> None:
         entry = build_knowledge_entry(
             entry_id="ke_identity",
@@ -156,6 +164,39 @@ class MemoryFadingTests(unittest.TestCase):
                 now=datetime(2026, 3, 28, 12, 0, tzinfo=UTC),
             )
         )
+
+    def test_signal_flags_multiply_salience(self) -> None:
+        now = datetime(2026, 3, 28, 0, 0, tzinfo=UTC)
+        baseline = build_knowledge_entry(
+            entry_id="ke_signal_base",
+            context_type="task_query",
+            mention_count=10,
+        )
+        explicit = build_knowledge_entry(
+            entry_id="ke_signal_explicit",
+            context_type="task_query",
+            mention_count=10,
+            signal_flags=["explicit_save"],
+        )
+        correction = build_knowledge_entry(
+            entry_id="ke_signal_correction",
+            context_type="task_query",
+            mention_count=10,
+            signal_flags=["correction_derived"],
+        )
+        both = build_knowledge_entry(
+            entry_id="ke_signal_both",
+            context_type="task_query",
+            mention_count=10,
+            signal_flags=["explicit_save", "correction_derived"],
+        )
+
+        baseline_score = compute_salience(baseline, now=now)
+
+        self.assertEqual(baseline_score, 0.1575)
+        self.assertEqual(compute_salience(explicit, now=now), 0.2363)
+        self.assertEqual(compute_salience(correction, now=now), 0.2835)
+        self.assertEqual(compute_salience(both, now=now), 0.4253)
 
 
 if __name__ == "__main__":

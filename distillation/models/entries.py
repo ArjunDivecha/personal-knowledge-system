@@ -82,6 +82,7 @@ def normalize_knowledge_metadata_dict(metadata: Optional[dict]) -> dict:
     normalized["updated_at"] = updated_at
     normalized["source_conversations"] = list(meta.get("source_conversations") or [])
     normalized["source_messages"] = list(meta.get("source_messages") or [])
+    normalized["signal_flags"] = list(meta.get("signal_flags") or [])
     normalized["access_count"] = _coerce_int(meta.get("access_count"), 0)
     normalized["last_accessed"] = meta.get("last_accessed")
     normalized["schema_version"] = _coerce_int(meta.get("schema_version"), MEMORY_SCHEMA_VERSION)
@@ -213,6 +214,7 @@ class KnowledgeMetadata:
     updated_at: str               # ISO8601
     source_conversations: list[str]  # All conversation IDs that contributed
     source_messages: list[str]    # All message IDs referenced
+    signal_flags: list[str] = field(default_factory=list)
     access_count: int = 0         # How many times retrieved
     last_accessed: Optional[str] = None  # ISO8601
     schema_version: int = MEMORY_SCHEMA_VERSION
@@ -368,6 +370,7 @@ class KnowledgeEntry:
                 "updated_at": self.metadata.updated_at,
                 "source_conversations": self.metadata.source_conversations,
                 "source_messages": self.metadata.source_messages,
+                "signal_flags": self.metadata.signal_flags,
                 "access_count": self.metadata.access_count,
                 "last_accessed": self.metadata.last_accessed,
                 "schema_version": self.metadata.schema_version,
@@ -482,6 +485,7 @@ class KnowledgeEntry:
             updated_at=meta_data.get("updated_at", ""),
             source_conversations=meta_data.get("source_conversations", []),
             source_messages=meta_data.get("source_messages", []),
+            signal_flags=meta_data.get("signal_flags", []),
             access_count=meta_data.get("access_count", 0),
             last_accessed=meta_data.get("last_accessed"),
             schema_version=meta_data.get("schema_version", MEMORY_SCHEMA_VERSION),

@@ -374,6 +374,93 @@ describe("Dream replay logic", () => {
 		expect(mockState.store.get("dream:proposal:last")).toBeTruthy();
 	});
 
+	it("turns correction contest hints into governed mark-contested operations", async () => {
+		mockState.store.set(
+			"dream:contest_hint:ce_fixture:ke_dup_primary",
+			JSON.stringify({
+				schema_version: 1,
+				proposal_kind: "contest",
+				source: "correction_event",
+				status: "pending",
+				event_id: "ce_fixture",
+				conversation_id: "conv-correction",
+				message_id: "msg-correction",
+				target_entry_id: "ke_dup_primary",
+				target_entry_type: "knowledge",
+				corrected_belief: "Country equity rotation should only use GDELT sentiment.",
+				new_belief: "Country equity rotation should use GDELT sentiment and rank IC together.",
+				correction_confidence: 0.92,
+				judge_confidence: 0.87,
+				reason: "user correction supersedes the narrower prior memory",
+				similarity: 0.9,
+			}),
+		);
+
+		const proposal = await runDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+				OPENAI_API_KEY: "test-openai-key",
+			} as Env,
+			{
+				trigger: "local_test",
+				actorId: "test-operator",
+				note: "correction contest hint test",
+				archiveLimit: 0,
+				promotionLimit: 0,
+			},
+		);
+		const contestOperation = (proposal.operations as Array<Record<string, unknown>>)
+			.find((operation) => operation.proposal_kind === "contest");
+
+		expect(contestOperation).toMatchObject({
+			type: "mark_contested",
+			entry_ids: ["ke_dup_primary"],
+			proposal_kind: "contest",
+		});
+		const contestOperationId = String(contestOperation?.operation_id);
+		expect((proposal.counts as Record<string, unknown>).correction_contest_candidates).toBe(1);
+
+		const grade = await gradeDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{ proposalId: String(proposal.run_id), actorId: "test-operator" },
+		);
+		expect(grade.passed).toBe(true);
+
+		const result = await applyDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+				OPENAI_API_KEY: "test-openai-key",
+			} as Env,
+			{
+				proposalId: String(proposal.run_id),
+				mutationId: "apply-correction-contest",
+				actorId: "test-operator",
+				reason: "approve correction contest",
+				operationIds: [contestOperationId],
+			},
+		);
+
+		expect(result.ok).toBe(true);
+		expect(getStoredObject("knowledge:ke_dup_primary").state).toBe("contested");
+		expect(getStoredObject("dream:contest_hint:ce_fixture:ke_dup_primary")).toMatchObject({
+			status: "applied",
+			operation_id: contestOperationId,
+		});
+		expect(String(getStoredObject("dream:contest_hint:ce_fixture:ke_dup_primary").applied_run_id))
+			.toContain(String(proposal.run_id));
+	});
+
 	it("does not mark broad same-label memories contested just because narratives differ", async () => {
 		mockState.store.clear();
 		mockState.vectorUpdates.length = 0;

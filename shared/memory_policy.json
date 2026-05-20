@@ -36,6 +36,11 @@
     "task_query": 0.2,
     "passing_reference": 0.05
   },
+  "signal_flag_multipliers": {
+    "explicit_save": 1.5,
+    "correction_derived": 1.8
+  },
+  "max_combined_salience_multiplier": 3.0,
   "confidence_map": {
     "high": 1.0,
     "medium": 0.7,

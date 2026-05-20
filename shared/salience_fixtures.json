@@ -31,7 +31,7 @@
       }
     },
     "expected": {
-      "salience_score": 0.4683,
+      "salience_score": 0.4646,
       "stored_tier": 2
     }
   },
@@ -49,8 +49,125 @@
       }
     },
     "expected": {
-      "salience_score": 0.0005,
+      "salience_score": 0.0006,
       "stored_tier": 3
+    }
+  },
+  {
+    "name": "signal_flag_baseline",
+    "now": "2026-03-28T00:00:00Z",
+    "entry": {
+      "confidence": "high",
+      "metadata": {
+        "context_type": "task_query",
+        "mention_count": 10,
+        "updated_at": "2026-03-28T00:00:00Z",
+        "last_seen": "2026-03-28T00:00:00Z",
+        "last_accessed": null,
+        "signal_flags": []
+      }
+    },
+    "expected": {
+      "salience_score": 0.1575,
+      "stored_tier": 3
+    }
+  },
+  {
+    "name": "signal_flag_explicit_save",
+    "now": "2026-03-28T00:00:00Z",
+    "entry": {
+      "confidence": "high",
+      "metadata": {
+        "context_type": "task_query",
+        "mention_count": 10,
+        "updated_at": "2026-03-28T00:00:00Z",
+        "last_seen": "2026-03-28T00:00:00Z",
+        "last_accessed": null,
+        "signal_flags": ["explicit_save"]
+      }
+    },
+    "expected": {
+      "salience_score": 0.2363,
+      "stored_tier": 3
+    }
+  },
+  {
+    "name": "signal_flag_correction_derived",
+    "now": "2026-03-28T00:00:00Z",
+    "entry": {
+      "confidence": "high",
+      "metadata": {
+        "context_type": "task_query",
+        "mention_count": 10,
+        "updated_at": "2026-03-28T00:00:00Z",
+        "last_seen": "2026-03-28T00:00:00Z",
+        "last_accessed": null,
+        "signal_flags": ["correction_derived"]
+      }
+    },
+    "expected": {
+      "salience_score": 0.2835,
+      "stored_tier": 3
+    }
+  },
+  {
+    "name": "signal_flag_explicit_save_and_correction",
+    "now": "2026-03-28T00:00:00Z",
+    "entry": {
+      "confidence": "high",
+      "metadata": {
+        "context_type": "task_query",
+        "mention_count": 10,
+        "updated_at": "2026-03-28T00:00:00Z",
+        "last_seen": "2026-03-28T00:00:00Z",
+        "last_accessed": null,
+        "signal_flags": ["explicit_save", "correction_derived"]
+      }
+    },
+    "expected": {
+      "salience_score": 0.4253,
+      "stored_tier": 3
+    }
+  },
+  {
+    "name": "correction_event_roundtrip",
+    "kind": "correction_event",
+    "conversation": {
+      "id": "conv-correction",
+      "messages": [
+        {
+          "message_id": "msg-assistant",
+          "role": "assistant",
+          "created_at": "2026-05-17T00:00:00Z",
+          "content": "The PM MCP server is read-only."
+        },
+        {
+          "message_id": "msg-user",
+          "role": "user",
+          "created_at": "2026-05-17T00:01:00Z",
+          "content": "No, the PM MCP has a write-capable /mcp endpoint; only /openai/mcp is read-only."
+        }
+      ]
+    },
+    "classifier_output": {
+      "is_correction": true,
+      "corrected_belief": "The PM MCP server is read-only.",
+      "new_belief": "The PM MCP has a write-capable /mcp endpoint; only /openai/mcp is read-only.",
+      "confidence": 0.93
+    },
+    "prior_entry": {
+      "id": "ke_prior",
+      "current_view": "The PM MCP server is read-only.",
+      "metadata": {
+        "context_type": "professional_identity",
+        "injection_tier": 1
+      }
+    },
+    "expected": {
+      "new_entry_signal_flags": ["correction_derived"],
+      "new_entry_context_type": "recurring_pattern",
+      "contest_proposal_kind": "contest",
+      "contest_target_entry_id": "ke_prior"
     }
   }
 ]

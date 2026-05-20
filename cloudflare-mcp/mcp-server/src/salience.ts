@@ -25,6 +25,13 @@ function toDate(value: unknown): Date | null {
 	return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function toStringArray(value: unknown): string[] {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	return value.filter((item): item is string => typeof item === "string");
+}
+
 export function defaultInjectionTier(contextType: unknown): 1 | 2 | 3 {
 	if (typeof contextType === "string") {
 		const tier = MEMORY_POLICY.default_injection_tier_by_context_type[contextType as keyof typeof MEMORY_POLICY.default_injection_tier_by_context_type];
@@ -70,15 +77,29 @@ export function computeSalience(entry: JsonRecord, now: Date = new Date()): numb
 	const typeMultiplier =
 		MEMORY_POLICY.type_multipliers[contextType as keyof typeof MEMORY_POLICY.type_multipliers] ??
 		MEMORY_POLICY.type_multipliers.task_query;
+	const signalMultiplier = toStringArray(metadata.signal_flags).reduce(
+		(multiplier, flag) => {
+			const configured =
+				MEMORY_POLICY.signal_flag_multipliers[
+					flag as keyof typeof MEMORY_POLICY.signal_flag_multipliers
+				];
+			return multiplier * (typeof configured === "number" ? configured : 1.0);
+		},
+		1.0,
+	);
+	const combinedMultiplier = Math.min(
+		MEMORY_POLICY.max_combined_salience_multiplier ?? 3.0,
+		typeMultiplier * signalMultiplier,
+	);
 
 	let retrievalBoost = 0.0;
 	const lastAccessed = toDate(metadata.last_accessed);
 	if (lastAccessed) {
 		const daysSinceRetrieved = Math.max(0, (now.getTime() - lastAccessed.getTime()) / 86400000);
-		retrievalBoost = 0.15 * (0.5 ** (daysSinceRetrieved / 60));
+		retrievalBoost = 0.15 * 0.5 ** (daysSinceRetrieved / 60);
 	}
 
-	const raw = confidence * decay * typeMultiplier * freqBoost + retrievalBoost;
+	const raw = confidence * decay * combinedMultiplier * freqBoost + retrievalBoost;
 	return Math.round(Math.min(1.0, raw) * 10000) / 10000;
 }
 

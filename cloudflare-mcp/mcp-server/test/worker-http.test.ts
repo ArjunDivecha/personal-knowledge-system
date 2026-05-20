@@ -230,6 +230,7 @@ describe("Worker HTTP routes", () => {
 		});
 		redisMock.scan = vi.fn()
 			.mockResolvedValueOnce(["0", ["knowledge:ke_candidate"]])
+			.mockResolvedValueOnce(["0", []])
 			.mockResolvedValueOnce(["0", []]);
 		redisMock.mget = vi.fn().mockResolvedValue([await redisMock.get("knowledge:ke_candidate")]);
 

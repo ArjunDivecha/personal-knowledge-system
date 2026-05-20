@@ -55,6 +55,12 @@ def _extract_entry_dict(entry: Any) -> dict[str, Any]:
     raise TypeError(f"Unsupported entry type for salience scoring: {type(entry)!r}")
 
 
+def _coerce_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
 def default_injection_tier(context_type: str | None) -> int:
     policy = load_memory_policy()
     mapping = policy["default_injection_tier_by_context_type"]
@@ -86,6 +92,12 @@ def compute_salience(entry: Any, now: datetime | None = None) -> float:
 
     freq_boost = min(1.0, math.log1p(max(1, mention_count)) / math.log1p(20))
     type_multiplier = float(policy["type_multipliers"].get(context_type, policy["type_multipliers"]["task_query"]))
+    signal_multiplier = 1.0
+    signal_multipliers = policy.get("signal_flag_multipliers", {})
+    for flag in _coerce_string_list(metadata.get("signal_flags")):
+        signal_multiplier *= float(signal_multipliers.get(flag, 1.0))
+    max_combined_multiplier = float(policy.get("max_combined_salience_multiplier", 3.0))
+    combined_multiplier = min(max_combined_multiplier, type_multiplier * signal_multiplier)
 
     retrieval_boost = 0.0
     last_accessed_dt = _coerce_datetime(last_accessed)
@@ -93,7 +105,7 @@ def compute_salience(entry: Any, now: datetime | None = None) -> float:
         days_since_retrieved = max(0.0, (now_dt - last_accessed_dt).total_seconds() / 86400.0)
         retrieval_boost = 0.15 * (0.5 ** (days_since_retrieved / 60.0))
 
-    raw = confidence * decay * type_multiplier * freq_boost + retrieval_boost
+    raw = confidence * decay * combined_multiplier * freq_boost + retrieval_boost
     return round(min(1.0, raw), 4)
 
 
@@ -109,6 +121,8 @@ def resolve_stored_tier(entry: Any) -> int:
 def evaluate_salience_fixtures() -> list[dict[str, Any]]:
     results = []
     for fixture in load_salience_fixtures():
+        if "entry" not in fixture:
+            continue
         now = _coerce_datetime(fixture.get("now"))
         score = compute_salience(fixture["entry"], now=now)
         tier = resolve_stored_tier(fixture["entry"])

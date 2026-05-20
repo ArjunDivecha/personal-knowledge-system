@@ -555,6 +555,7 @@ Completed:
 Next:
 
 - richer Dream replay logic beyond the current deterministic duplicate/contradiction heuristics
+- Phase 7 evidence log and compiled-view separation, so contradictions can be resolved at the source while superseded claims remain preserved as evidence
 - ingestion hardening and source-fusion improvements
 - broader fixture and ranking coverage in the automated test stack
 

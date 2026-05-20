@@ -46,6 +46,7 @@ from storage.vector_client import VectorClient
 from pipeline.parse import parse_all_exports
 from pipeline.filter import filter_conversations, get_score_distribution
 from pipeline.extract import extract_entries
+from pipeline.corrections import propose_correction_contest_hints
 from pipeline.merge import merge_knowledge_entries, merge_project_entries
 from pipeline.compress import compress_eligible_entries
 from pipeline.index import update_index
@@ -265,11 +266,13 @@ def run_pipeline(verbose: bool = False, limit: int = None):
             # Aggregate extraction results
             all_knowledge = []
             all_projects = []
+            correction_events = []
             
             for result in extraction_results:
                 if result.success:
                     all_knowledge.extend(result.knowledge_entries)
                     all_projects.extend(result.project_entries)
+                    correction_events.extend(result.correction_events)
                     report.insights_with_evidence += sum(
                         len(e.key_insights) for e in result.knowledge_entries
                     )
@@ -283,6 +286,23 @@ def run_pipeline(verbose: bool = False, limit: int = None):
             report.project_entries_extracted = len(all_projects)
             
             console.print(f"  Extracted: {len(all_knowledge)} knowledge, {len(all_projects)} project entries\n")
+
+            if correction_events:
+                console.print("[bold]Step 5b: Proposing correction contest hints...[/bold]")
+                contest_result = propose_correction_contest_hints(
+                    events=correction_events,
+                    redis_client=redis,
+                    vector_client=vector,
+                )
+                report.llm_input_tokens += contest_result.input_tokens
+                report.llm_output_tokens += contest_result.output_tokens
+                for error in contest_result.errors:
+                    report.add_error("corrections", "contest_hint", error)
+                console.print(
+                    f"  Correction events: {len(correction_events)}, "
+                    f"contest hints: {contest_result.hints_created}, "
+                    f"candidates checked: {contest_result.candidates_checked}\n"
+                )
             
             # Stage 4: Merge
             console.print("[bold]Step 6: Merging with existing...[/bold]")
@@ -411,4 +431,3 @@ Examples:
 
 if __name__ == "__main__":
     main()
-
