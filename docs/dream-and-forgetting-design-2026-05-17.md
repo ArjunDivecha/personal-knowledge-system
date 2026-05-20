@@ -63,7 +63,7 @@ Current state: Dream produces nightly proposals but applies nothing. The user wa
 ## Kill switches and rollback
 
 Three env vars:
-- `DREAM_AUTO_APPLY_MODE` = `off | full` (controls L1+L2 deterministic auto-apply)
+- `DREAM_AUTO_APPLY_MODE` = `off | governed | full` (`governed` is the preferred autonomous path: proposal -> grade -> bounded apply; `full` is the legacy direct cycle)
 - `DREAM_OPUS_MODE` = `off | on` (controls L3+L4 border-case routing to Opus)
 - `RETRIEVAL_POLICY_MODE` = `off | on` (controls Layer 0)
 
@@ -74,7 +74,7 @@ Each can be flipped independently. All ops (deterministic and Opus-decided) get 
 Three flips, one week apart. No phased modes, no exit-criteria gating.
 
 1. **Week 1**: turn on `RETRIEVAL_POLICY_MODE=on`. Read weekly digest. Flip back if anything looks wrong.
-2. **Week 2**: turn on `DREAM_AUTO_APPLY_MODE=full`. L1+L2 start applying; L3+L4 stay skipped (Opus off).
+2. **Week 2**: turn on `DREAM_AUTO_APPLY_MODE=governed`. L1 proposal operations auto-apply only after deterministic grade, risk, cap, and tripwire checks; L2 stays out of scheduled autonomy until it has proposal/apply operation types.
 3. **Week 3**: turn on `DREAM_OPUS_MODE=on`. L3+L4 border cases route to Opus.
 
 ## Observability

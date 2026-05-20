@@ -12,7 +12,7 @@ declare global {
 		DREAM_OPERATOR_TOKEN: string;
 		// Dream + forgetting design (see docs/dream-and-forgetting-design-2026-05-17.md).
 		// All default to "off" if unset — preserves pre-implementation behavior.
-		DREAM_AUTO_APPLY_MODE?: "off" | "full";
+		DREAM_AUTO_APPLY_MODE?: "off" | "governed" | "full";
 		DREAM_OPUS_MODE?: "off" | "on";
 		RETRIEVAL_POLICY_MODE?: "off" | "on";
 		// Optional anomaly-tripwire knobs (have safe defaults).
@@ -25,10 +25,10 @@ declare global {
 		// Wrangler injects this at build time when configured.
 		BUILD_SHA?: string;
 		MCP_OBJECT: DurableObjectNamespace<import("./index").KnowledgeMCP>;
-		OPENAI_MCP_OBJECT: DurableObjectNamespace<import("./index").OpenAIKnowledgeMCP>;
+		OPENAI_MCP_OBJECT: DurableObjectNamespace<
+			import("./index").OpenAIKnowledgeMCP
+		>;
 		OAUTH_KV: KVNamespace;
 		OAUTH_PROVIDER: OAuthHelpers;
 	}
 }
-
-export {};

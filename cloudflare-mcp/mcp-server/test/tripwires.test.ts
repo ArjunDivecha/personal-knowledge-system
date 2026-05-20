@@ -15,12 +15,12 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import {
 	CONSECUTIVE_DAYS_REQUIRED,
-	DESTRUCTIVE_SPIKE_MULTIPLIER,
-	HARD_DELETE_DAILY_CAP_DEFAULT,
 	checkDestructiveTripwire,
 	checkRetrievalTripwire,
 	clearKillFlag,
+	DESTRUCTIVE_SPIKE_MULTIPLIER,
 	getEffectiveMode,
+	HARD_DELETE_DAILY_CAP_DEFAULT,
 	isHardDeleteCapReached,
 	isoDate,
 	recordDestructiveAction,
@@ -223,6 +223,12 @@ describe("getEffectiveMode + kill flag", () => {
 	it("full env, no kill flag → effective full", async () => {
 		const mode = await getEffectiveMode(redis as any, "full", "DREAM_AUTO_APPLY_MODE");
 		expect(mode.effective).toBe("full");
+		expect(mode.tripped).toBe(false);
+	});
+
+	it("governed env, no kill flag → effective governed", async () => {
+		const mode = await getEffectiveMode(redis as any, "governed", "DREAM_AUTO_APPLY_MODE");
+		expect(mode.effective).toBe("governed");
 		expect(mode.tripped).toBe(false);
 	});
 

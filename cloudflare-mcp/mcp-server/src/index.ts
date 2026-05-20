@@ -57,6 +57,8 @@ const RECONSOLIDATION_PROMOTION_THRESHOLD = 3;
 const MAX_OPERATOR_DREAM_ARCHIVE_LIMIT = 10;
 const SCHEDULED_DREAM_ARCHIVE_LIMIT = 10;
 const SCHEDULED_DREAM_PROMOTION_LIMIT = 10;
+const SCHEDULED_DREAM_DUPLICATE_MERGE_LIMIT = 10;
+const SCHEDULED_DREAM_MARK_CONTESTED_LIMIT = 10;
 const RATE_LIMIT_WINDOW_SECONDS = 60 * 60;
 const WRITE_TOOL_RATE_LIMIT = 24;
 const OPERATOR_WRITE_RATE_LIMIT = 12;
@@ -86,10 +88,20 @@ const CORS_EXPOSE_HEADERS = "WWW-Authenticate, MCP-Session-Id, Location";
 const AUTHLESS_PROBE_PATHS = new Set(["/mcp", "/sse", "/openai/mcp", "/openai/sse"]);
 const VALIDATION_LAST_KEY = "validation:last";
 const VALIDATION_GATE_STATUS_KEY = "validation:gate_status";
+const DREAM_LOCK_KEY = "dream:lock";
+const DREAM_LOCK_TTL_SECONDS = 30 * 60;
+const DREAM_LOCK_STALE_AFTER_SECONDS = 5 * 60;
 const DREAM_LAST_RUN_KEY = "dream:last_run";
 const DREAM_LAST_ATTEMPT_KEY = "dream:last_attempt";
 const DREAM_RUN_PREFIX = "dream:run:";
 const DREAM_RUN_INDEX_KEY = "dream:runs:index";
+const SCHEDULED_DREAM_ALLOWED_RISKS = new Set(["low", "medium"]);
+const SCHEDULED_DREAM_OPERATION_LIMITS: Record<string, number> = {
+	archive_entry: SCHEDULED_DREAM_ARCHIVE_LIMIT,
+	duplicate_merge: SCHEDULED_DREAM_DUPLICATE_MERGE_LIMIT,
+	mark_contested: SCHEDULED_DREAM_MARK_CONTESTED_LIMIT,
+	promote_context_type: SCHEDULED_DREAM_PROMOTION_LIMIT,
+};
 const DEFAULT_TWEET_TIMEOUT_MS = 4000;
 const DEFAULT_TWEET_CACHE_TTL_SECONDS = 300;
 const AUTHORIZATION_SERVER_METADATA_PATHS = new Set([
@@ -830,6 +842,12 @@ function parseStoredArray(raw: unknown): unknown[] {
 	return [];
 }
 
+function toObjectArray(value: unknown): Array<Record<string, unknown>> {
+	return parseStoredArray(value).filter(
+		(item): item is Record<string, unknown> => item !== null && typeof item === "object" && !Array.isArray(item),
+	);
+}
+
 async function getValidationStatus(redis: Redis): Promise<Record<string, unknown>> {
 	const gateStatus = parseStoredObject(await redis.get(VALIDATION_GATE_STATUS_KEY));
 	const last = parseStoredObject(await redis.get(VALIDATION_LAST_KEY));
@@ -917,6 +935,409 @@ async function getDreamEvents(redis: Redis, runId: string): Promise<Record<strin
 		events,
 		event_count: events.length,
 	};
+}
+
+async function updateDreamRunIndex(redis: Redis, runId: string, maxRuns = 50): Promise<void> {
+	const existing = parseStoredArray(await redis.get(DREAM_RUN_INDEX_KEY))
+		.filter((value): value is string => typeof value === "string");
+	const nextIndex = [
+		runId,
+		...existing.filter((value) => value !== runId),
+	].slice(0, maxRuns);
+	await redis.set(DREAM_RUN_INDEX_KEY, JSON.stringify(nextIndex));
+}
+
+async function storeScheduledGovernedRunRecord(
+	redis: Redis,
+	runRecord: Record<string, unknown>,
+	setAsLatest = true,
+): Promise<void> {
+	const runId = String(runRecord.run_id);
+	const serialized = JSON.stringify(runRecord);
+	await redis.set(`${DREAM_RUN_PREFIX}${runId}`, serialized);
+	await redis.set(DREAM_LAST_ATTEMPT_KEY, serialized);
+	if (setAsLatest) {
+		await redis.set(DREAM_LAST_RUN_KEY, serialized);
+	}
+	await updateDreamRunIndex(redis, runId);
+}
+
+async function acquireScheduledGovernedDreamLock(
+	redis: Redis,
+	runId: string,
+	startedAt: string,
+): Promise<{ acquired: boolean; existingLock: Record<string, unknown> | null }> {
+	const lockPayload = JSON.stringify({
+		run_id: runId,
+		run_at: startedAt,
+		trigger: "scheduled",
+		auto_apply_mode: "governed",
+	});
+	const initialAttempt = await redis.set(DREAM_LOCK_KEY, lockPayload, {
+		nx: true,
+		ex: DREAM_LOCK_TTL_SECONDS,
+	});
+	if (initialAttempt) {
+		return { acquired: true, existingLock: null };
+	}
+
+	const existingLock = parseStoredObject(await redis.get(DREAM_LOCK_KEY));
+	const runAt = typeof existingLock?.run_at === "string" ? Date.parse(existingLock.run_at) : Number.NaN;
+	const stale = !Number.isFinite(runAt) || Date.now() - runAt >= DREAM_LOCK_STALE_AFTER_SECONDS * 1000;
+	if (!stale) {
+		return { acquired: false, existingLock };
+	}
+
+	await (redis as unknown as { del: (key: string) => Promise<unknown> }).del(DREAM_LOCK_KEY);
+	const retryAttempt = await redis.set(DREAM_LOCK_KEY, lockPayload, {
+		nx: true,
+		ex: DREAM_LOCK_TTL_SECONDS,
+	});
+	return {
+		acquired: Boolean(retryAttempt),
+		existingLock: retryAttempt ? null : parseStoredObject(await redis.get(DREAM_LOCK_KEY)) ?? existingLock,
+	};
+}
+
+async function releaseScheduledGovernedDreamLock(redis: Redis, runId: string): Promise<void> {
+	const currentLock = parseStoredObject(await redis.get(DREAM_LOCK_KEY));
+	if (currentLock?.run_id === runId) {
+		await (redis as unknown as { del: (key: string) => Promise<unknown> }).del(DREAM_LOCK_KEY);
+	}
+}
+
+type ScheduledGovernedDecision = {
+	selectedOperationIds: string[];
+	heldOperations: Array<{ operation_id: string | null; type: string | null; reason: string }>;
+	operationCounts: Record<string, number>;
+	selectedCounts: Record<string, number>;
+};
+
+function holdAllScheduledGovernedOperations(
+	operations: Array<Record<string, unknown>>,
+	reason: string,
+): ScheduledGovernedDecision {
+	const operationCounts: Record<string, number> = {};
+	const heldOperations = operations.map((operation) => {
+		const type = typeof operation.type === "string" ? operation.type : null;
+		if (type) {
+			operationCounts[type] = (operationCounts[type] ?? 0) + 1;
+		}
+		return {
+			operation_id: typeof operation.operation_id === "string" ? operation.operation_id : null,
+			type,
+			reason,
+		};
+	});
+	return {
+		selectedOperationIds: [],
+		heldOperations,
+		operationCounts,
+		selectedCounts: {},
+	};
+}
+
+function buildScheduledGovernedDecision(
+	proposal: Record<string, unknown>,
+	grade: Record<string, unknown> | null,
+): ScheduledGovernedDecision {
+	const operations = toObjectArray(proposal.operations);
+	const riskScore = typeof proposal.risk_score === "string" ? proposal.risk_score : "unknown";
+	if (!SCHEDULED_DREAM_ALLOWED_RISKS.has(riskScore)) {
+		return holdAllScheduledGovernedOperations(operations, `risk_score_not_auto_applicable:${riskScore}`);
+	}
+	if (!grade || grade.passed !== true || grade.status !== "passed") {
+		return holdAllScheduledGovernedOperations(operations, `grade_not_passed:${String(grade?.status ?? "missing")}`);
+	}
+
+	const selectedOperationIds: string[] = [];
+	const heldOperations: ScheduledGovernedDecision["heldOperations"] = [];
+	const operationCounts: Record<string, number> = {};
+	const selectedCounts: Record<string, number> = {};
+
+	for (const operation of operations) {
+		const operationId = typeof operation.operation_id === "string" ? operation.operation_id : null;
+		const type = typeof operation.type === "string" ? operation.type : null;
+		if (type) {
+			operationCounts[type] = (operationCounts[type] ?? 0) + 1;
+		}
+		if (!operationId || !type) {
+			heldOperations.push({
+				operation_id: operationId,
+				type,
+				reason: "missing_operation_id_or_type",
+			});
+			continue;
+		}
+		const limit = SCHEDULED_DREAM_OPERATION_LIMITS[type];
+		if (typeof limit !== "number") {
+			heldOperations.push({
+				operation_id: operationId,
+				type,
+				reason: `operation_type_not_auto_applicable:${type}`,
+			});
+			continue;
+		}
+		const selectedForType = selectedCounts[type] ?? 0;
+		if (selectedForType >= limit) {
+			heldOperations.push({
+				operation_id: operationId,
+				type,
+				reason: `scheduled_cap_reached:${type}:${limit}`,
+			});
+			continue;
+		}
+		selectedOperationIds.push(operationId);
+		selectedCounts[type] = selectedForType + 1;
+	}
+
+	return {
+		selectedOperationIds,
+		heldOperations,
+		operationCounts,
+		selectedCounts,
+	};
+}
+
+function verifyScheduledGovernedApply(
+	applyResult: Record<string, unknown> | null,
+	selectedOperationIds: string[],
+): Record<string, unknown> {
+	if (selectedOperationIds.length === 0) {
+		return {
+			passed: true,
+			checks: [
+				{ name: "no_selected_operations", passed: true },
+			],
+		};
+	}
+	const operationIds = toStringArray(applyResult?.operation_ids);
+	const sideEffects = parseStoredObject(applyResult?.side_effects);
+	const checks = [
+		{
+			name: "apply_result_ok",
+			passed: applyResult?.ok === true,
+		},
+		{
+			name: "applied_count_matches_selection",
+			passed: applyResult?.applied_count === selectedOperationIds.length,
+			expected: selectedOperationIds.length,
+			actual: applyResult?.applied_count ?? null,
+		},
+		{
+			name: "operation_ids_match_selection",
+			passed: selectedOperationIds.every((operationId) => operationIds.includes(operationId)),
+			expected: selectedOperationIds,
+			actual: operationIds,
+		},
+		{
+			name: "thin_index_rebuilt",
+			passed: sideEffects?.index === "rebuilt",
+			actual: sideEffects?.index ?? null,
+		},
+	];
+	return {
+		passed: checks.every((check) => check.passed),
+		checks,
+	};
+}
+
+async function setGovernedAutoApplyKillFlag(redis: Redis, reason: string): Promise<void> {
+	try {
+		await setKillFlag(redis, "DREAM_AUTO_APPLY_MODE", {
+			tripped_at: new Date().toISOString(),
+			reason,
+			source_tripwire: "manual",
+		});
+	} catch (error) {
+		console.error("[scheduled-governed] could not set DREAM_AUTO_APPLY_MODE kill flag", error);
+	}
+}
+
+async function runScheduledGovernedDream(
+	env: Env,
+	controller: ScheduledController,
+): Promise<Record<string, unknown>> {
+	const redis = createRedisClient(env);
+	const startedAt = new Date().toISOString();
+	const runId = `dga_${startedAt.replace(/[:.]/g, "-")}`;
+	let lockAcquired = false;
+	try {
+		const lock = await acquireScheduledGovernedDreamLock(redis, runId, startedAt);
+		if (!lock.acquired) {
+			const skippedRecord = {
+				schema_version: 1,
+				run_id: runId,
+				run_at: startedAt,
+				completed_at: new Date().toISOString(),
+				status: "skipped_locked",
+				trigger: "scheduled",
+				dry_run: false,
+				auto_apply_mode: "governed",
+				blocked_by: typeof lock.existingLock?.run_id === "string" ? lock.existingLock.run_id : null,
+				counts: {
+					operation_count: 0,
+					selected_operation_count: 0,
+					held_operation_count: 0,
+					applied_count: 0,
+				},
+				next_action: "Another Dream run holds the single-flight lock; retry on the next scheduled cycle.",
+			};
+			await storeScheduledGovernedRunRecord(redis, skippedRecord, false);
+			return skippedRecord;
+		}
+		lockAcquired = true;
+
+		const proposal = await runDreamProposal(env, {
+			trigger: "manual",
+			actorId: "scheduled:dream-governance",
+			archiveLimit: SCHEDULED_DREAM_ARCHIVE_LIMIT,
+			promotionLimit: SCHEDULED_DREAM_PROMOTION_LIMIT,
+			note: `Nightly Dream governed proposal. cron=${controller.cron} scheduled_time=${controller.scheduledTime}`,
+		});
+		const proposalId = typeof proposal.run_id === "string" ? proposal.run_id : null;
+		const proposalStatus = typeof proposal.status === "string" ? proposal.status : null;
+		const operations = toObjectArray(proposal.operations);
+		if (!proposalId || proposalStatus !== "proposal_ready") {
+			const skippedRecord = {
+				schema_version: 1,
+				run_id: runId,
+				run_at: startedAt,
+				completed_at: new Date().toISOString(),
+				status: proposalStatus ?? "failed",
+				trigger: "scheduled",
+				dry_run: false,
+				auto_apply_mode: "governed",
+				proposal_id: proposalId,
+				proposal_status: proposalStatus,
+				counts: {
+					operation_count: operations.length,
+					selected_operation_count: 0,
+					held_operation_count: operations.length,
+					applied_count: 0,
+				},
+				next_action: "Dream proposal did not reach proposal_ready; no autonomous apply attempted.",
+			};
+			await storeScheduledGovernedRunRecord(redis, skippedRecord, false);
+			return skippedRecord;
+		}
+
+		const grade = await gradeDreamProposal(env, {
+			proposalId,
+			actorId: "scheduled:dream-governance",
+			rubricVersion: "scheduled-governed-v1",
+		});
+		const decision = buildScheduledGovernedDecision(proposal, grade);
+		let applyResult: Record<string, unknown> | null = null;
+		let verification = verifyScheduledGovernedApply(null, []);
+
+		if (decision.selectedOperationIds.length > 0) {
+			applyResult = await applyDreamProposal(env, {
+				proposalId,
+				mutationId: `scheduled_governed_${proposalId}`,
+				reason: "Scheduled governed Dream auto-apply",
+				actorId: "scheduled:dream-governance",
+				operationIds: decision.selectedOperationIds,
+				requireGradePass: true,
+				gradeId: typeof grade.grade_id === "string" ? grade.grade_id : null,
+			});
+			verification = verifyScheduledGovernedApply(applyResult, decision.selectedOperationIds);
+			if (verification.passed !== true) {
+				await setGovernedAutoApplyKillFlag(redis, "scheduled governed Dream apply verification failed");
+			}
+		}
+
+		const appliedCount = typeof applyResult?.applied_count === "number" ? applyResult.applied_count : 0;
+		const passedGrade = grade.passed === true && grade.status === "passed";
+		const status = verification.passed !== true
+			? "failed"
+			: !passedGrade || (decision.selectedOperationIds.length === 0 && decision.heldOperations.length > 0)
+				? "held"
+				: decision.heldOperations.length > 0
+					? "completed_with_holds"
+					: "completed";
+		const runRecord = {
+			schema_version: 1,
+			run_id: runId,
+			run_at: startedAt,
+			completed_at: new Date().toISOString(),
+			status,
+			trigger: "scheduled",
+			dry_run: false,
+			auto_apply_mode: "governed",
+			cron: controller.cron,
+			scheduled_time: controller.scheduledTime,
+			proposal_id: proposalId,
+			proposal_status: proposalStatus,
+			risk_score: typeof proposal.risk_score === "string" ? proposal.risk_score : null,
+			grade_id: typeof grade.grade_id === "string" ? grade.grade_id : null,
+			grade_status: typeof grade.status === "string" ? grade.status : null,
+			apply_run_id: typeof applyResult?.apply_run_id === "string" ? applyResult.apply_run_id : null,
+			mutation_id: typeof applyResult?.mutation_id === "string" ? applyResult.mutation_id : null,
+			counts: {
+				operation_count: operations.length,
+				selected_operation_count: decision.selectedOperationIds.length,
+				held_operation_count: decision.heldOperations.length,
+				applied_count: appliedCount,
+				archive_limit: SCHEDULED_DREAM_ARCHIVE_LIMIT,
+				promotion_limit: SCHEDULED_DREAM_PROMOTION_LIMIT,
+				duplicate_merge_limit: SCHEDULED_DREAM_DUPLICATE_MERGE_LIMIT,
+				mark_contested_limit: SCHEDULED_DREAM_MARK_CONTESTED_LIMIT,
+				operation_counts: decision.operationCounts,
+				selected_counts: decision.selectedCounts,
+			},
+			selected_operation_ids: decision.selectedOperationIds,
+			held_operations: decision.heldOperations,
+			apply_result: applyResult
+				? {
+					ok: applyResult.ok === true,
+					error: typeof applyResult.error === "string" ? applyResult.error : null,
+					applied_count: appliedCount,
+					operation_ids: toStringArray(applyResult.operation_ids),
+				}
+				: null,
+			verification,
+			next_action: status === "completed" || status === "completed_with_holds"
+				? "Scheduled governed Dream auto-apply completed within caps; held operations will be reconsidered by future runs or judge policy."
+				: "Scheduled governed Dream held or failed; inspect grade, held operations, and kill-flag state before enabling broader autonomy.",
+		};
+		if (status === "failed") {
+			await setGovernedAutoApplyKillFlag(redis, "scheduled governed Dream run failed");
+		}
+		await storeScheduledGovernedRunRecord(redis, runRecord, status !== "held");
+		return runRecord;
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		await setGovernedAutoApplyKillFlag(redis, `scheduled governed Dream exception: ${message}`);
+		const failedRecord = {
+			schema_version: 1,
+			run_id: runId,
+			run_at: startedAt,
+			completed_at: new Date().toISOString(),
+			status: "failed",
+			trigger: "scheduled",
+			dry_run: false,
+			auto_apply_mode: "governed",
+			error: message,
+			counts: {
+				operation_count: 0,
+				selected_operation_count: 0,
+				held_operation_count: 0,
+				applied_count: 0,
+			},
+			next_action: "Scheduled governed Dream threw before completion; auto-apply kill flag was set.",
+		};
+		try {
+			await storeScheduledGovernedRunRecord(redis, failedRecord, true);
+		} catch (storeError) {
+			console.error("[scheduled-governed] could not store failed run record", storeError);
+		}
+		return failedRecord;
+	} finally {
+		if (lockAcquired) {
+			await releaseScheduledGovernedDreamLock(redis, runId);
+		}
+	}
 }
 
 // Define our MCP agent with knowledge tools
@@ -2918,17 +3339,26 @@ export default {
 		// =========================================================================
 		// 2. Effective-mode resolution + cycle dispatch.
 		// =========================================================================
-		// Dream + forgetting design: when the effective DREAM_AUTO_APPLY_MODE is
-		// "full", switch from proposal-only to the full cycle that also applies
-		// duplicate merges, promotions, archives, and Layer 2 quarantine + tier
-		// demotion. Effective mode combines operator intent (env var) with any
-		// active kill flag (machine override): off wins.
+		// Dream + forgetting design: governed mode is the cautious autonomous
+		// path. It proposes, grades, applies only allowlisted bounded operations,
+		// and writes an apply-verification record. Legacy "full" remains available
+		// for the older direct cycle path. Effective mode combines operator intent
+		// (env var) with any active kill flag (machine override): off wins.
 		const effective = tripwireRedis
 			? await getEffectiveMode(tripwireRedis, env.DREAM_AUTO_APPLY_MODE, "DREAM_AUTO_APPLY_MODE")
-			: { effective: env.DREAM_AUTO_APPLY_MODE === "full" ? ("full" as const) : ("off" as const), env_value: env.DREAM_AUTO_APPLY_MODE ?? "off", tripped: false, trip_record: null };
+			: {
+				effective: env.DREAM_AUTO_APPLY_MODE === "full" || env.DREAM_AUTO_APPLY_MODE === "governed"
+					? env.DREAM_AUTO_APPLY_MODE
+					: ("off" as const),
+				env_value: env.DREAM_AUTO_APPLY_MODE ?? "off",
+				tripped: false,
+				trip_record: null,
+			};
 		const autoApplyMode = effective.effective;
 		const promise =
-			autoApplyMode === "full"
+			autoApplyMode === "governed"
+				? runScheduledGovernedDream(env, controller)
+				: autoApplyMode === "full"
 				? runDreamCycle(env, {
 					dryRun: false,
 					trigger: "scheduled",

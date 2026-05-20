@@ -327,7 +327,7 @@ export async function readKillFlag(
 }
 
 export interface EffectiveMode {
-	effective: "off" | "on" | "full";
+	effective: "off" | "on" | "governed" | "full";
 	env_value: string;
 	tripped: boolean;
 	trip_record: KillFlagRecord | null;
@@ -342,7 +342,7 @@ export async function getEffectiveMode(
 	envValue: string | undefined,
 	modeName: KillSwitchName,
 ): Promise<EffectiveMode> {
-	const envNormalized = (envValue ?? "off") as "off" | "on" | "full";
+	const envNormalized = (envValue ?? "off") as "off" | "on" | "governed" | "full";
 	if (envNormalized === "off") {
 		return { effective: "off", env_value: envNormalized, tripped: false, trip_record: null };
 	}

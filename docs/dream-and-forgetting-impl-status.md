@@ -22,7 +22,10 @@ All 7 stages from the staging plan, each in its own commit. Defaults are off eve
 - 19 new tests including the canonical Panchakarma integration scenario.
 
 ### Stage 3 — Scheduled Auto-Apply (L1 existing + L2 new)
-- Scheduled handler now switches between `runDreamProposal` (default, preserves `dpr_*` records for existing monitoring) and `runDreamCycle` (when `DREAM_AUTO_APPLY_MODE=full`).
+- Scheduled handler now supports three modes:
+  - unset / `off`: proposal-only (`runDreamProposal`)
+  - `governed`: autonomous `runDreamProposal → gradeDreamProposal → applyDreamProposal` for low/medium-risk allowlisted operations within scheduled caps, with an apply-verification run record
+  - `full`: legacy direct `runDreamCycle` path
 - New Layer 2 phase `applyLayer2QuarantineAndDemote`: 3 nights below threshold → quarantine; 7 more nights → tier demote. Cap 100 ops/night. Tier-3 floor never demotes.
 - `reconsolidateEntry` lifts quarantine on any retrieval reinforcement — closes the reversibility loop.
 - New `phases.layer2_quarantine_and_demote` and per-counts in run record.
@@ -119,9 +122,9 @@ echo "off" | npx wrangler secret put RETRIEVAL_POLICY_MODE
 
 **Week 2 — Deterministic auto-apply**
 ```bash
-echo "full" | npx wrangler secret put DREAM_AUTO_APPLY_MODE
+echo "governed" | npx wrangler secret put DREAM_AUTO_APPLY_MODE
 ```
-After tonight, the cycle will run live: existing duplicate merges + archives + promotes will apply, plus Layer 2 quarantine + demote.
+After tonight, the scheduled cron will run live through the governed lifecycle: proposal, deterministic grade, bounded apply, and apply verification. Layer 2 quarantine/demote remains on the legacy `full` path until it is represented as proposal/apply operations.
 
 **Week 3 — Opus border cases**
 ```bash
