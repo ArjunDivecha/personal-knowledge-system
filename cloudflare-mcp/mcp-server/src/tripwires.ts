@@ -55,6 +55,13 @@ export const CONSECUTIVE_DAYS_REQUIRED = 2;
 export const HARD_DELETE_DAILY_CAP_DEFAULT = 5;
 /** Trailing window length (in days) used to compute the median baseline. */
 export const BASELINE_WINDOW_DAYS = 14;
+/**
+ * Minimum daily destructive-action count that can trip the spike detector.
+ * Governed Dream can legitimately archive up to ~20 reversible entries while
+ * applying scheduled archive + duplicate-merge caps, so the anomaly guard should
+ * catch sustained excess above that operating envelope, not normal autonomy.
+ */
+export const DESTRUCTIVE_MIN_ACTIONABLE_FLOOR = 20;
 
 // ---------------------------------------------------------------------------
 // Date helpers (UTC, ISO yyyy-mm-dd)
@@ -204,10 +211,9 @@ export async function checkDestructiveTripwire(
 	}
 	const baselineMedian = median(baseline);
 	const threshold = baselineMedian * DESTRUCTIVE_SPIKE_MULTIPLIER;
-	// Need a minimum baseline signal — if median is 0, we don't trip on
-	// single-digit counts (a quiet start would otherwise always flag).
-	const minActionable = 3;
-	const effectiveThreshold = Math.max(threshold, minActionable);
+	// Need a minimum baseline signal — if median is 0 or tiny, normal governed
+	// auto-apply would otherwise look like a spike every active night.
+	const effectiveThreshold = Math.max(threshold, DESTRUCTIVE_MIN_ACTIONABLE_FLOOR);
 	const consecutiveBreaches = evalDays.filter((d) => d.count > effectiveThreshold).length;
 	const tripped = consecutiveBreaches >= CONSECUTIVE_DAYS_REQUIRED;
 	return {

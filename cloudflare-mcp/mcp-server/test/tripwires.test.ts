@@ -19,6 +19,7 @@ import {
 	checkRetrievalTripwire,
 	clearKillFlag,
 	DESTRUCTIVE_SPIKE_MULTIPLIER,
+	DESTRUCTIVE_MIN_ACTIONABLE_FLOOR,
 	getEffectiveMode,
 	HARD_DELETE_DAILY_CAP_DEFAULT,
 	isHardDeleteCapReached,
@@ -102,17 +103,25 @@ describe("recordDestructiveAction + checkDestructiveTripwire", () => {
 		expect(result.tripped).toBe(true);
 		expect(result.consecutive_breaches).toBe(CONSECUTIVE_DAYS_REQUIRED);
 		expect(result.baseline_median).toBe(2);
-		expect(result.threshold).toBe(DESTRUCTIVE_SPIKE_MULTIPLIER * 2);
+		expect(result.threshold).toBe(DESTRUCTIVE_MIN_ACTIONABLE_FLOOR);
 	});
 
-	it("uses minimum-actionable floor when baseline median is 0", async () => {
-		// Zero baseline + 2 days of 2 destructive each — would breach if floor
-		// weren't applied; should NOT trip because min-actionable is 3.
-		await redis.set(`tripwire:destructive:${daysAgo(NOW, 1)}`, 2);
-		await redis.set(`tripwire:destructive:${daysAgo(NOW, 2)}`, 2);
+	it("uses minimum-actionable floor when baseline median is quiet", async () => {
+		// Zero baseline + two normal governed nights under the reversible-action
+		// floor should not disable autonomy.
+		await redis.set(`tripwire:destructive:${daysAgo(NOW, 1)}`, 18);
+		await redis.set(`tripwire:destructive:${daysAgo(NOW, 2)}`, 18);
 		const result = await checkDestructiveTripwire(redis as any, NOW);
 		expect(result.tripped).toBe(false);
-		expect(result.threshold).toBeGreaterThanOrEqual(3);
+		expect(result.threshold).toBe(DESTRUCTIVE_MIN_ACTIONABLE_FLOOR);
+	});
+
+	it("trips when sustained destructive volume exceeds the governed floor", async () => {
+		await redis.set(`tripwire:destructive:${daysAgo(NOW, 1)}`, DESTRUCTIVE_MIN_ACTIONABLE_FLOOR + 1);
+		await redis.set(`tripwire:destructive:${daysAgo(NOW, 2)}`, DESTRUCTIVE_MIN_ACTIONABLE_FLOOR + 1);
+		const result = await checkDestructiveTripwire(redis as any, NOW);
+		expect(result.tripped).toBe(true);
+		expect(result.threshold).toBe(DESTRUCTIVE_MIN_ACTIONABLE_FLOOR);
 	});
 
 	it("recordDestructiveAction writes to today's counter", async () => {
