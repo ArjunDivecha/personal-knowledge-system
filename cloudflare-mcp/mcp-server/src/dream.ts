@@ -1392,10 +1392,16 @@ async function loadEntriesByType(redis: Redis, entryType: EntryType): Promise<Lo
 }
 
 function isArchiveCandidate(entry: LoadedEntry): boolean {
+	// Phase 4 (R4.2): admit any zero-access, single-source, low-salience entry
+	// regardless of context_type — EXCEPT protected identity/explicit-save
+	// types, which are never auto-archived. Broadened from the old
+	// task_query/passing_reference-only rule so prune can keep pace with intake.
+	const protectedTypes: string[] =
+		(MEMORY_POLICY.dream_thresholds as Record<string, unknown>).archive_protected_context_types as string[] ?? [];
+	if (protectedTypes.includes(entry.contextType)) return false;
 	return (
-		(entry.contextType === "task_query" || entry.contextType === "passing_reference") &&
-		entry.mentionCount === 1 &&
 		entry.accessCount === 0 &&
+		entry.sourceConversationCount <= 1 &&
 		entry.salienceScore < MEMORY_POLICY.dream_thresholds.archive_candidate_salience
 	);
 }
@@ -3857,8 +3863,12 @@ export function demoteTierMetadata(
 // now — easy to move to shared/memory_policy.json once tuned.
 // =============================================================================
 
-/** Salience floor below which the entry starts a "below-threshold" streak. */
-export const LAYER2_QUARANTINE_SALIENCE_THRESHOLD = 0.15;
+/** Salience floor below which the entry starts a "below-threshold" streak.
+ *  Phase 4 (R4.3): sourced from policy (dream_thresholds.layer2_quarantine_salience). */
+export const LAYER2_QUARANTINE_SALIENCE_THRESHOLD =
+	typeof (MEMORY_POLICY.dream_thresholds as Record<string, unknown>).layer2_quarantine_salience === "number"
+		? ((MEMORY_POLICY.dream_thresholds as Record<string, unknown>).layer2_quarantine_salience as number)
+		: 0.15;
 /** Consecutive nights below threshold before quarantine fires. */
 export const LAYER2_QUARANTINE_AFTER_NIGHTS = 3;
 /** Total consecutive nights below threshold before tier demotion fires. */

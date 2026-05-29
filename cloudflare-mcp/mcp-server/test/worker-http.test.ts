@@ -249,7 +249,7 @@ describe("Worker HTTP routes", () => {
 		const payload = (await response.json()) as Record<string, any>;
 		expect(payload.status).toBe("proposal_ready");
 		expect(payload.actor_id).toBe("scheduled:dream-governance");
-		expect(payload.counts.archive_limit).toBe(10);
+		expect(payload.counts.archive_limit).toBe(50);
 		expect(payload.counts.promotion_limit).toBe(10);
 		expect(payload.dry_run).toBe(true);
 		expect(redisMock.set).toHaveBeenCalledWith(

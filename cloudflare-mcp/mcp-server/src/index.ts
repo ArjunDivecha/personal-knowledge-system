@@ -55,7 +55,12 @@ const MAX_RECONSOLIDATION_SEARCH_RESULTS = 5;
 const MAX_RECONSOLIDATION_ERROR_LOGS = 100;
 const RECONSOLIDATION_PROMOTION_THRESHOLD = 3;
 const MAX_OPERATOR_DREAM_ARCHIVE_LIMIT = 10;
-const SCHEDULED_DREAM_ARCHIVE_LIMIT = 10;
+// Phase 4 (R4.1): nightly archive cap is policy-driven so it can ramp
+// (10 -> 50 -> ...) under the destructive-spike tripwire. Falls back to 10.
+const SCHEDULED_DREAM_ARCHIVE_LIMIT =
+	typeof (MEMORY_POLICY.dream_thresholds as Record<string, unknown>).scheduled_archive_limit === "number"
+		? ((MEMORY_POLICY.dream_thresholds as Record<string, unknown>).scheduled_archive_limit as number)
+		: 10;
 const SCHEDULED_DREAM_PROMOTION_LIMIT = 10;
 const SCHEDULED_DREAM_DUPLICATE_MERGE_LIMIT = 10;
 const SCHEDULED_DREAM_MARK_CONTESTED_LIMIT = 10;

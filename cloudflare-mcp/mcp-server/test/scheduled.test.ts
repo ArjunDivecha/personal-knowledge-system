@@ -143,7 +143,7 @@ describe("Scheduled Dream runner", () => {
 			expect.objectContaining({
 				trigger: "manual",
 				actorId: "scheduled:dream-governance",
-				archiveLimit: 10,
+				archiveLimit: 50,
 				promotionLimit: 10,
 				note: "Nightly Dream governance proposal. cron=10 7 * * * scheduled_time=1774681800000",
 			}),
@@ -187,7 +187,7 @@ describe("Scheduled Dream runner", () => {
 				trigger: "scheduled",
 				cron: "10 7 * * *",
 				scheduledTime: 1774681800000,
-				archiveLimit: 10,
+				archiveLimit: 50,
 				promotionLimit: 10,
 				note: expect.stringContaining("auto-apply=full"),
 			}),
@@ -237,7 +237,7 @@ describe("Scheduled Dream runner", () => {
 			expect.anything(),
 			expect.objectContaining({
 				actorId: "scheduled:dream-governance",
-				archiveLimit: 10,
+				archiveLimit: 50,
 				promotionLimit: 10,
 				note: expect.stringContaining("Nightly Dream governed proposal"),
 			}),
