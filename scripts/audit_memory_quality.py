@@ -405,10 +405,28 @@ def compute_m4_duplicates(
             "max_pairwise_cosine": round(max_cos, 4),
         })
 
+    # Tight clusters (2-6 members) are the safe semantic-merge candidates
+    # (the over-merge guard keeps anything larger to lexical-only). Sample a
+    # handful with member ids so they can seed a governed dry-run proposal.
+    tight_samples = []
+    for members in [c for c in multi if 2 <= len(c) <= 6][:10]:
+        max_cos = 0.0
+        for i in range(len(members)):
+            for j in range(i + 1, len(members)):
+                a, b = members[i], members[j]
+                key = (a, b) if a < b else (b, a)
+                max_cos = max(max_cos, pair_cosine.get(key, 0.0))
+        tight_samples.append({
+            "member_ids": members,
+            "member_domains": [entry_label(by_id[m]) for m in members],
+            "max_pairwise_cosine": round(max_cos, 4),
+        })
+
     base.update({
         "multi_member_clusters": len(multi),
         "entries_in_clusters": entries_in_clusters,
         "largest_clusters": largest,
+        "tight_cluster_samples": tight_samples,
         "query_capped": capped,
         "queries_run": len(query_ids),
     })
