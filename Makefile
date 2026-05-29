@@ -4,7 +4,7 @@ WORKER_DIR := $(REPO_ROOT)/cloudflare-mcp/mcp-server
 FIXTURE_BUNDLE := $(REPO_ROOT)/tests/fixtures/sample_memory_fixture.json
 CHECK_OVERNIGHT_DREAM_ARGS ?=
 
-.PHONY: worker-typecheck worker-test verify-memory-full dream-live-canary check-overnight-dream check-overnight-streak test-python-checker seed-staging-dry-run staging-smoke-dry-run staging-smoke deploy-staging worker-secrets-staging
+.PHONY: worker-typecheck worker-test verify-memory-full dream-live-canary check-overnight-dream check-overnight-streak test-python-checker seed-staging-dry-run staging-smoke-dry-run staging-smoke deploy-staging worker-secrets-staging audit-memory-quality verify-memory-quality
 
 worker-typecheck:
 	cd "$(WORKER_DIR)" && npm run type-check
@@ -14,6 +14,12 @@ worker-test:
 
 verify-memory-full:
 	"$(PYTHON)" "$(REPO_ROOT)/scripts/verify_memory_consistency.py" --full --strict
+
+audit-memory-quality:
+	"$(PYTHON)" "$(REPO_ROOT)/scripts/audit_memory_quality.py" $(AUDIT_MEMORY_QUALITY_ARGS)
+
+verify-memory-quality:
+	"$(PYTHON)" "$(REPO_ROOT)/scripts/audit_memory_quality.py" --write-gate $(AUDIT_MEMORY_QUALITY_ARGS)
 
 dream-live-canary:
 	cd "$(WORKER_DIR)" && npm run test:dream-live -- --count 3

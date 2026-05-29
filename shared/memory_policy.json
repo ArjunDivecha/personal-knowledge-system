@@ -82,5 +82,16 @@
     "promote_candidate_min_mentions": 3,
     "decay_candidate_salience": 0.1,
     "archive_candidate_salience": 0.05
+  },
+  "dedup": {
+    "COSINE_DUP_THRESHOLD": 0.86,
+    "COSINE_CONTEST_BAND": [0.80, 0.86],
+    "DEDUP_NEIGHBOR_K": 10,
+    "SEMANTIC_MERGE_REQUIRES_JUDGE": true
+  },
+  "quality_gate": {
+    "threshold_tier1": 0.40,
+    "threshold_dup": 0.20,
+    "threshold_recall": 0.60
   }
 }

@@ -1,0 +1,102 @@
+[
+  {
+    "query": "demographic inflation pressure DIP factor",
+    "expect_any_of": ["DIP", "demographic inflation", "Juselius"],
+    "notes": "ASADO flagship; audit found 0 DIP entries surfaced. OPERATOR: verify the canonical DIP entry id/domain."
+  },
+  {
+    "query": "ASADO country rotation analog signal strategy 1",
+    "expect_any_of": ["ASADO", "analog signal", "Strategy #1", "country rotation"],
+    "notes": "OPERATOR: confirm ASADO Strategy #1 entry exists."
+  },
+  {
+    "query": "GDELT signal construction feeding ASADO",
+    "expect_any_of": ["GDELT", "ASADO"],
+    "notes": "GDELT -> ASADO pipeline."
+  },
+  {
+    "query": "InMobi IPO advisory engagement",
+    "expect_any_of": ["InMobi"],
+    "notes": "current advisory work."
+  },
+  {
+    "query": "T2 factor timing IC saturation",
+    "expect_any_of": ["IC saturation", "T2", "factor timing"],
+    "notes": "OPERATOR: confirm T2 IC-saturation phrasing."
+  },
+  {
+    "query": "LoopPilot autonomous experiment loop runner",
+    "expect_any_of": ["LoopPilot", "Loop Pilot"],
+    "notes": "known duplicate cluster (4x LoopPilot-architecture)."
+  },
+  {
+    "query": "LoopPilot promotion logic and best_metrics baseline",
+    "expect_any_of": ["LoopPilot", "promotion", "best_metrics"],
+    "notes": "from prior Codex/Claude Code sessions."
+  },
+  {
+    "query": "Pattern CNN trading Jiang Kelly Xiu re-imagined images",
+    "expect_any_of": ["Pattern", "CNN", "Jiang", "Kelly", "Xiu"],
+    "notes": "known duplicate cluster (4x Pattern-CNN). OPERATOR: verify."
+  },
+  {
+    "query": "Karpathy nanochat training loop",
+    "expect_any_of": ["Karpathy", "nanochat"],
+    "notes": "known duplicate cluster (3x Karpathy-Loop). OPERATOR: verify."
+  },
+  {
+    "query": "personal knowledge system Dream forgetting design",
+    "expect_any_of": ["Dream", "forgetting", "PKS", "memory operating system"],
+    "notes": "PKS itself."
+  },
+  {
+    "query": "Dream quarantine before tier demotion synaptic weakening",
+    "expect_any_of": ["quarantine", "demote", "Layer 2", "synaptic"],
+    "notes": "recent Dream-and-forgetting work."
+  },
+  {
+    "query": "semantic entity resolution deduplication embeddings",
+    "expect_any_of": ["entity resolution", "dedup", "duplicate"],
+    "notes": "this remediation effort."
+  },
+  {
+    "query": "Cloudflare Worker MCP server Upstash retrieval",
+    "expect_any_of": ["Cloudflare", "MCP", "Upstash"],
+    "notes": "infrastructure stack."
+  },
+  {
+    "query": "Bloomberg terminal data integration OpusBloomberg",
+    "expect_any_of": ["Bloomberg", "OpusBloomberg"],
+    "notes": "data sourcing."
+  },
+  {
+    "query": "country equity rotation backtest sharpe",
+    "expect_any_of": ["country", "rotation", "equity", "backtest"],
+    "notes": "core professional domain."
+  },
+  {
+    "query": "GMO senior advisor quantitative investing identity",
+    "expect_any_of": ["GMO", "quantitative", "senior advisor"],
+    "notes": "professional identity. OPERATOR: verify identity entry."
+  },
+  {
+    "query": "agent session ingestion Claude Code Codex pipeline",
+    "expect_any_of": ["agent session", "Claude Code", "Codex", "ingestion"],
+    "notes": "ingestion subsystem."
+  },
+  {
+    "query": "salience scoring memory decay half life",
+    "expect_any_of": ["salience", "decay", "half-life", "half life"],
+    "notes": "memory model."
+  },
+  {
+    "query": "California law chatbot content classification taxonomy",
+    "expect_any_of": ["California", "classification", "taxonomy", "legal"],
+    "notes": "recent merged cluster."
+  },
+  {
+    "query": "tweet reader ingestion fxtwitter fallback",
+    "expect_any_of": ["tweet", "twitter", "fxtwitter"],
+    "notes": "tweets module."
+  }
+]
