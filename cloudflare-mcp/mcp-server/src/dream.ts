@@ -750,6 +750,7 @@ export interface SemanticDedupConfig {
 	cosineThreshold: number;   // COSINE_DUP_THRESHOLD
 	neighborK: number;         // DEDUP_NEIGHBOR_K
 	maxQueries: number;        // SEMANTIC_DEDUP_MAX_QUERIES (Worker subrequest cap)
+	maxClusterSize: number;    // SEMANTIC_MAX_CLUSTER_SIZE (over-merge guard)
 }
 
 export interface NeighborHit {
@@ -934,7 +935,16 @@ export async function buildReplayPlansWithSemantic(
 ): Promise<{
 	duplicatePlans: DuplicateMergePlan[];
 	contradictionPlans: ContradictionPlan[];
-	semantic: { enabled: boolean; capped: boolean; queriesRun: number; edges: number };
+	semantic: {
+		enabled: boolean;
+		capped: boolean;
+		queriesRun: number;
+		edges: number;
+		oversized_clusters?: number;
+		oversized_samples?: Array<{ size: number; sample_domains: string[] }>;
+		max_cluster_size?: number;
+		disabled_reason?: string;
+	};
 }> {
 	// 1. Lexical edges: entries sharing an exact fingerprint.
 	const fingerprintGroups = new Map<string, string[]>();
@@ -981,17 +991,47 @@ export async function buildReplayPlansWithSemantic(
 	const components = connectedComponents(ids, allEdges);
 
 	// 4. Classify each multi-member component.
+	//    Over-merge guard: union-find transitive closure can chain unrelated
+	//    entries (A~B~C~…) into one giant component even though the ends are
+	//    dissimilar. Components larger than maxClusterSize are NOT merged
+	//    semantically; instead we fall back to LEXICAL-only sub-grouping
+	//    (exact-fingerprint subgroups still merge safely) and flag the
+	//    oversized component for threshold tuning (PRD open question #1).
 	const duplicatePlans: DuplicateMergePlan[] = [];
 	const contradictionPlans: ContradictionPlan[] = [];
+	const oversizedClusters: Array<{ size: number; sample_domains: string[] }> = [];
+	const maxClusterSize = config.maxClusterSize > 0 ? config.maxClusterSize : 6;
+
+	const classifyAndCollect = (members: LoadedEntry[]) => {
+		const classified = classifyDuplicateComponent(members, pairCosine);
+		if (!classified) return;
+		if (classified.kind === "duplicate") duplicatePlans.push(classified.plan);
+		else contradictionPlans.push(classified.plan);
+	};
+
 	for (const comp of components) {
 		if (comp.length < 2) continue;
 		const members = comp.map((id) => byId.get(id)!).filter(Boolean);
-		const classified = classifyDuplicateComponent(members, pairCosine);
-		if (!classified) continue;
-		if (classified.kind === "duplicate") {
-			duplicatePlans.push(classified.plan);
-		} else {
-			contradictionPlans.push(classified.plan);
+		if (members.length <= maxClusterSize) {
+			classifyAndCollect(members);
+			continue;
+		}
+		// Oversized: drop cross-topic semantic edges; merge only exact-fingerprint
+		// subgroups within this component.
+		oversizedClusters.push({
+			size: members.length,
+			sample_domains: members.slice(0, 5).map((m) => m.label),
+		});
+		const byFingerprint = new Map<string, LoadedEntry[]>();
+		for (const m of members) {
+			const fp = getDuplicateFingerprint(m);
+			if (!fp) continue;
+			const arr = byFingerprint.get(fp) ?? [];
+			arr.push(m);
+			byFingerprint.set(fp, arr);
+		}
+		for (const subgroup of byFingerprint.values()) {
+			if (subgroup.length >= 2) classifyAndCollect(subgroup);
 		}
 	}
 
@@ -1011,6 +1051,9 @@ export async function buildReplayPlansWithSemantic(
 			capped,
 			queriesRun,
 			edges: semanticEdges.length,
+			oversized_clusters: oversizedClusters.length,
+			oversized_samples: oversizedClusters.slice(0, 5),
+			max_cluster_size: maxClusterSize,
 			...(semanticDisabled ? { disabled_reason: "neighbour lookup unavailable (fail-open to lexical)" } : {}),
 		},
 	};
@@ -1054,6 +1097,7 @@ function readSemanticDedupConfig(): SemanticDedupConfig {
 		cosineThreshold: typeof dedup?.COSINE_DUP_THRESHOLD === "number" ? dedup.COSINE_DUP_THRESHOLD : 0.86,
 		neighborK: typeof dedup?.DEDUP_NEIGHBOR_K === "number" ? dedup.DEDUP_NEIGHBOR_K : 10,
 		maxQueries: typeof dedup?.SEMANTIC_DEDUP_MAX_QUERIES === "number" ? dedup.SEMANTIC_DEDUP_MAX_QUERIES : 400,
+		maxClusterSize: typeof dedup?.SEMANTIC_MAX_CLUSTER_SIZE === "number" ? dedup.SEMANTIC_MAX_CLUSTER_SIZE : 6,
 	};
 }
 

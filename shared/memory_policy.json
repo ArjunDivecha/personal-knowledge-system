@@ -88,7 +88,8 @@
     "COSINE_CONTEST_BAND": [0.80, 0.86],
     "DEDUP_NEIGHBOR_K": 10,
     "SEMANTIC_MERGE_REQUIRES_JUDGE": true,
-    "SEMANTIC_DEDUP_MAX_QUERIES": 400
+    "SEMANTIC_DEDUP_MAX_QUERIES": 400,
+    "SEMANTIC_MAX_CLUSTER_SIZE": 6
   },
   "quality_gate": {
     "threshold_tier1": 0.40,

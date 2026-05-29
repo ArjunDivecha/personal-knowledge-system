@@ -12,7 +12,7 @@ import {
 	type SemanticDedupConfig,
 } from "../src/dream";
 
-const CONFIG: SemanticDedupConfig = { cosineThreshold: 0.86, neighborK: 10, maxQueries: 100 };
+const CONFIG: SemanticDedupConfig = { cosineThreshold: 0.86, neighborK: 10, maxQueries: 100, maxClusterSize: 6 };
 
 // Minimal LoadedEntry-shaped factory.
 function mk(args: {
@@ -174,6 +174,41 @@ describe("buildReplayPlansWithSemantic", () => {
 		expect(semantic.enabled).toBe(false);
 		expect(duplicatePlans.length).toBe(1);
 		expect(duplicatePlans[0].semanticOnly).toBe(false);
+	});
+
+	it("over-merge guard: oversized semantic component does NOT collapse, falls back to lexical subgroups", async () => {
+		// 8 entries chained A~B~C~...~H by embedding (transitive), but distinct
+		// topics. maxClusterSize=3 → component of 8 is oversized → no giant merge.
+		// Two of them share an exact fingerprint → that lexical pair still merges.
+		const entries = [
+			mk({ id: "ke_1", label: "alpha topic one" }),
+			mk({ id: "ke_2", label: "beta topic two" }),
+			mk({ id: "ke_3", label: "gamma topic three" }),
+			mk({ id: "ke_4", label: "delta topic four" }),
+			mk({ id: "ke_5", label: "epsilon topic five" }),
+			mk({ id: "ke_6", label: "zeta topic six" }),
+			mk({ id: "ke_7", label: "shared exact lexical title" }),
+			mk({ id: "ke_8", label: "shared exact lexical title" }),
+		];
+		// chain 1-2-3-4-5-6-7, and 7~8 (also lexical-exact)
+		const neighbor = neighborsFrom({
+			ke_1: [["ke_2", 0.9]],
+			ke_2: [["ke_3", 0.9]],
+			ke_3: [["ke_4", 0.9]],
+			ke_4: [["ke_5", 0.9]],
+			ke_5: [["ke_6", 0.9]],
+			ke_6: [["ke_7", 0.9]],
+			ke_7: [["ke_8", 0.99]],
+		});
+		const { duplicatePlans, semantic } = await buildReplayPlansWithSemantic(
+			entries, neighbor, { ...CONFIG, maxClusterSize: 3 },
+		);
+		// The oversized 8-member component is flagged, not merged wholesale.
+		expect(semantic.oversized_clusters).toBeGreaterThanOrEqual(1);
+		// Only the lexical-exact subgroup (ke_7, ke_8) becomes a merge plan.
+		const allMerged = duplicatePlans.flatMap((p) => [p.canonical.id, ...p.duplicates.map((d: any) => d.id)]);
+		expect(allMerged.sort()).toEqual(["ke_7", "ke_8"]);
+		expect(duplicatePlans.every((p) => p.semanticOnly === false)).toBe(true);
 	});
 
 	it("respects maxQueries cap", async () => {
