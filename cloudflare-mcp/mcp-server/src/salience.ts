@@ -99,8 +99,80 @@ export function computeSalience(entry: JsonRecord, now: Date = new Date()): numb
 		retrievalBoost = 0.15 * 0.5 ** (daysSinceRetrieved / 60);
 	}
 
-	const raw = confidence * decay * combinedMultiplier * freqBoost + retrievalBoost;
+	const updatedAtAgeDays = Math.max(0, (now.getTime() - lastSeen.getTime()) / 86400000);
+	// Phase 2: continuous lever is MULTIPLICATIVE on the base so it spreads the
+	// populated salience bands without lifting genuinely-low-salience items
+	// over the archive/decay thresholds (keeps those thresholds valid).
+	const richness = computeRichness(entry, metadata, updatedAtAgeDays);
+	const richnessWeight = getRichnessWeight();
+	const base = confidence * decay * combinedMultiplier * freqBoost;
+
+	const raw = base * (1 + richnessWeight * richness) + retrievalBoost;
 	return Math.round(Math.min(1.0, raw) * 10000) / 10000;
+}
+
+// Phase 2 (PRD R2.3): continuous "evidence richness" term so salience
+// discriminates even when mention_count is pinned at 1. Must stay in lockstep
+// with compute_salience in distillation/utils/salience.py; all constants live
+// in memory_policy.json (salience_continuous).
+function saturating(n: number, cap: number): number {
+	if (cap <= 0) return 0;
+	const capped = Math.max(0, Math.min(n, cap));
+	return Math.log1p(capped) / Math.log1p(cap);
+}
+
+function listLength(value: unknown): number {
+	return Array.isArray(value) ? value.length : 0;
+}
+
+export function getRichnessWeight(): number {
+	const cfg = (MEMORY_POLICY as JsonRecord).salience_continuous as JsonRecord | undefined;
+	if (!cfg || cfg.enabled !== true) return 0;
+	return toNumber(cfg.weight) ?? 0;
+}
+
+// Returns the richness scalar in [0,1] (the multiplicative lever applies
+// getRichnessWeight() * richness as a (1 + ...) factor on the base).
+export function computeRichness(
+	entry: JsonRecord,
+	metadata: JsonRecord,
+	updatedAtAgeDays = 0,
+): number {
+	const cfg = (MEMORY_POLICY as JsonRecord).salience_continuous as JsonRecord | undefined;
+	if (!cfg || cfg.enabled !== true) return 0;
+	const components = (cfg.components as JsonRecord | undefined) ?? {};
+
+	const sourceBreadth = new Set(
+		toStringArray(metadata.source_conversations),
+	).size;
+	const keyInsights = listLength(entry.key_insights);
+	const relatedLinks = listLength(entry.related_knowledge) + listLength(entry.related_repos);
+
+	const part = (name: string, value: number): number => {
+		const c = components[name] as JsonRecord | undefined;
+		if (!c) return 0;
+		const w = toNumber(c.weight) ?? 0;
+		const cap = toNumber(c.cap) ?? 1;
+		return w * saturating(value, cap);
+	};
+
+	// recency tiebreaker: continuous in [0,1], 1 for just-updated → 0 for old.
+	const recencyCfg = components.recency_tiebreaker as JsonRecord | undefined;
+	let recencyPart = 0;
+	if (recencyCfg) {
+		const w = toNumber(recencyCfg.weight) ?? 0;
+		const hl = toNumber(recencyCfg.half_life_days) ?? 180;
+		const recencyValue = hl > 0 ? 0.5 ** (updatedAtAgeDays / hl) : 0;
+		recencyPart = w * recencyValue;
+	}
+
+	const richness =
+		part("source_breadth", sourceBreadth) +
+		part("key_insights", keyInsights) +
+		part("related_links", relatedLinks) +
+		recencyPart;
+
+	return Math.max(0, Math.min(1, richness));
 }
 
 export function deriveSearchTier(

@@ -13,7 +13,7 @@
       }
     },
     "expected": {
-      "salience_score": 0.7876,
+      "salience_score": 0.9031,
       "stored_tier": 1
     }
   },
@@ -31,7 +31,7 @@
       }
     },
     "expected": {
-      "salience_score": 0.4646,
+      "salience_score": 0.5337,
       "stored_tier": 2
     }
   },
@@ -49,7 +49,7 @@
       }
     },
     "expected": {
-      "salience_score": 0.0006,
+      "salience_score": 0.0007,
       "stored_tier": 3
     }
   },
@@ -68,7 +68,7 @@
       }
     },
     "expected": {
-      "salience_score": 0.1575,
+      "salience_score": 0.1812,
       "stored_tier": 3
     }
   },
@@ -83,11 +83,13 @@
         "updated_at": "2026-03-28T00:00:00Z",
         "last_seen": "2026-03-28T00:00:00Z",
         "last_accessed": null,
-        "signal_flags": ["explicit_save"]
+        "signal_flags": [
+          "explicit_save"
+        ]
       }
     },
     "expected": {
-      "salience_score": 0.2363,
+      "salience_score": 0.2717,
       "stored_tier": 3
     }
   },
@@ -102,11 +104,13 @@
         "updated_at": "2026-03-28T00:00:00Z",
         "last_seen": "2026-03-28T00:00:00Z",
         "last_accessed": null,
-        "signal_flags": ["correction_derived"]
+        "signal_flags": [
+          "correction_derived"
+        ]
       }
     },
     "expected": {
-      "salience_score": 0.2835,
+      "salience_score": 0.3261,
       "stored_tier": 3
     }
   },
@@ -121,11 +125,14 @@
         "updated_at": "2026-03-28T00:00:00Z",
         "last_seen": "2026-03-28T00:00:00Z",
         "last_accessed": null,
-        "signal_flags": ["explicit_save", "correction_derived"]
+        "signal_flags": [
+          "explicit_save",
+          "correction_derived"
+        ]
       }
     },
     "expected": {
-      "salience_score": 0.4253,
+      "salience_score": 0.4891,
       "stored_tier": 3
     }
   },
@@ -164,7 +171,9 @@
       }
     },
     "expected": {
-      "new_entry_signal_flags": ["correction_derived"],
+      "new_entry_signal_flags": [
+        "correction_derived"
+      ],
       "new_entry_context_type": "recurring_pattern",
       "contest_proposal_kind": "contest",
       "contest_target_entry_id": "ke_prior"

@@ -192,11 +192,18 @@ class MemoryFadingTests(unittest.TestCase):
         )
 
         baseline_score = compute_salience(baseline, now=now)
+        explicit_score = compute_salience(explicit, now=now)
+        correction_score = compute_salience(correction, now=now)
+        both_score = compute_salience(both, now=now)
 
-        self.assertEqual(baseline_score, 0.1575)
-        self.assertEqual(compute_salience(explicit, now=now), 0.2363)
-        self.assertEqual(compute_salience(correction, now=now), 0.2835)
-        self.assertEqual(compute_salience(both, now=now), 0.4253)
+        # Signal flags multiply the base type multiplier; assert ordering +
+        # ratios (robust to the Phase 2 continuous lever, which scales all
+        # cases by the same richness factor so it cancels in the ratio).
+        self.assertGreater(explicit_score, baseline_score)
+        self.assertGreater(correction_score, explicit_score)
+        self.assertGreater(both_score, correction_score)
+        self.assertAlmostEqual(explicit_score / baseline_score, 1.5, places=2)
+        self.assertAlmostEqual(correction_score / baseline_score, 1.8, places=2)
 
 
 if __name__ == "__main__":

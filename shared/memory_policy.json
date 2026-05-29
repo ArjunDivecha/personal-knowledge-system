@@ -41,6 +41,17 @@
     "correction_derived": 1.8
   },
   "max_combined_salience_multiplier": 3.0,
+  "salience_continuous": {
+    "_note": "Phase 2 (PRD R2.3): a continuous 'evidence richness' lever so salience discriminates even at mention_count=1. MULTIPLICATIVE on the base: salience = base*(1 + weight*richness) + retrieval_boost, richness in [0,1]. Multiplicative (not additive) so it spreads the populated salience bands WITHOUT lifting genuinely-low items over the archive/decay thresholds (those thresholds stay valid — R2.4 satisfied by construction; percentile thresholds remain a future hardening). Primary lever source_breadth (distinct source_conversations); key_insights + related_links + a recency tiebreaker add present-day variance while mention_count is ~1 pre-dedup.",
+    "enabled": true,
+    "weight": 0.6,
+    "components": {
+      "source_breadth": { "weight": 0.3, "cap": 6 },
+      "key_insights": { "weight": 0.25, "cap": 8 },
+      "related_links": { "weight": 0.2, "cap": 12 },
+      "recency_tiebreaker": { "weight": 0.25, "half_life_days": 180 }
+    }
+  },
   "confidence_map": {
     "high": 1.0,
     "medium": 0.7,

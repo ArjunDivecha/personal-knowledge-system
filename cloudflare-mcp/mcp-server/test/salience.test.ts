@@ -31,39 +31,27 @@ describe("shared salience policy", () => {
 			},
 		};
 
-		expect(computeSalience(baseEntry, now)).toBe(0.1575);
-		expect(
+		// Signal flags multiply the base type multiplier; assert the ordering
+		// the multipliers imply (robust to the Phase 2 continuous lever, which
+		// scales all four cases by the same richness factor).
+		const score = (flags?: string[]) =>
 			computeSalience(
-				{
-					...baseEntry,
-					metadata: { ...baseEntry.metadata, signal_flags: ["explicit_save"] },
-				},
+				flags
+					? { ...baseEntry, metadata: { ...baseEntry.metadata, signal_flags: flags } }
+					: baseEntry,
 				now,
-			),
-		).toBe(0.2363);
-		expect(
-			computeSalience(
-				{
-					...baseEntry,
-					metadata: {
-						...baseEntry.metadata,
-						signal_flags: ["correction_derived"],
-					},
-				},
-				now,
-			),
-		).toBe(0.2835);
-		expect(
-			computeSalience(
-				{
-					...baseEntry,
-					metadata: {
-						...baseEntry.metadata,
-						signal_flags: ["explicit_save", "correction_derived"],
-					},
-				},
-				now,
-			),
-		).toBe(0.4253);
+			);
+		const base = score();
+		const explicit = score(["explicit_save"]);
+		const correction = score(["correction_derived"]);
+		const both = score(["explicit_save", "correction_derived"]);
+
+		expect(explicit).toBeGreaterThan(base);
+		expect(correction).toBeGreaterThan(explicit);
+		expect(both).toBeGreaterThan(correction);
+		// explicit_save = 1.5x, correction_derived = 1.8x on the type multiplier;
+		// the richness factor cancels in the ratio.
+		expect(explicit / base).toBeCloseTo(1.5, 2);
+		expect(correction / base).toBeCloseTo(1.8, 2);
 	});
 });

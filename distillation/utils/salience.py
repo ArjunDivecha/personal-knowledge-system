@@ -105,8 +105,74 @@ def compute_salience(entry: Any, now: datetime | None = None) -> float:
         days_since_retrieved = max(0.0, (now_dt - last_accessed_dt).total_seconds() / 86400.0)
         retrieval_boost = 0.15 * (0.5 ** (days_since_retrieved / 60.0))
 
-    raw = confidence * decay * combined_multiplier * freq_boost + retrieval_boost
+    updated_age_days = max(0.0, (now_dt - last_seen_dt).total_seconds() / 86400.0)
+    # Phase 2: MULTIPLICATIVE continuous lever (see memory_policy.json note +
+    # computeSalience in salience.ts — must stay in lockstep).
+    richness = _compute_richness(entry_dict, metadata, policy, updated_age_days)
+    richness_weight = _richness_weight(policy)
+    base = confidence * decay * combined_multiplier * freq_boost
+
+    raw = base * (1.0 + richness_weight * richness) + retrieval_boost
     return round(min(1.0, raw), 4)
+
+
+def _richness_weight(policy: dict[str, Any]) -> float:
+    cfg = policy.get("salience_continuous")
+    if not isinstance(cfg, dict) or cfg.get("enabled") is not True:
+        return 0.0
+    return float(cfg.get("weight") or 0.0)
+
+
+def _saturating(n: float, cap: float) -> float:
+    if cap <= 0:
+        return 0.0
+    capped = max(0.0, min(float(n), float(cap)))
+    return math.log1p(capped) / math.log1p(cap)
+
+
+def _compute_richness(
+    entry_dict: dict[str, Any],
+    metadata: dict[str, Any],
+    policy: dict[str, Any],
+    updated_age_days: float = 0.0,
+) -> float:
+    """Phase 2 (PRD R2.3) richness scalar in [0,1]. Multiplicative lever
+    applies _richness_weight(policy) * richness as a (1+...) factor. Must stay
+    in lockstep with computeRichness in cloudflare-mcp/.../salience.ts.
+    Constants live in memory_policy.json (salience_continuous)."""
+    cfg = policy.get("salience_continuous")
+    if not isinstance(cfg, dict) or cfg.get("enabled") is not True:
+        return 0.0
+    components = cfg.get("components") or {}
+
+    source_breadth = len({s for s in _coerce_string_list(metadata.get("source_conversations"))})
+    key_insights = len(entry_dict.get("key_insights") or []) if isinstance(entry_dict.get("key_insights"), list) else 0
+    related_links = (
+        (len(entry_dict.get("related_knowledge") or []) if isinstance(entry_dict.get("related_knowledge"), list) else 0)
+        + (len(entry_dict.get("related_repos") or []) if isinstance(entry_dict.get("related_repos"), list) else 0)
+    )
+
+    def part(name: str, value: float) -> float:
+        c = components.get(name)
+        if not isinstance(c, dict):
+            return 0.0
+        return float(c.get("weight") or 0.0) * _saturating(value, float(c.get("cap") or 1.0))
+
+    recency_cfg = components.get("recency_tiebreaker")
+    recency_part = 0.0
+    if isinstance(recency_cfg, dict):
+        w = float(recency_cfg.get("weight") or 0.0)
+        hl = float(recency_cfg.get("half_life_days") or 180.0)
+        recency_value = (0.5 ** (updated_age_days / hl)) if hl > 0 else 0.0
+        recency_part = w * recency_value
+
+    richness = (
+        part("source_breadth", source_breadth)
+        + part("key_insights", key_insights)
+        + part("related_links", related_links)
+        + recency_part
+    )
+    return max(0.0, min(1.0, richness))
 
 
 def resolve_stored_tier(entry: Any) -> int:
