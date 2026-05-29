@@ -89,6 +89,12 @@
     ],
     "tier_2_similarity_min": 0.65
   },
+  "tier_percentiles": {
+    "_note": "Phase 3 (PRD R3.1): tier from salience percentile, not static context_type. Top tier_1_top_pct of active entries -> Tier 1, next tier_2_next_pct -> Tier 2, remainder -> Tier 3. identity_floor_context_types can never fall below Tier 2 (durable identity isn't demoted by a quiet stretch). Operator decision (PRD open Q#2).",
+    "tier_1_top_pct": 0.15,
+    "tier_2_next_pct": 0.25,
+    "identity_floor_context_types": ["professional_identity", "stated_preference"]
+  },
   "dream_thresholds": {
     "promote_candidate_min_mentions": 3,
     "decay_candidate_salience": 0.1,

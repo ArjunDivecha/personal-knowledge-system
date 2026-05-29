@@ -50,6 +50,46 @@ export function resolveStoredInjectionTier(metadata: JsonRecord | null | undefin
 	return defaultInjectionTier(metadata?.context_type);
 }
 
+// Phase 3 (PRD R3.1): assign tiers by salience percentile across the active
+// corpus. Top tier_1_top_pct -> Tier 1, next tier_2_next_pct -> Tier 2, rest
+// Tier 3; identity_floor_context_types never fall below Tier 2. Must stay in
+// lockstep with assign_tiers_by_percentile in salience.py.
+export function assignTierByPercentile(
+	salienceById: Record<string, number>,
+	contextTypeById: Record<string, string | null | undefined>,
+	policy: JsonRecord = MEMORY_POLICY as JsonRecord,
+): Record<string, 1 | 2 | 3> {
+	const cfg = (policy.tier_percentiles as JsonRecord | undefined) ?? {};
+	const topPct = toNumber(cfg.tier_1_top_pct) ?? 0.15;
+	const nextPct = toNumber(cfg.tier_2_next_pct) ?? 0.25;
+	const floorTypes = new Set(
+		Array.isArray(cfg.identity_floor_context_types)
+			? (cfg.identity_floor_context_types as unknown[]).map(String)
+			: [],
+	);
+
+	const ids = Object.keys(salienceById);
+	const n = ids.length;
+	const out: Record<string, 1 | 2 | 3> = {};
+	if (n === 0) return out;
+
+	const ordered = [...ids].sort((a, b) => {
+		const sa = salienceById[a] ?? 0;
+		const sb = salienceById[b] ?? 0;
+		if (sa !== sb) return sb - sa;
+		return a < b ? -1 : a > b ? 1 : 0;
+	});
+	const tier1Cut = Math.max(0, Math.round(topPct * n));
+	const tier2Cut = tier1Cut + Math.max(0, Math.round(nextPct * n));
+
+	ordered.forEach((eid, rank) => {
+		let tier: 1 | 2 | 3 = rank < tier1Cut ? 1 : rank < tier2Cut ? 2 : 3;
+		if (floorTypes.has(String(contextTypeById[eid])) && tier > 2) tier = 2;
+		out[eid] = tier;
+	});
+	return out;
+}
+
 export function computeSalience(entry: JsonRecord, now: Date = new Date()): number {
 	const metadata = (entry.metadata as JsonRecord | undefined) ?? {};
 	const contextType =

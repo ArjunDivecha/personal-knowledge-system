@@ -175,6 +175,49 @@ def _compute_richness(
     return max(0.0, min(1.0, richness))
 
 
+def assign_tiers_by_percentile(
+    salience_by_id: dict[str, float],
+    context_type_by_id: dict[str, str | None],
+    policy: dict[str, Any] | None = None,
+) -> dict[str, int]:
+    """Phase 3 (PRD R3.1). Given salience + context_type for the active corpus,
+    assign tiers by salience percentile: the top tier_1_top_pct -> Tier 1, the
+    next tier_2_next_pct -> Tier 2, the remainder -> Tier 3. Entries whose
+    context_type is in identity_floor_context_types never fall below Tier 2.
+
+    Pure: takes precomputed salience, returns {id: tier}. Must stay in lockstep
+    with assignTierByPercentile in salience.ts.
+    """
+    policy = policy or load_memory_policy()
+    cfg = policy.get("tier_percentiles", {}) or {}
+    top_pct = float(cfg.get("tier_1_top_pct", 0.15))
+    next_pct = float(cfg.get("tier_2_next_pct", 0.25))
+    floor_types = set(cfg.get("identity_floor_context_types", []) or [])
+
+    ids = list(salience_by_id.keys())
+    n = len(ids)
+    if n == 0:
+        return {}
+
+    # Rank by salience descending; ties broken by id for determinism.
+    ordered = sorted(ids, key=lambda i: (-salience_by_id.get(i, 0.0), i))
+    tier1_cut = max(0, int(round(top_pct * n)))
+    tier2_cut = tier1_cut + max(0, int(round(next_pct * n)))
+
+    tiers: dict[str, int] = {}
+    for rank, eid in enumerate(ordered):
+        if rank < tier1_cut:
+            tier = 1
+        elif rank < tier2_cut:
+            tier = 2
+        else:
+            tier = 3
+        if (context_type_by_id.get(eid) in floor_types) and tier > 2:
+            tier = 2  # identity floor: never below Tier 2
+        tiers[eid] = tier
+    return tiers
+
+
 def resolve_stored_tier(entry: Any) -> int:
     entry_dict = _extract_entry_dict(entry)
     metadata = entry_dict.get("metadata") or {}
