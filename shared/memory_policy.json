@@ -84,12 +84,13 @@
     "archive_candidate_salience": 0.05
   },
   "dedup": {
-    "COSINE_DUP_THRESHOLD": 0.86,
-    "COSINE_CONTEST_BAND": [0.80, 0.86],
+    "COSINE_DUP_THRESHOLD": 0.95,
+    "COSINE_CONTEST_BAND": [0.90, 0.95],
     "DEDUP_NEIGHBOR_K": 10,
     "SEMANTIC_MERGE_REQUIRES_JUDGE": true,
     "SEMANTIC_DEDUP_MAX_QUERIES": 400,
-    "SEMANTIC_MAX_CLUSTER_SIZE": 6
+    "SEMANTIC_MAX_CLUSTER_SIZE": 6,
+    "_tuning_note": "COSINE_DUP_THRESHOLD raised 0.86->0.95 from the 2026-05-29 sweep: 0.86 chained a 1980-member mega-cluster; 0.95 yields tight 2-6 clusters with the size guard splitting the rest to lexical. Operator decision (PRD open Q#1) — retune as needed."
   },
   "quality_gate": {
     "threshold_tier1": 0.40,

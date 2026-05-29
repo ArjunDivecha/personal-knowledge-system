@@ -415,6 +415,70 @@ def compute_m4_duplicates(
     return base
 
 
+def run_threshold_sweep(
+    *,
+    thresholds: list[float],
+    neighbor_k: int,
+    max_queries: int,
+    workers: int,
+) -> dict[str, Any]:
+    """Read-only: one NN pass collecting all (a,b,score) edges, then re-cluster
+    at several cosine thresholds to show how cluster sizes change. Informs
+    COSINE_DUP_THRESHOLD tuning (PRD open question #1)."""
+    redis = _ReadOnly(RedisClient(), _FORBIDDEN_REDIS, "redis")
+    vector = _ReadOnly(VectorClient(), _FORBIDDEN_VECTOR, "vector")
+
+    knowledge = [e for e in redis.get_all_knowledge_entries() if not is_archived(e)]
+    projects = [e for e in redis.get_all_project_entries() if not is_archived(e)]
+    active = knowledge + projects
+    by_id = {str(e.id): e for e in active}
+    ids = list(by_id.keys())
+
+    fetched = vector.fetch_entries(ids, include_metadata=False, include_vectors=True)
+    vec_by_id: dict[str, list[float]] = {}
+    for row in fetched:
+        rid = getattr(row, "id", None)
+        rvec = getattr(row, "vector", None)
+        if rid is not None and rvec:
+            vec_by_id[str(rid)] = list(rvec)
+    query_ids = [i for i in ids if i in vec_by_id][:max_queries]
+
+    raw_edges: list[tuple[str, str, float]] = []
+
+    def nn_for(eid: str):
+        etype = entry_type(by_id[eid])
+        results = vector.query(vector=vec_by_id[eid], top_k=neighbor_k + 5, include_metadata=False)
+        out = []
+        for r in results:
+            nid = str(r["id"])
+            if nid == eid or nid not in by_id:
+                continue
+            if entry_type(by_id[nid]) != etype:
+                continue
+            out.append((eid, nid, float(r.get("score", 0.0))))
+        return out
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for fut in as_completed({pool.submit(nn_for, eid) for eid in query_ids}):
+            raw_edges.extend(fut.result())
+
+    sweep = []
+    for thr in thresholds:
+        edges = [(a, b) for (a, b, s) in raw_edges if s >= thr]
+        comps = [c for c in clusters_from_edges(query_ids, edges) if len(c) >= 2]
+        sizes = sorted((len(c) for c in comps), reverse=True)
+        sweep.append({
+            "threshold": thr,
+            "multi_member_clusters": len(comps),
+            "entries_in_clusters": sum(sizes),
+            "max_cluster_size": sizes[0] if sizes else 0,
+            "clusters_size_2_to_6": sum(1 for s in sizes if 2 <= s <= 6),
+            "clusters_over_6": sum(1 for s in sizes if s > 6),
+            "top_sizes": sizes[:10],
+        })
+    return {"queries_run": len(query_ids), "sweep": sweep}
+
+
 def compute_m5_growth(redis: Any, *, window_days: int) -> dict[str, Any]:
     """Estimate net active growth + archived count over a trailing window from
     the Dream run ledger. Marks window_partial when ledger data is thin."""
@@ -595,10 +659,32 @@ def main() -> int:
     parser.add_argument("--skip-dup", action="store_true", help="skip M4 (no vector NN)")
     parser.add_argument("--skip-recall", action="store_true", help="skip M6 (no OpenAI embed)")
     parser.add_argument("--recall-k", type=int, default=5)
+    parser.add_argument("--cosine-sweep", type=str, default=None,
+                        help="comma-separated thresholds, e.g. '0.86,0.90,0.92,0.94,0.96' — runs a read-only sweep and exits")
     args = parser.parse_args()
 
     ensure_runtime_dirs()
     policy = load_policy()
+
+    if args.cosine_sweep:
+        dedup_cfg = policy.get("dedup", {})
+        thresholds = [float(x) for x in args.cosine_sweep.split(",") if x.strip()]
+        result = run_threshold_sweep(
+            thresholds=thresholds,
+            neighbor_k=int(dedup_cfg.get("DEDUP_NEIGHBOR_K", 10)),
+            max_queries=args.max_dup_queries,
+            workers=args.dup_workers,
+        )
+        print(f"[sweep] queries_run={result['queries_run']}")
+        for row in result["sweep"]:
+            print(f"  thr={row['threshold']:.2f}  clusters>=2={row['multi_member_clusters']:>4}  "
+                  f"in_clusters={row['entries_in_clusters']:>5}  max={row['max_cluster_size']:>5}  "
+                  f"tight(2-6)={row['clusters_size_2_to_6']:>4}  over6={row['clusters_over_6']:>4}  "
+                  f"top={row['top_sizes'][:5]}")
+        ts = utc_now_iso().replace(":", "").replace("-", "")
+        path = append_report(f"dedup_threshold_sweep_{ts}.json", {"schema_version": 1, "generated_at": utc_now_iso(), **result})
+        print(f"[sweep] report → {path}")
+        return 0
 
     report = run_audit(
         max_dup_queries=args.max_dup_queries,
