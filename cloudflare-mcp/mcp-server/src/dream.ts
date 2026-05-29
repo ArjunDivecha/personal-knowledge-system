@@ -35,6 +35,8 @@ interface RunDreamOptions {
 	archiveLimit?: number | null;
 	promotionLimit?: number | null;
 	setAsLatest?: boolean;
+	// Phase 1: see RunDreamProposalOptions.semantic.
+	semantic?: boolean | null;
 }
 
 interface RunDreamProposalOptions {
@@ -44,6 +46,10 @@ interface RunDreamProposalOptions {
 	candidateIds?: string[] | null;
 	archiveLimit?: number | null;
 	promotionLimit?: number | null;
+	// Phase 1: run semantic (embedding-NN) dedup candidate generation. Defaults
+	// to running only for targeted (candidate_ids) proposals; pass true to force
+	// it on an unfiltered run (bounded by SEMANTIC_DEDUP_MAX_QUERIES).
+	semantic?: boolean | null;
 }
 
 interface ApplyDreamProposalOptions {
@@ -90,6 +96,12 @@ interface DuplicateMergePlan {
 	fingerprint: string;
 	canonical: LoadedEntry;
 	duplicates: LoadedEntry[];
+	// Phase 1 semantic entity resolution: true when the group was formed by
+	// embedding similarity without exact-fingerprint agreement across all
+	// members. Semantic-only plans are always judge/operator-gated (R1.6).
+	semanticOnly?: boolean;
+	// Max pairwise cosine observed within the group (1.0 for lexical-exact).
+	maxCosine?: number;
 }
 
 interface ContradictionPlan {
@@ -721,6 +733,328 @@ function buildReplayPlans(entries: LoadedEntry[]): {
 	}
 
 	return { duplicatePlans, contradictionPlans };
+}
+
+// ===========================================================================
+// Phase 1 — Semantic Entity Resolution (PRD docs/pks-memory-quality-...md §7)
+// ===========================================================================
+// De-duplication by embedding similarity, not just title equality. Reuses the
+// existing safety gates: opposing-marker veto routes contradictory pairs to
+// mark_contested; compareCanonicalPriority picks the canonical; mergeCanonical
+// Entry performs the merge. Semantic-only groups are judge/operator-gated.
+//
+// The neighbour lookup is injected (NeighborFn) so the grouping/classification
+// logic is unit-testable without a live vector store.
+
+export interface SemanticDedupConfig {
+	cosineThreshold: number;   // COSINE_DUP_THRESHOLD
+	neighborK: number;         // DEDUP_NEIGHBOR_K
+	maxQueries: number;        // SEMANTIC_DEDUP_MAX_QUERIES (Worker subrequest cap)
+}
+
+export interface NeighborHit {
+	id: string;
+	score: number;
+}
+
+// Given an entry, return its nearest neighbours (id + cosine) of the SAME type.
+export type NeighborFn = (entry: LoadedEntry) => Promise<NeighborHit[]>;
+
+interface DedupEdge {
+	a: string;
+	b: string;
+	cosine: number;
+}
+
+// --- Pure union-find over edges (exported for tests) ----------------------
+export function connectedComponents(
+	ids: string[],
+	edges: Array<{ a: string; b: string }>,
+): string[][] {
+	const parent = new Map<string, string>();
+	const find = (x: string): string => {
+		parent.set(x, parent.get(x) ?? x);
+		let root = x;
+		while (parent.get(root) !== root) root = parent.get(root)!;
+		// path compression
+		let cur = x;
+		while (parent.get(cur) !== root) {
+			const next = parent.get(cur)!;
+			parent.set(cur, root);
+			cur = next;
+		}
+		return root;
+	};
+	const union = (a: string, b: string) => {
+		const ra = find(a);
+		const rb = find(b);
+		if (ra !== rb) parent.set(ra, rb);
+	};
+	for (const id of ids) find(id);
+	for (const { a, b } of edges) {
+		if (parent.has(a) && parent.has(b)) union(a, b);
+	}
+	const groups = new Map<string, string[]>();
+	for (const id of parent.keys()) {
+		const root = find(id);
+		const arr = groups.get(root) ?? [];
+		arr.push(id);
+		groups.set(root, arr);
+	}
+	return [...groups.values()];
+}
+
+// --- Classify a connected component into a dup plan or a contradiction -----
+// Returns either a DuplicateMergePlan or a ContradictionPlan-shaped object.
+// Pure: depends only on the entries + existing predicates. Exported for tests.
+export function classifyDuplicateComponent(
+	members: LoadedEntry[],
+	pairCosine: Map<string, number>,
+): { kind: "duplicate"; plan: DuplicateMergePlan } | { kind: "contradiction"; plan: ContradictionPlan } | null {
+	if (members.length < 2) return null;
+
+	// Opposing-marker veto across any pair → the whole component is contested,
+	// never merged. A high embedding score must not override a contradiction.
+	const reasons = new Set<string>();
+	for (let i = 0; i < members.length; i += 1) {
+		for (let j = i + 1; j < members.length; j += 1) {
+			if (members[i].type === "knowledge" && members[j].type === "knowledge") {
+				const reason = findOpposingMarkerReason(
+					getNarrativeText(members[i]),
+					getNarrativeText(members[j]),
+				);
+				if (reason) reasons.add(reason);
+			}
+		}
+	}
+	if (reasons.size > 0) {
+		return {
+			kind: "contradiction",
+			plan: {
+				entryIds: members.map((m) => m.id),
+				label: members[0].label,
+				reasons: [...reasons],
+			},
+		};
+	}
+
+	// Otherwise a merge. Canonical = existing priority order.
+	const ordered = [...members].sort(compareCanonicalPriority);
+	// semanticOnly = members do NOT all share one exact fingerprint.
+	const fingerprints = new Set(ordered.map((m) => getDuplicateFingerprint(m) ?? `__null__:${m.id}`));
+	const semanticOnly = fingerprints.size > 1;
+
+	let maxCosine = 0;
+	for (let i = 0; i < ordered.length; i += 1) {
+		for (let j = i + 1; j < ordered.length; j += 1) {
+			const key = ordered[i].id < ordered[j].id
+				? `${ordered[i].id}|${ordered[j].id}`
+				: `${ordered[j].id}|${ordered[i].id}`;
+			maxCosine = Math.max(maxCosine, pairCosine.get(key) ?? (semanticOnly ? 0 : 1));
+		}
+	}
+
+	return {
+		kind: "duplicate",
+		plan: {
+			fingerprint: getDuplicateFingerprint(ordered[0]) ?? ordered[0].id,
+			canonical: ordered[0],
+			duplicates: ordered.slice(1),
+			semanticOnly,
+			maxCosine: Math.round(maxCosine * 10000) / 10000,
+		},
+	};
+}
+
+// Bound a promise; reject if it doesn't settle within ms.
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+		p.then(
+			(v) => { clearTimeout(timer); resolve(v); },
+			(e) => { clearTimeout(timer); reject(e); },
+		);
+	});
+}
+
+const SEMANTIC_PROBE_TIMEOUT_MS = 1500;
+const SEMANTIC_CALL_TIMEOUT_MS = 4000;
+
+// --- Build semantic edges via the injected neighbour function -------------
+// Fail-open: a single health probe runs first; if the neighbour lookup is
+// unavailable (unreachable vector store, missing capability), semantic dedup
+// is disabled for the run and the caller falls back to lexical-only.
+async function buildSemanticEdges(
+	entries: LoadedEntry[],
+	neighborFn: NeighborFn,
+	config: SemanticDedupConfig,
+): Promise<{ edges: DedupEdge[]; capped: boolean; queriesRun: number; disabled: boolean }> {
+	const byId = new Map(entries.map((e) => [e.id, e]));
+	const queryEntries = entries.slice(0, Math.max(0, config.maxQueries));
+	const capped = entries.length > queryEntries.length;
+	const edges: DedupEdge[] = [];
+	let queriesRun = 0;
+
+	if (queryEntries.length === 0) {
+		return { edges, capped, queriesRun, disabled: false };
+	}
+
+	// Health probe on the first entry. If it fails fast, skip semantic entirely.
+	try {
+		await withTimeout(neighborFn(queryEntries[0]), SEMANTIC_PROBE_TIMEOUT_MS, "semantic probe");
+	} catch {
+		return { edges: [], capped: false, queriesRun: 0, disabled: true };
+	}
+
+	for (const entry of queryEntries) {
+		queriesRun += 1;
+		let hits: NeighborHit[];
+		try {
+			hits = await withTimeout(neighborFn(entry), SEMANTIC_CALL_TIMEOUT_MS, "semantic query");
+		} catch {
+			continue;
+		}
+		for (const hit of hits) {
+			if (hit.id === entry.id) continue;
+			const other = byId.get(hit.id);
+			if (!other) continue;                 // only merge among loaded entries
+			if (other.type !== entry.type) continue;
+			if (hit.score < config.cosineThreshold) continue;
+			edges.push({ a: entry.id, b: hit.id, cosine: hit.score });
+		}
+	}
+	return { edges, capped, queriesRun, disabled: false };
+}
+
+// --- Full replay-plan builder: lexical (existing) ∪ semantic (new) --------
+export async function buildReplayPlansWithSemantic(
+	entries: LoadedEntry[],
+	neighborFn: NeighborFn | null,
+	config: SemanticDedupConfig,
+): Promise<{
+	duplicatePlans: DuplicateMergePlan[];
+	contradictionPlans: ContradictionPlan[];
+	semantic: { enabled: boolean; capped: boolean; queriesRun: number; edges: number };
+}> {
+	// 1. Lexical edges: entries sharing an exact fingerprint.
+	const fingerprintGroups = new Map<string, string[]>();
+	for (const entry of entries) {
+		const fp = getDuplicateFingerprint(entry);
+		if (!fp) continue;
+		const arr = fingerprintGroups.get(fp) ?? [];
+		arr.push(entry.id);
+		fingerprintGroups.set(fp, arr);
+	}
+	const lexicalEdges: Array<{ a: string; b: string }> = [];
+	for (const ids of fingerprintGroups.values()) {
+		for (let i = 1; i < ids.length; i += 1) {
+			lexicalEdges.push({ a: ids[0], b: ids[i] });
+		}
+	}
+
+	// 2. Semantic edges (if a neighbour function is available).
+	let semanticEdges: DedupEdge[] = [];
+	let capped = false;
+	let queriesRun = 0;
+	let semanticDisabled = false;
+	if (neighborFn && config.maxQueries > 0) {
+		const result = await buildSemanticEdges(entries, neighborFn, config);
+		semanticEdges = result.edges;
+		capped = result.capped;
+		queriesRun = result.queriesRun;
+		semanticDisabled = result.disabled;
+	}
+
+	const pairCosine = new Map<string, number>();
+	for (const e of semanticEdges) {
+		const key = e.a < e.b ? `${e.a}|${e.b}` : `${e.b}|${e.a}`;
+		pairCosine.set(key, Math.max(pairCosine.get(key) ?? 0, e.cosine));
+	}
+
+	// 3. Unify lexical + semantic edges, find components.
+	const allEdges = [
+		...lexicalEdges,
+		...semanticEdges.map((e) => ({ a: e.a, b: e.b })),
+	];
+	const ids = entries.map((e) => e.id);
+	const byId = new Map(entries.map((e) => [e.id, e]));
+	const components = connectedComponents(ids, allEdges);
+
+	// 4. Classify each multi-member component.
+	const duplicatePlans: DuplicateMergePlan[] = [];
+	const contradictionPlans: ContradictionPlan[] = [];
+	for (const comp of components) {
+		if (comp.length < 2) continue;
+		const members = comp.map((id) => byId.get(id)!).filter(Boolean);
+		const classified = classifyDuplicateComponent(members, pairCosine);
+		if (!classified) continue;
+		if (classified.kind === "duplicate") {
+			duplicatePlans.push(classified.plan);
+		} else {
+			contradictionPlans.push(classified.plan);
+		}
+	}
+
+	// 5. Preserve single-entry internal-contradiction detection from the
+	//    original lexical path.
+	for (const entry of entries) {
+		const reason = detectInternalContradictionReason(entry);
+		if (!reason) continue;
+		contradictionPlans.push({ entryIds: [entry.id], label: entry.label, reasons: [reason] });
+	}
+
+	return {
+		duplicatePlans,
+		contradictionPlans,
+		semantic: {
+			enabled: Boolean(neighborFn && config.maxQueries > 0) && !semanticDisabled,
+			capped,
+			queriesRun,
+			edges: semanticEdges.length,
+			...(semanticDisabled ? { disabled_reason: "neighbour lookup unavailable (fail-open to lexical)" } : {}),
+		},
+	};
+}
+
+// --- Real neighbour function backed by Upstash Vector ---------------------
+// Fetches the entry's stored embedding (never re-embeds) then queries NN.
+// Caches fetched vectors per run to avoid duplicate fetches.
+function makeVectorNeighborFn(
+	vector: Index,
+	config: SemanticDedupConfig,
+	vectorCache: Map<string, number[] | null>,
+): NeighborFn {
+	return async (entry: LoadedEntry): Promise<NeighborHit[]> => {
+		let vec = vectorCache.get(entry.id);
+		if (vec === undefined) {
+			try {
+				const fetched = await vector.fetch([entry.id], { includeVectors: true });
+				const row = Array.isArray(fetched) ? fetched[0] : null;
+				vec = row && Array.isArray((row as { vector?: number[] }).vector)
+					? ((row as { vector: number[] }).vector)
+					: null;
+			} catch {
+				vec = null;
+			}
+			vectorCache.set(entry.id, vec);
+		}
+		if (!vec) return [];
+		const results = await vector.query({
+			vector: vec,
+			topK: config.neighborK + 5,
+			includeMetadata: false,
+		});
+		return results.map((r) => ({ id: String(r.id), score: Number(r.score ?? 0) }));
+	};
+}
+
+function readSemanticDedupConfig(): SemanticDedupConfig {
+	const dedup = (MEMORY_POLICY as Record<string, unknown>).dedup as Record<string, unknown> | undefined;
+	return {
+		cosineThreshold: typeof dedup?.COSINE_DUP_THRESHOLD === "number" ? dedup.COSINE_DUP_THRESHOLD : 0.86,
+		neighborK: typeof dedup?.DEDUP_NEIGHBOR_K === "number" ? dedup.DEDUP_NEIGHBOR_K : 10,
+		maxQueries: typeof dedup?.SEMANTIC_DEDUP_MAX_QUERIES === "number" ? dedup.SEMANTIC_DEDUP_MAX_QUERIES : 400,
+	};
 }
 
 function safeOperationIdPart(value: string): string {
@@ -1907,9 +2241,16 @@ function buildDreamProposalOperations(
 			keep_id: plan.canonical.id,
 			archive_ids: archiveIds,
 			expected_revisions: expectedRevisions,
-			reason: "Dream detected compatible duplicate entries with the same normalized topic fingerprint.",
+			semantic_only: Boolean(plan.semanticOnly),
+			max_cosine: plan.maxCosine ?? null,
+			requires_judge: Boolean(plan.semanticOnly),
+			reason: plan.semanticOnly
+				? `Dream detected semantically near-duplicate entries (cosine ${plan.maxCosine ?? "?"}) with differing titles — requires judge/operator confirmation.`
+				: "Dream detected compatible duplicate entries with the same normalized topic fingerprint.",
 			evidence: {
 				fingerprint: plan.fingerprint,
+				semantic_only: Boolean(plan.semanticOnly),
+				max_cosine: plan.maxCosine ?? null,
 				canonical: summarizeProposalEntry(plan.canonical),
 				duplicates: plan.duplicates.map(summarizeProposalEntry),
 			},
@@ -2022,7 +2363,21 @@ export async function runDreamProposal(
 	const candidateEntries = candidateIdFilter
 		? allEntries.filter((entry) => candidateIdFilter.has(entry.id))
 		: allEntries;
-	const { duplicatePlans, contradictionPlans: replayContradictionPlans } = buildReplayPlans(candidateEntries);
+	// Phase 1: semantic entity resolution. Reuse stored embeddings via a
+	// vector-backed neighbour function (never re-embeds), bounded by
+	// SEMANTIC_DEDUP_MAX_QUERIES. Runs for targeted (candidate_ids) proposals
+	// or when options.semantic === true; the unfiltered nightly proposal stays
+	// lexical-only to keep it cheap and within Worker subrequest limits.
+	const runSemantic = Boolean(candidateIdFilter) || options.semantic === true;
+	const semanticConfig = readSemanticDedupConfig();
+	const proposalNeighborFn = runSemantic
+		? makeVectorNeighborFn(createVectorClient(env), semanticConfig, new Map<string, number[] | null>())
+		: null;
+	const {
+		duplicatePlans,
+		contradictionPlans: replayContradictionPlans,
+		semantic: proposalSemantic,
+	} = await buildReplayPlansWithSemantic(candidateEntries, proposalNeighborFn, semanticConfig);
 	const entriesById = new Map(candidateEntries.map((entry) => [entry.id, entry]));
 	const replayContestedIds = new Set(replayContradictionPlans.flatMap((plan) => plan.entryIds));
 	const correctionContestPlans = await loadCorrectionContestPlans(redis, entriesById, replayContestedIds);
@@ -2096,6 +2451,9 @@ export async function runDreamProposal(
 			project_entries: projectEntries.length,
 			candidate_entries: candidateEntries.length,
 			duplicate_merge_candidates: duplicatePlans.length,
+			semantic_only_merges: duplicatePlans.filter((p) => p.semanticOnly).length,
+			lexical_merges: duplicatePlans.filter((p) => !p.semanticOnly).length,
+			semantic_dedup: proposalSemantic,
 			contradictions_detected: contradictionPlans.length,
 			correction_contest_candidates: correctionContestPlans.length,
 			promotion_candidates: promotionCandidates.length,
@@ -5018,7 +5376,17 @@ export async function runDreamCycle(
 		const replayEntries = candidateIdFilter
 			? allEntries.filter((entry) => candidateIdFilter.has(entry.id))
 			: allEntries;
-		const { duplicatePlans, contradictionPlans: replayContradictionPlans } = buildReplayPlans(replayEntries);
+		// Phase 1: semantic entity resolution (same builder as the proposal path).
+		// Gated like the proposal path: targeted (candidate_ids) or explicit
+		// options.semantic only. The unfiltered nightly cycle stays lexical-only
+		// during ramp; semantic merges run on operator-targeted clusters.
+		const cycleRunSemantic = Boolean(candidateIdFilter) || options.semantic === true;
+		const cycleSemanticConfig = readSemanticDedupConfig();
+		const cycleNeighborFn = cycleRunSemantic
+			? makeVectorNeighborFn(vector, cycleSemanticConfig, new Map<string, number[] | null>())
+			: null;
+		const { duplicatePlans, contradictionPlans: replayContradictionPlans } =
+			await buildReplayPlansWithSemantic(replayEntries, cycleNeighborFn, cycleSemanticConfig);
 		const replayEntriesById = new Map(replayEntries.map((entry) => [entry.id, entry]));
 		const replayContestedIds = new Set(replayContradictionPlans.flatMap((plan) => plan.entryIds));
 		const correctionContestPlans = await loadCorrectionContestPlans(redis, replayEntriesById, replayContestedIds);
@@ -5030,6 +5398,7 @@ export async function runDreamCycle(
 			verdicts_applied: [] as Array<Record<string, unknown>>,
 			verdicts_skipped: [] as Array<Record<string, unknown>>,
 			opus_mode: env.DREAM_OPUS_MODE === "on" ? "on" : "off",
+			deferred: 0,
 		};
 
 		// Layer 3/4 — read any pending verdicts from the offline judge (Mac
@@ -5103,14 +5472,25 @@ export async function runDreamCycle(
 
 		if (!options.dryRun) {
 			for (const plan of duplicatePlans) {
-				// Layer 3 split: borderline (any access > 0) routes to judge.
-				// Bright-line (all access == 0) auto-applies.
+				// Layer 3 split: borderline routes to judge; bright-line auto-applies.
+				// Borderline if any member was retrieved (access > 0) OR the plan is
+				// semantic-only (formed by embedding similarity, not exact-title
+				// agreement) — Phase 1 R1.6 keeps semantic matches operator/judge
+				// gated during ramp.
 				const canonicalAccess = plan.canonical.accessCount ?? 0;
 				const dupAccess = plan.duplicates.map((d) => d.accessCount ?? 0);
-				const borderline = isDuplicateMergeBorderline({
+				const borderline = Boolean(plan.semanticOnly) || isDuplicateMergeBorderline({
 					canonicalAccessCount: canonicalAccess,
 					duplicateAccessCounts: dupAccess,
 				});
+				// R1.6: a semantic-only merge must never auto-apply. With the judge
+				// off it is deferred (left for a judge-enabled run or operator).
+				// Access-borderline *lexical* merges retain their prior behavior
+				// (auto-apply when the judge is off).
+				if (plan.semanticOnly && env.DREAM_OPUS_MODE !== "on") {
+					judgeQueueSummary.deferred += 1;
+					continue;
+				}
 				if (borderline && env.DREAM_OPUS_MODE === "on") {
 					// Enqueue for Mac-side judge to decide on next run.
 					const opId = `op_${runId}_dup_${plan.canonical.id}`;
@@ -5123,6 +5503,8 @@ export async function runDreamCycle(
 						rubric: buildJudgeRubric("duplicate_merge_borderline"),
 						payload: {
 							fingerprint: plan.fingerprint,
+							semantic_only: Boolean(plan.semanticOnly),
+							max_cosine: plan.maxCosine ?? null,
 							canonical: {
 								id: plan.canonical.id,
 								type: plan.canonical.type,

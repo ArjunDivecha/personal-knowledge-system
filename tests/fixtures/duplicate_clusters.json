@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "description": "Labeled duplicate-cluster fixture for Phase 1 semantic entity resolution (PRD §7 acceptance). Each cluster is a set of entries that SHOULD collapse to exactly one canonical after governed dedup. Used by staging assertions (make staging-smoke) and as documentation of expected behavior. Synthetic but modeled on the real LoopPilot / Karpathy / Pattern-CNN clusters the audit surfaced. OPERATOR: replace member ids/domains with real production ids to assert against live data.",
+  "expected": {
+    "merges_per_cluster": "all members collapse to 1 canonical",
+    "mention_count_after": "equals number of merged members (unioned source_conversations)",
+    "opposing_marker_behavior": "any opposing-marker pair routes the cluster to contested, not merge"
+  },
+  "clusters": [
+    {
+      "label": "LoopPilot architecture",
+      "should_merge": true,
+      "members": [
+        {
+          "id": "ke_fixt_loop_1",
+          "domain": "LoopPilot architecture overview",
+          "current_view": "LoopPilot is an autonomous experiment loop: a runner drives iterative research cycles, persisting state in state.json and promoting the best-performing model each iteration.",
+          "source_conversations": ["claude_code:loop_a"]
+        },
+        {
+          "id": "ke_fixt_loop_2",
+          "domain": "Autonomous experiment loop runner design",
+          "current_view": "The LoopPilot runner executes research iterations, tracks the best promoted metrics, and resumes from persisted state after crashes.",
+          "source_conversations": ["codex_cli:loop_b"]
+        },
+        {
+          "id": "ke_fixt_loop_3",
+          "domain": "Loop Pilot iteration and promotion logic",
+          "current_view": "Each LoopPilot iteration compares new experiments against the best ever promoted metrics, not the last iteration, to decide promotion.",
+          "source_conversations": ["claude_code:loop_c"]
+        },
+        {
+          "id": "ke_fixt_loop_4",
+          "domain": "LoopPilot state persistence and restart",
+          "current_view": "LoopPilot persists loop status in state.json; the process tree is authoritative for whether a run is live after restart.",
+          "source_conversations": ["claude_code:loop_d"]
+        }
+      ]
+    },
+    {
+      "label": "Karpathy training loop",
+      "should_merge": true,
+      "members": [
+        {
+          "id": "ke_fixt_karp_1",
+          "domain": "Karpathy nanochat training loop",
+          "current_view": "Karpathy's nanochat trains a small chat model end-to-end with a minimal training loop over tokenized data.",
+          "source_conversations": ["claude_ai:karp_a"]
+        },
+        {
+          "id": "ke_fixt_karp_2",
+          "domain": "nanochat reproduction notes",
+          "current_view": "Reproducing nanochat: the training loop iterates batches, computes loss, and checkpoints the model periodically.",
+          "source_conversations": ["claude_ai:karp_b"]
+        },
+        {
+          "id": "ke_fixt_karp_3",
+          "domain": "Karpathy loop walkthrough",
+          "current_view": "Walkthrough of Karpathy's training loop: forward pass, loss, backward, optimizer step, repeat over epochs.",
+          "source_conversations": ["claude_ai:karp_c"]
+        }
+      ]
+    },
+    {
+      "label": "Pattern CNN trading",
+      "should_merge": true,
+      "members": [
+        {
+          "id": "ke_fixt_pat_1",
+          "domain": "Pattern CNN trading (Jiang Kelly Xiu)",
+          "current_view": "Re-imagining price series as images and training a CNN to predict returns, following Jiang, Kelly, and Xiu.",
+          "source_conversations": ["claude_ai:pat_a"]
+        },
+        {
+          "id": "ke_fixt_pat_2",
+          "domain": "CNN on chart images for return prediction",
+          "current_view": "A convolutional network ingests rendered OHLC chart images and predicts forward returns; based on Jiang-Kelly-Xiu.",
+          "source_conversations": ["claude_ai:pat_b"]
+        },
+        {
+          "id": "ke_fixt_pat_3",
+          "domain": "Image-based trading signal CNN",
+          "current_view": "Trading signals from a CNN trained on price-chart images, reproducing the Jiang Kelly Xiu image-based approach.",
+          "source_conversations": ["claude_ai:pat_c"]
+        },
+        {
+          "id": "ke_fixt_pat_4",
+          "domain": "Re-imagined price images deep learning",
+          "current_view": "Deep learning on re-imagined price images for return forecasting; CNN architecture per Jiang, Kelly, Xiu.",
+          "source_conversations": ["claude_ai:pat_d"]
+        }
+      ]
+    },
+    {
+      "label": "Contested rates view (must NOT merge)",
+      "should_merge": false,
+      "expected_outcome": "contested",
+      "members": [
+        {
+          "id": "ke_fixt_rates_1",
+          "domain": "Rates positioning view",
+          "current_view": "We are bullish on duration and adding to the long-end position.",
+          "source_conversations": ["claude_ai:rates_a"]
+        },
+        {
+          "id": "ke_fixt_rates_2",
+          "domain": "Rates positioning view",
+          "current_view": "We are bearish on duration and cutting the long-end position.",
+          "source_conversations": ["claude_ai:rates_b"]
+        }
+      ]
+    }
+  ]
+}
