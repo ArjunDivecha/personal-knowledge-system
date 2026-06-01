@@ -153,3 +153,59 @@ open scripts/reports/dream-weekly-*.md
 $ git log --oneline main..feature/dream-and-forgetting
 ```
 (7 stage commits, see worktree for full messages)
+
+---
+
+## 2026-05-31 — Post-remediation checkup + Phase 3 durability + store cleanup
+
+A weekly checkup (audit M1–M7 + live probes) surfaced three issues and a
+root-cause architecture finding.
+
+### Two-worker finding (root cause of #2 and #3)
+The repo deploys **two** Cloudflare Workers:
+- `arjun-knowledge-mcp` (`wrangler.json`) → custom domain **mcp.dancing-ganesh.com**,
+  owns the nightly cron, runs the remediated Phase 0–5 code. `wrangler deploy`
+  targets this one.
+- `personal-knowledge-mcp` (`wrangler.jsonc`) → `personal-knowledge-mcp.arjun-divecha.workers.dev`,
+  **stale Dec-2025 code**, no cron.
+
+Both read the same Upstash data, so remediated tiers/salience show up
+regardless — but the Claude client's `personal-knowledge` MCP pointed at the
+**stale** worker, which has no search-path reinforcement (→ M7 stuck ~8%) and a
+weaker archived filter (→ occasional archived leak). **Fix:** repointed
+`~/.claude.json` `personal-knowledge` → `https://mcp.dancing-ganesh.com/sse`
+(backup saved). Re-auth the connector once on next restart.
+
+### #1 Tier-1 drift — FIXED (code) + corrected (data)
+`assignTierByPercentile` existed but was never called in the cycle, so new +
+reconsolidated entries kept their static context-type tier and T1 drifted up
+(15% → 20.3%). Added `applyPercentileRetier` as an authoritative Phase-3 cycle
+phase (after Layer-2): recompute salience over the whole active set, assign
+tier by percentile (top 15% T1 / next 25% T2 / rest T3, identity floor),
+persist only changed tiers, bounded by `RETIER_PER_RUN_CAP=400`, 503-resilient,
+skipped on targeted/dry-run cycles. Surfaced as the `percentile_retier` run
+phase. 7 new unit tests (148 total green). Commit `b7481fa`.
+One-shot `retier_by_percentile.py --apply` corrected the live drift (661
+changed, T1 → 15% over its population; vector reconciled, 0 mismatches).
+**Worker deploy of the durable fix is PENDING `wrangler login`** (OAuth token
+expired, API error 10000).
+
+### #2 Archived/orphan vectors — FIXED (store cleanup)
+The vector index held 14,808 vectors vs only 4,454 active entries: 4,434
+archived + 5,920 orphan (69.9% stale) that polluted every search's topK and
+could leak. New `scripts/purge_stale_vectors.py` (dry-run default, manifest
+before apply, 503-resilient, 95% stale-fraction safety rail) deleted all 10,354
+stale vectors. **Vector count now 4,454 = exactly one per active entry.**
+
+### #3 Reinforcement / M7 — root-caused, resolved by repoint
+Reinforcement IS wired in the remediated worker (search schedules
+`reconsolidateEntry`; 660 access sidecar keys prove it works on
+mcp.dancing-ganesh.com). M7 was stuck only because client traffic hit the
+stale worker. Repointing the client (above) routes real usage through the
+reinforcing worker; M7 should climb with use.
+
+### Still pending
+- `wrangler login` → deploy `b7481fa` so the nightly holds T1 at 15%
+  automatically (until then the one-shot keeps it corrected).
+- Optional: decommission the stale `personal-knowledge-mcp` worker once the
+  repoint is confirmed working.
