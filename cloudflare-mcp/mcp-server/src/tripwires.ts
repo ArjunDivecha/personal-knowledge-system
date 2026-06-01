@@ -14,6 +14,7 @@
 // =============================================================================
 
 import type { Redis } from "@upstash/redis/cloudflare";
+import { MEMORY_POLICY } from "./salience";
 
 // ---------------------------------------------------------------------------
 // Redis key shape
@@ -57,11 +58,21 @@ export const HARD_DELETE_DAILY_CAP_DEFAULT = 5;
 export const BASELINE_WINDOW_DAYS = 14;
 /**
  * Minimum daily destructive-action count that can trip the spike detector.
- * Governed Dream can legitimately archive up to ~20 reversible entries while
- * applying scheduled archive + duplicate-merge caps, so the anomaly guard should
- * catch sustained excess above that operating envelope, not normal autonomy.
+ *
+ * Only archiveEntry records a destructive action, so the legitimate daily
+ * envelope equals the scheduled archive cap (scheduled_archive_limit). With the
+ * cap at 50 and a backlog draining at the cap every night, a fixed floor of 20
+ * would flag normal autonomy as an anomaly and halt the drain. So we derive the
+ * floor from the policy cap with headroom — it must sit ABOVE a maxed-out
+ * normal run, catching only sustained excess beyond the operating envelope.
+ * Stays in lockstep if the cap is later raised (policy note: toward 100).
  */
-export const DESTRUCTIVE_MIN_ACTIONABLE_FLOOR = 20;
+const SCHEDULED_ARCHIVE_LIMIT_FOR_FLOOR =
+	Number((MEMORY_POLICY.dream_thresholds as Record<string, unknown>)?.scheduled_archive_limit) || 50;
+export const DESTRUCTIVE_MIN_ACTIONABLE_FLOOR = Math.max(
+	20,
+	Math.ceil(SCHEDULED_ARCHIVE_LIMIT_FOR_FLOOR * 1.5),
+);
 
 // ---------------------------------------------------------------------------
 // Date helpers (UTC, ISO yyyy-mm-dd)

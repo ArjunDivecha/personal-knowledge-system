@@ -1392,7 +1392,7 @@ async function loadEntriesByType(redis: Redis, entryType: EntryType): Promise<Lo
 	return (await loadEntryBatchByType(redis, entryType)).entries;
 }
 
-function isArchiveCandidate(entry: LoadedEntry): boolean {
+export function isArchiveCandidate(entry: LoadedEntry): boolean {
 	// Phase 4 (R4.2): admit any zero-access, single-source, low-salience entry
 	// regardless of context_type — EXCEPT protected identity/explicit-save
 	// types, which are never auto-archived. Broadened from the old
@@ -1400,6 +1400,12 @@ function isArchiveCandidate(entry: LoadedEntry): boolean {
 	const protectedTypes: string[] =
 		(MEMORY_POLICY.dream_thresholds as Record<string, unknown>).archive_protected_context_types as string[] ?? [];
 	if (protectedTypes.includes(entry.contextType)) return false;
+	// Never archive an entry that is contested/flagged for operator review —
+	// archiving it would silently resolve a contradiction the operator hasn't
+	// seen. Covers entries contested in a prior run (state persisted) and, in
+	// the live cycle, entries marked contested earlier this run (the cycle
+	// reloads the snapshot after marking, so their state reads "contested").
+	if (typeof entry.entry.state === "string" && entry.entry.state === "contested") return false;
 	return (
 		entry.accessCount === 0 &&
 		entry.sourceConversationCount <= 1 &&
@@ -2278,6 +2284,12 @@ function buildDreamProposalOperations(
 ): Array<Record<string, unknown>> {
 	const operations: Array<Record<string, unknown>> = [];
 
+	// Entries contested in THIS proposal must not also be proposed for archive:
+	// a no-write proposal never mutates the snapshot, so their state is still
+	// "active" here and isArchiveCandidate wouldn't catch them. Archiving an
+	// entry the same run it is flagged for review would void that review.
+	const contestedThisRun = new Set<string>(contradictionPlans.flatMap((plan) => plan.entryIds));
+
 	for (const plan of duplicatePlans) {
 		const archiveIds = plan.duplicates.map((entry) => entry.id);
 		const expectedRevisions: Record<string, number> = {
@@ -2359,6 +2371,7 @@ function buildDreamProposalOperations(
 	}
 
 	for (const entry of archiveCandidates) {
+		if (contestedThisRun.has(entry.id)) continue;
 		operations.push({
 			operation_id: `dop_archive_${entry.id}`,
 			type: "archive_entry",
@@ -4127,7 +4140,7 @@ async function promoteEntry(
 	};
 }
 
-async function archiveEntry(
+export async function archiveEntry(
 	redis: Redis,
 	vector: Index,
 	entry: LoadedEntry,
@@ -4196,6 +4209,17 @@ async function archiveEntry(
 	archivedEntry.metadata.salience_score = archivedEntry.salienceScore;
 	await persistEntry(redis, vector, archivedEntry, { skipVector: true });
 	await deleteVectorEntry(vector, entry.id);
+
+	// Mark the ORIGINAL in-memory LoadedEntry archived. archiveEntry above only
+	// mutates a freshly-loaded copy (latestEntry); the object passed in still
+	// lives in the cycle's `allEntries` snapshot. Later same-run phases that
+	// operate on that snapshot (Layer 2 demote, percentile re-tier) filter on
+	// entry.metadata.archived — without this, a just-archived entry would pass
+	// the filter, get persisted back as active, and have its vector re-created
+	// (resurrection), and would also skew the re-tier percentile population.
+	entry.metadata.archived = true;
+	(entry.entry as Record<string, unknown>).metadata = entry.metadata;
+	entry.injectionTier = archivedEntry.injectionTier;
 
 	// Anomaly tripwire: bump the daily destructive-action counter (best-effort).
 	await recordDestructiveAction(redis);
