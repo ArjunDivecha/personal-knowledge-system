@@ -2,6 +2,7 @@ import { Redis } from "@upstash/redis/cloudflare";
 import { Index } from "@upstash/vector";
 import OpenAI from "openai";
 import {
+	assignTierByPercentile,
 	computeSalience,
 	defaultInjectionTier,
 	MEMORY_POLICY,
@@ -3875,6 +3876,14 @@ export const LAYER2_QUARANTINE_AFTER_NIGHTS = 3;
 export const LAYER2_DEMOTE_AFTER_NIGHTS = 10; // = 3 quarantine + 7 demote
 /** Hard cap on Layer 2 mutations per cycle run (quarantine + demote combined). */
 export const LAYER2_PER_RUN_CAP = 100;
+/**
+ * Hard cap on percentile re-tier persists per cycle run (R3.3). After the
+ * corpus converges, only a handful of entries change tier each night; this cap
+ * bounds the first post-deploy run (which absorbs accumulated drift) so the
+ * cycle never blows the Worker subrequest budget. Remaining changes reconcile
+ * over subsequent nights. Sorted by largest tier mismatch first.
+ */
+export const RETIER_PER_RUN_CAP = 400;
 
 /**
  * Run the Layer 2 quarantine + tier-demotion phase across all entries.
@@ -4001,6 +4010,84 @@ export async function applyLayer2QuarantineAndDemote(
 		streak_increment: streakIncrement,
 		processed,
 		cap_hit: capHit,
+	};
+}
+
+/**
+ * Phase 3 (R3.3) — recompute injection_tier for the whole active corpus from
+ * the salience percentile, then persist the entries whose tier changed.
+ *
+ * Operates on the cycle's current in-memory entry snapshot (post
+ * merge/promote/archive/demote), recomputes salience, and calls
+ * assignTierByPercentile over EVERY active entry — the cutoffs are only correct
+ * over the full set, which is why this never runs on a candidate-filtered or
+ * dry-run cycle. Only entries whose tier actually changes are written, sorted
+ * by largest tier mismatch first and bounded by RETIER_PER_RUN_CAP so the first
+ * post-deploy run can't exceed the Worker subrequest budget. Per-entry vector
+ * failures (e.g. transient Upstash 503s) are counted and skipped, not fatal —
+ * the next night reconciles them.
+ */
+export async function applyPercentileRetier(
+	redis: Redis,
+	vector: Index,
+	entries: LoadedEntry[],
+): Promise<{
+	evaluated: number;
+	changed: number;
+	failed: number;
+	cap_hit: boolean;
+	tier_counts: Record<1 | 2 | 3, number>;
+}> {
+	const activeEntries = entries.filter((entry) => entry.metadata.archived !== true);
+
+	const salienceById: Record<string, number> = {};
+	const contextTypeById: Record<string, string | null> = {};
+	for (const entry of activeEntries) {
+		const salience = computeSalience(entry.entry);
+		entry.metadata.salience_score = salience;
+		entry.salienceScore = salience;
+		salienceById[entry.id] = salience;
+		contextTypeById[entry.id] =
+			typeof entry.metadata.context_type === "string" ? entry.metadata.context_type : null;
+	}
+
+	const targetTiers = assignTierByPercentile(salienceById, contextTypeById);
+	const tierCounts: Record<1 | 2 | 3, number> = { 1: 0, 2: 0, 3: 0 };
+	const changes: Array<{ entry: LoadedEntry; target: 1 | 2 | 3; delta: number }> = [];
+	for (const entry of activeEntries) {
+		const target = targetTiers[entry.id];
+		if (!target) continue;
+		tierCounts[target] += 1;
+		const current = resolveStoredInjectionTier(entry.metadata);
+		if (current !== target) {
+			changes.push({ entry, target, delta: Math.abs(current - target) });
+		}
+	}
+	// Largest tier mismatch first so a capped run fixes the worst drift.
+	changes.sort((a, b) => b.delta - a.delta);
+
+	const capHit = changes.length > RETIER_PER_RUN_CAP;
+	const toApply = capHit ? changes.slice(0, RETIER_PER_RUN_CAP) : changes;
+
+	let changed = 0;
+	let failed = 0;
+	for (const { entry, target } of toApply) {
+		entry.metadata.injection_tier = target;
+		entry.injectionTier = target;
+		try {
+			await persistEntry(redis, vector, entry);
+			changed += 1;
+		} catch (_error) {
+			failed += 1;
+		}
+	}
+
+	return {
+		evaluated: activeEntries.length,
+		changed,
+		failed,
+		cap_hit: capHit,
+		tier_counts: tierCounts,
 	};
 }
 
@@ -5691,6 +5778,13 @@ export async function runDreamCycle(
 			processed: 0,
 			cap_hit: false,
 		};
+		let retierSummary: Awaited<ReturnType<typeof applyPercentileRetier>> = {
+			evaluated: 0,
+			changed: 0,
+			failed: 0,
+			cap_hit: false,
+			tier_counts: { 1: 0, 2: 0, 3: 0 },
+		};
 		if (!options.dryRun) {
 			for (const entry of archiveCandidatesLimited) {
 				archivedEntries.push(
@@ -5710,13 +5804,26 @@ export async function runDreamCycle(
 				startedAt,
 			);
 
+			// Phase 3 (R3.3) — percentile re-tier as the authoritative tier model.
+			// Tier comes from the salience percentile of the WHOLE active corpus
+			// (top tier_1_top_pct -> T1, next tier_2_next_pct -> T2, rest -> T3),
+			// with the identity floor protecting durable context types. Without
+			// this, new + reconsolidated entries keep their static
+			// context-type default tier and Tier-1 share drifts upward every
+			// night. Only runs on the full nightly set (percentiles are
+			// meaningless over a candidate-filtered subset) and never in dry-run.
+			if (!candidateIdFilter) {
+				retierSummary = await applyPercentileRetier(redis, vector, allEntries);
+			}
+
 			if (
 				mergedEntries.length > 0 ||
 				contradictionEntries.length > 0 ||
 				promotedEntries.length > 0 ||
 				archivedEntries.length > 0 ||
 				layer2Summary.quarantined.length > 0 ||
-				layer2Summary.demoted.length > 0
+				layer2Summary.demoted.length > 0 ||
+				retierSummary.changed > 0
 			) {
 				await rebuildThinIndexSafely(redis, runId);
 			}
@@ -5782,6 +5889,19 @@ export async function runDreamCycle(
 					verdicts_applied: judgeQueueSummary.verdicts_applied,
 					verdicts_skipped: judgeQueueSummary.verdicts_skipped,
 				},
+				percentile_retier: {
+					status: options.dryRun
+						? "skipped_dry_run"
+						: candidateIdFilter
+							? "skipped_targeted_run"
+							: "completed",
+					evaluated_count: retierSummary.evaluated,
+					changed_count: retierSummary.changed,
+					failed_count: retierSummary.failed,
+					per_run_cap: RETIER_PER_RUN_CAP,
+					cap_hit: retierSummary.cap_hit,
+					tier_counts: retierSummary.tier_counts,
+				},
 			},
 			counts: {
 				total_entries: allEntries.length,
@@ -5804,6 +5924,9 @@ export async function runDreamCycle(
 				archive_limit: options.archiveLimit ?? null,
 				quarantined: layer2Summary.quarantined.length,
 				demoted: layer2Summary.demoted.length,
+				retier_evaluated: retierSummary.evaluated,
+				retier_changed: retierSummary.changed,
+				retier_failed: retierSummary.failed,
 			},
 			duplicate_plans: duplicatePlans.map((plan) => ({
 				canonical_id: plan.canonical.id,
