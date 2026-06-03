@@ -44,7 +44,9 @@ vi.mock("@upstash/redis/cloudflare", () => ({
 const tripwireMock = vi.hoisted(() => ({
 	checkDestructiveTripwire: vi.fn(),
 	checkRetrievalTripwire: vi.fn(),
+	clearKillFlag: vi.fn(),
 	getEffectiveMode: vi.fn(),
+	readKillFlag: vi.fn(),
 	recordSearchQuery: vi.fn(),
 	setKillFlag: vi.fn(),
 }));
@@ -114,6 +116,8 @@ beforeEach(() => {
 		consecutive_breaches: 0,
 		reason: null,
 	});
+	tripwireMock.clearKillFlag.mockResolvedValue(undefined);
+	tripwireMock.readKillFlag.mockResolvedValue(null);
 	// Default: getEffectiveMode echoes the env value (no kill flag).
 	tripwireMock.getEffectiveMode.mockImplementation(
 		async (_redis, envValue) => ({
@@ -395,5 +399,28 @@ describe("Scheduled Dream runner", () => {
 			"DREAM_AUTO_APPLY_MODE",
 			expect.anything(),
 		);
+	});
+
+	it("destructive tripwire recovered: clears stale Dream kill flag autonomously", async () => {
+		tripwireMock.readKillFlag.mockResolvedValueOnce({
+			tripped_at: "2026-06-01T07:10:52.232Z",
+			reason: "destructive-action count breached threshold",
+			source_tripwire: "destructive_spike",
+		});
+		const controller = createScheduledController({
+			cron: "10 7 * * *",
+			scheduledTime: Date.parse("2026-06-03T07:10:00.000Z"),
+		});
+		const ctx = createExecutionContext();
+
+		await worker.scheduled(controller, getTestEnv(), ctx);
+		await waitOnExecutionContext(ctx);
+
+		expect(tripwireMock.clearKillFlag).toHaveBeenCalledWith(
+			expect.anything(),
+			"DREAM_AUTO_APPLY_MODE",
+		);
+		expect(dreamMock.runDreamProposal).toHaveBeenCalledTimes(1);
+		expect(dreamMock.gradeDreamProposal).toHaveBeenCalledTimes(1);
 	});
 });

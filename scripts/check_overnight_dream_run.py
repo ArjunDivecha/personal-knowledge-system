@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import urllib.parse
 import uuid
@@ -10,10 +11,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import requests
 
-from _memory_migration import append_report, utc_now_iso
+from _memory_migration import REPORT_DIR, append_report, ensure_runtime_dirs, utc_now_iso
 from _validation_ledger import ValidationGateRecord, write_validation_gate
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -23,6 +25,7 @@ DEFAULT_CRON_MINUTE_UTC = 10
 DEFAULT_MAX_START_DELAY_MINUTES = 45
 DEFAULT_EXPECTED_PROMOTION_LIMIT = 10
 UTC = timezone.utc
+PACIFIC = ZoneInfo("America/Los_Angeles")
 
 
 @dataclass
@@ -258,6 +261,89 @@ def fetch_dream_summary(base_url: str) -> dict[str, Any]:
     )
 
 
+def is_scheduled_governed_run(record: dict[str, Any]) -> bool:
+    run_id = record.get("run_id")
+    return (
+        record.get("trigger") == "scheduled"
+        and (
+            record.get("auto_apply_mode") == "governed"
+            or (isinstance(run_id, str) and run_id.startswith("dga_"))
+        )
+    )
+
+
+def fetch_latest_scheduled_governed_run(base_url: str) -> dict[str, Any]:
+    """Fetch the newest scheduled governed Dream attempt from the run ledger.
+
+    `dream:last_run` intentionally skips fully-held governed runs, so using only
+    get_dream_summary can make a healthy cautious run look stale. The run index
+    is the source of truth for scheduled governed attempts.
+    """
+    session, access_token, session_id = fetch_dream_session(base_url)
+    runs = call_mcp_tool(
+        session,
+        base_url,
+        access_token,
+        session_id,
+        rpc_id=2,
+        name="list_dream_runs",
+        arguments={"limit": 50},
+    )
+    recent_runs = runs.get("runs", [])
+    if not isinstance(recent_runs, list):
+        recent_runs = []
+
+    for summary in recent_runs:
+        if not isinstance(summary, dict):
+            continue
+        run_id = summary.get("run_id")
+        if not isinstance(run_id, str):
+            continue
+        if not is_scheduled_governed_run(summary) and not run_id.startswith("dga_"):
+            continue
+        run = call_mcp_tool(
+            session,
+            base_url,
+            access_token,
+            session_id,
+            rpc_id=3,
+            name="get_dream_run",
+            arguments={"run_id": run_id},
+        )
+        if is_scheduled_governed_run(run):
+            run["_report_source"] = "dream_run_index"
+            return run
+
+    latest_summary = call_mcp_tool(
+        session,
+        base_url,
+        access_token,
+        session_id,
+        rpc_id=4,
+        name="get_dream_summary",
+        arguments={},
+    )
+    return {
+        "error": "scheduled_governed_run_not_found",
+        "recent_runs": recent_runs,
+        "latest_dream_summary": latest_summary,
+        "_report_source": "dream_run_index",
+    }
+
+
+def fetch_tripwire_status(base_url: str) -> dict[str, Any] | None:
+    operator_token = os.getenv("DREAM_OPERATOR_TOKEN", "")
+    if not operator_token:
+        return None
+    response = requests.get(
+        f"{base_url.rstrip('/')}/ops/dream/tripwire_status",
+        headers={"Authorization": f"Bearer {operator_token}"},
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
 def validate_dream_run(
     *,
     health: dict[str, Any],
@@ -273,6 +359,9 @@ def validate_dream_run(
     issues: list[str] = []
     expected_boundary = most_recent_scheduled_boundary(now_utc, cron_hour_utc, cron_minute_utc)
     expected_latest_start = expected_boundary + timedelta(minutes=max_start_delay_minutes)
+
+    if isinstance(dream_run.get("error"), str):
+        issues.append(f"Dream run lookup failed: {dream_run.get('error')}")
 
     run_at_raw = dream_run.get("run_at")
     timestamp_field = "run_at"
@@ -312,6 +401,24 @@ def validate_dream_run(
             f"promotion_limit is {counts.get('promotion_limit')}, expected {expected_promotion_limit} for nightly governance proposals",
         )
 
+    selected_count = counts.get("selected_operation_count")
+    held_count = counts.get("held_operation_count")
+    operation_count = counts.get("operation_count")
+    applied_count = counts.get("applied_count")
+    if all(isinstance(value, int) for value in (selected_count, held_count, operation_count)):
+        if selected_count + held_count != operation_count:
+            issues.append(
+                f"selected_operation_count + held_operation_count is {selected_count + held_count}, expected operation_count {operation_count}",
+            )
+    if isinstance(selected_count, int) and isinstance(applied_count, int) and applied_count != selected_count:
+        issues.append(
+            f"applied_count is {applied_count}, expected selected_operation_count {selected_count}",
+        )
+
+    verification = dream_run.get("verification")
+    if isinstance(verification, dict) and verification.get("passed") is not True:
+        issues.append("Dream governed apply verification did not pass")
+
     if run_at is not None:
         if run_at < expected_boundary:
             issues.append(
@@ -329,8 +436,212 @@ def validate_dream_run(
         passed=len(issues) == 0,
         issues=issues,
         expected_boundary_utc=expected_boundary.isoformat(),
-        expected_boundary_local=expected_boundary.astimezone().isoformat(),
+        expected_boundary_local=expected_boundary.astimezone(PACIFIC).isoformat(),
     )
+
+
+def _as_int(value: Any) -> int | None:
+    return value if isinstance(value, int) else None
+
+
+def _format_count_map(value: Any) -> str:
+    if not isinstance(value, dict) or not value:
+        return "_none_"
+    parts = [f"`{key}`: {value[key]}" for key in sorted(value)]
+    return ", ".join(parts)
+
+
+def _markdown_table(rows: list[tuple[str, Any]]) -> list[str]:
+    lines = ["| Field | Value |", "|---|---|"]
+    for field, value in rows:
+        lines.append(f"| {field} | {value} |")
+    return lines
+
+
+def _render_verification(verification: Any) -> list[str]:
+    if not isinstance(verification, dict):
+        return ["_No verification object recorded on the Dream run._"]
+
+    checks = verification.get("checks")
+    lines = [f"Overall verification passed: `{verification.get('passed')}`", ""]
+    if not isinstance(checks, list) or not checks:
+        return lines
+
+    lines.extend(["| Check | Passed | Expected | Actual |", "|---|---:|---|---|"])
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        lines.append(
+            "| "
+            f"{check.get('name', '?')} | "
+            f"`{check.get('passed')}` | "
+            f"{json.dumps(check.get('expected'), sort_keys=True) if 'expected' in check else ''} | "
+            f"{json.dumps(check.get('actual'), sort_keys=True) if 'actual' in check else ''} |"
+        )
+    return lines
+
+
+def _render_tripwire_status(tripwire_status: Any) -> list[str]:
+    if tripwire_status is None:
+        return ["_Tripwire status was not fetched because DREAM_OPERATOR_TOKEN was not set._"]
+    if not isinstance(tripwire_status, dict):
+        return [f"_Unexpected tripwire payload: `{type(tripwire_status).__name__}`_"]
+    if "error" in tripwire_status:
+        return [f"Tripwire fetch error: `{tripwire_status.get('error')}`"]
+
+    lines: list[str] = []
+    modes = tripwire_status.get("modes")
+    if isinstance(modes, dict) and modes:
+        lines.extend(["| Mode | Effective | Tripped |", "|---|---|---:|"])
+        for name, info in sorted(modes.items()):
+            info_dict = info if isinstance(info, dict) else {}
+            lines.append(
+                f"| {name} | `{info_dict.get('effective')}` | `{info_dict.get('tripped')}` |"
+            )
+    else:
+        lines.append("_No mode status returned._")
+
+    tripwires = tripwire_status.get("tripwires")
+    if isinstance(tripwires, dict) and tripwires:
+        lines.extend(["", "| Tripwire | Tripped | Breaches | Threshold |", "|---|---:|---:|---|"])
+        for name, info in sorted(tripwires.items()):
+            info_dict = info if isinstance(info, dict) else {}
+            threshold = info_dict.get("threshold", info_dict.get("threshold_ratio", ""))
+            lines.append(
+                f"| {name} | `{info_dict.get('tripped')}` | {info_dict.get('consecutive_breaches', '')} | {threshold} |"
+            )
+    return lines
+
+
+def render_sleep_report(report: dict[str, Any]) -> str:
+    dream_run = report.get("dream_run") if isinstance(report.get("dream_run"), dict) else {}
+    health = report.get("health") if isinstance(report.get("health"), dict) else {}
+    tripwire_status = report.get("tripwire_status")
+    counts = dream_run.get("counts") if isinstance(dream_run.get("counts"), dict) else {}
+    local_date = parse_iso_datetime(str(report["expected_boundary_utc"])).astimezone(PACIFIC).date().isoformat()
+
+    selected_count = _as_int(counts.get("selected_operation_count"))
+    held_count = _as_int(counts.get("held_operation_count"))
+    applied_count = _as_int(counts.get("applied_count"))
+    operation_count = _as_int(counts.get("operation_count"))
+
+    lines: list[str] = []
+    lines.append(f"# Dream Sleep Report - {local_date}")
+    lines.append("")
+    lines.append(f"Generated: `{report.get('generated_at')}`")
+    lines.append(f"Expected scheduled boundary: `{report.get('expected_boundary_utc')}` UTC / `{report.get('expected_boundary_local')}` Pacific")
+    lines.append(f"Verdict: `{'PASS' if report.get('passed') else 'FAIL'}`")
+    lines.append("")
+
+    issues = report.get("issues")
+    if isinstance(issues, list) and issues:
+        lines.append("## Issues")
+        lines.append("")
+        for issue in issues:
+            lines.append(f"- {issue}")
+        lines.append("")
+
+    lines.append("## Run Summary")
+    lines.append("")
+    lines.extend(
+        _markdown_table(
+            [
+                ("Run ID", f"`{dream_run.get('run_id')}`"),
+                ("Source", f"`{dream_run.get('_report_source', 'unknown')}`"),
+                ("Status", f"`{dream_run.get('status')}`"),
+                ("Trigger", f"`{dream_run.get('trigger')}`"),
+                ("Auto-apply mode", f"`{dream_run.get('auto_apply_mode')}`"),
+                ("Dry run", f"`{dream_run.get('dry_run')}`"),
+                ("Run at", f"`{dream_run.get('run_at') or dream_run.get('created_at')}`"),
+                ("Completed at", f"`{dream_run.get('completed_at')}`"),
+                ("Proposal ID", f"`{dream_run.get('proposal_id')}`"),
+                ("Risk score", f"`{dream_run.get('risk_score')}`"),
+                ("Grade status", f"`{dream_run.get('grade_status')}`"),
+                ("Apply run ID", f"`{dream_run.get('apply_run_id')}`"),
+            ]
+        )
+    )
+    lines.append("")
+
+    lines.append("## Operation Counts")
+    lines.append("")
+    lines.extend(
+        _markdown_table(
+            [
+                ("Operations proposed", operation_count if operation_count is not None else ""),
+                ("Operations selected", selected_count if selected_count is not None else ""),
+                ("Operations applied", applied_count if applied_count is not None else ""),
+                ("Operations held", held_count if held_count is not None else ""),
+                ("Archive cap", counts.get("archive_limit", "")),
+                ("Promotion cap", counts.get("promotion_limit", "")),
+                ("Duplicate merge cap", counts.get("duplicate_merge_limit", "")),
+                ("Mark-contested cap", counts.get("mark_contested_limit", "")),
+                ("Proposed by type", _format_count_map(counts.get("operation_counts"))),
+                ("Selected by type", _format_count_map(counts.get("selected_counts"))),
+            ]
+        )
+    )
+    lines.append("")
+
+    held_operations = dream_run.get("held_operations")
+    lines.append("## Held Operations")
+    lines.append("")
+    if isinstance(held_operations, list) and held_operations:
+        lines.extend(["| Operation | Type | Reason |", "|---|---|---|"])
+        for operation in held_operations[:25]:
+            if not isinstance(operation, dict):
+                continue
+            lines.append(
+                f"| `{operation.get('operation_id')}` | `{operation.get('type')}` | {operation.get('reason')} |"
+            )
+        if len(held_operations) > 25:
+            lines.append(f"| _plus {len(held_operations) - 25} more_ |  |  |")
+    else:
+        lines.append("_None._")
+    lines.append("")
+
+    lines.append("## Apply Verification")
+    lines.append("")
+    lines.extend(_render_verification(dream_run.get("verification")))
+    lines.append("")
+
+    lines.append("## Tripwires")
+    lines.append("")
+    lines.extend(_render_tripwire_status(tripwire_status))
+    lines.append("")
+
+    lines.append("## Worker Health")
+    lines.append("")
+    lines.extend(
+        _markdown_table(
+            [
+                ("Health status", f"`{health.get('status')}`"),
+                ("Last Dream run in health", f"`{health.get('last_dream_run')}`"),
+                ("Total topics", health.get("total_topic_count", "")),
+                ("Total projects", health.get("total_project_count", "")),
+                ("Archived count", health.get("archived_count", "")),
+            ]
+        )
+    )
+    lines.append("")
+
+    next_action = dream_run.get("next_action")
+    if isinstance(next_action, str) and next_action:
+        lines.append("## Next Action")
+        lines.append("")
+        lines.append(next_action)
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def write_sleep_report(report: dict[str, Any]) -> Path:
+    ensure_runtime_dirs()
+    boundary = parse_iso_datetime(str(report["expected_boundary_utc"]))
+    local_date = boundary.astimezone(PACIFIC).date().isoformat()
+    report_path = REPORT_DIR / f"dream-sleep-{local_date}.md"
+    report_path.write_text(render_sleep_report(report), encoding="utf-8")
+    return report_path
 
 
 def main() -> int:
@@ -343,7 +654,11 @@ def main() -> int:
     )
 
     health = fetch_health(args.base_url)
-    dream_run = fetch_dream_summary(args.base_url)
+    dream_run = fetch_latest_scheduled_governed_run(args.base_url)
+    try:
+        tripwire_status = fetch_tripwire_status(args.base_url)
+    except Exception as error:
+        tripwire_status = {"error": str(error)}
     validation = validate_dream_run(
         health=health,
         dream_run=dream_run,
@@ -356,8 +671,9 @@ def main() -> int:
         allow_on_demand=args.allow_on_demand,
     )
 
+    generated_at = utc_now_iso()
     report = {
-        "generated_at": utc_now_iso(),
+        "generated_at": generated_at,
         "base_url": args.base_url,
         "now_utc": now_utc.isoformat(),
         "expected_boundary_utc": validation.expected_boundary_utc,
@@ -366,11 +682,13 @@ def main() -> int:
         "issues": validation.issues,
         "health": health,
         "dream_run": dream_run,
+        "tripwire_status": tripwire_status,
     }
     report_path = append_report(
-        f"check_overnight_dream_run_{utc_now_iso().replace(':', '').replace('+00:00', 'Z')}.json",
+        f"check_overnight_dream_run_{generated_at.replace(':', '').replace('+00:00', 'Z')}.json",
         report,
     )
+    sleep_report_path = write_sleep_report(report)
     try:
         sys.path.insert(0, str(REPO_ROOT / "distillation"))
         from storage.redis_client import RedisClient  # noqa: PLC0415
@@ -399,6 +717,7 @@ def main() -> int:
     print(f"Expected scheduled boundary (UTC): {validation.expected_boundary_utc}")
     print(f"Expected scheduled boundary (local): {validation.expected_boundary_local}")
     print(f"Report written to {report_path}")
+    print(f"Sleep report written to {sleep_report_path}")
 
     if validation.passed:
         print("PASS: latest scheduled Dream governed live run is present.")

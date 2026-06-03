@@ -126,6 +126,48 @@ class RenderDigestTests(unittest.TestCase):
         self.assertIn("dr_001", md)
         self.assertIn("dr_002", md)
 
+    def test_governed_run_counts_selected_operations(self):
+        cycles = [
+            {
+                "run_id": "dga_2026-05-20T07-10-42-454Z",
+                "status": "completed_with_holds",
+                "run_at": "2026-05-20T07:10:42Z",
+                "completed_at": "2026-05-20T07:11:10Z",
+                "auto_apply_mode": "governed",
+                "counts": {
+                    "operation_count": 8,
+                    "selected_operation_count": 5,
+                    "held_operation_count": 3,
+                    "applied_count": 5,
+                    "operation_counts": {
+                        "archive_entry": 4,
+                        "duplicate_merge": 2,
+                        "mark_contested": 1,
+                        "promote_context_type": 1,
+                    },
+                    "selected_counts": {
+                        "archive_entry": 2,
+                        "duplicate_merge": 1,
+                        "mark_contested": 1,
+                        "promote_context_type": 1,
+                    },
+                },
+                "phases": {},
+            },
+        ]
+
+        md = self._render(cycle_runs=cycles)
+
+        self.assertIn("completed / held / skipped / failed) | 1 / 0 / 0 / 0", md)
+        self.assertIn("Governed operations selected / held / applied | 5 / 3 / 5", md)
+        self.assertIn("Total L1 operations applied | 5", md)
+        self.assertIn("L1 duplicate merges applied | 1", md)
+        self.assertIn("L1 archives applied | 2", md)
+        self.assertIn("L1 promotions applied | 1", md)
+        self.assertIn("L1 contested marks applied | 1", md)
+        self.assertIn("governed: selected 5, applied 5, held 3", md)
+        self.assertIn("selected_by_type: archive_entry: 2", md)
+
     def test_judge_history_section(self):
         history = [
             {

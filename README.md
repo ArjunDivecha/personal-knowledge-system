@@ -506,6 +506,17 @@ ingestion/.venv/bin/python scripts/check_overnight_dream_run.py
 It validates the latest scheduled Dream run against the policy source of truth
 in `shared/memory_policy.json`. A passing post-cron run must be scheduled,
 governed, live (`dry_run=false`), and within the expected time window.
+It reads the Dream run ledger rather than only `dream:last_run`, so a cautious
+fully-held governed run is still visible to the check. Each run writes both a
+JSON diagnostic and a Markdown sleep report:
+
+```bash
+scripts/reports/check_overnight_dream_run_*.json
+scripts/reports/dream-sleep-YYYY-MM-DD.md
+```
+
+GitHub Actions also runs `.github/workflows/nightly-sleep-report.yml` nightly at
+08:45 UTC and uploads those sleep-report artifacts after the Worker Dream cron.
 
 The live judge queue can be inspected through the operator endpoint:
 

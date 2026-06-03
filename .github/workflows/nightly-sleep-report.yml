@@ -1,0 +1,55 @@
+name: Nightly Dream Sleep Report
+
+on:
+  schedule:
+    # Dream runs at 07:10 UTC; report after the governed apply window.
+    - cron: "45 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-dream-sleep-report
+  cancel-in-progress: false
+
+jobs:
+  nightly-dream-sleep-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      DREAM_OPERATOR_TOKEN: ${{ secrets.DREAM_OPERATOR_TOKEN }}
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: distillation/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r distillation/requirements.txt
+
+      - name: Generate sleep report
+        run: |
+          python scripts/check_overnight_dream_run.py
+
+      - name: Upload sleep report artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-dream-sleep-report
+          path: |
+            scripts/reports/check_overnight_dream_run_*.json
+            scripts/reports/dream-sleep-*.md
+          if-no-files-found: warn

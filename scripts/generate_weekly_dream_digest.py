@@ -18,6 +18,7 @@ AUTHOR: Arjun Divecha
 
 DESCRIPTION:
 Generates a human-readable weekly digest of Dream activity. Covers:
+- Governed scheduled Dream attempts this week (selected / held / applied)
 - Auto-applied L1+L2 operations this week (count + sample)
 - Judge queue activity (Opus decisions: applied / skipped / pending)
 - Tripwire status (kill flags active, recent destructive/retrieval signals)
@@ -240,6 +241,58 @@ def fetch_tripwire_status(
 # ----------------------------------------------------------------------------
 # Markdown rendering
 # ----------------------------------------------------------------------------
+def _count_governed_operation(run: dict[str, Any], operation_type: str, legacy_key: str) -> int:
+    counts = run.get("counts", {}) or {}
+    if not isinstance(counts, dict):
+        return 0
+    selected_counts = counts.get("selected_counts")
+    if isinstance(selected_counts, dict):
+        value = selected_counts.get(operation_type)
+        if isinstance(value, int):
+            return value
+    value = counts.get(legacy_key)
+    return value if isinstance(value, int) else 0
+
+
+def _count_layer2_operation(run: dict[str, Any], legacy_key: str, phase_key: str) -> int:
+    counts = run.get("counts", {}) or {}
+    if isinstance(counts, dict):
+        value = counts.get(legacy_key)
+        if isinstance(value, int):
+            return value
+    phases = run.get("phases", {}) or {}
+    if not isinstance(phases, dict):
+        return 0
+    layer2 = phases.get("layer2_quarantine_and_demote", {}) or {}
+    if not isinstance(layer2, dict):
+        return 0
+    value = layer2.get(phase_key)
+    return value if isinstance(value, int) else 0
+
+
+def _run_operation_counts(run: dict[str, Any]) -> dict[str, int]:
+    counts = run.get("counts", {}) or {}
+    if not isinstance(counts, dict):
+        counts = {}
+    return {
+        "merged": _count_governed_operation(run, "duplicate_merge", "merged_duplicates"),
+        "archived": _count_governed_operation(run, "archive_entry", "archived"),
+        "promoted": _count_governed_operation(run, "promote_context_type", "promoted"),
+        "marked_contested": _count_governed_operation(run, "mark_contested", "entries_marked_contested"),
+        "quarantined": _count_layer2_operation(run, "quarantined", "quarantined_count"),
+        "demoted": _count_layer2_operation(run, "demoted", "demoted_count"),
+        "selected": counts.get("selected_operation_count", 0) if isinstance(counts.get("selected_operation_count"), int) else 0,
+        "held": counts.get("held_operation_count", 0) if isinstance(counts.get("held_operation_count"), int) else 0,
+        "applied": counts.get("applied_count", 0) if isinstance(counts.get("applied_count"), int) else 0,
+    }
+
+
+def _format_type_counts(value: Any) -> str:
+    if not isinstance(value, dict) or not value:
+        return "none"
+    return ", ".join(f"{key}: {value[key]}" for key in sorted(value))
+
+
 def render_digest(
     year: int,
     week: int,
@@ -259,24 +312,34 @@ def render_digest(
     lines.append("")
 
     # ── Top-line summary ──
-    n_cycles_completed = sum(1 for r in cycle_runs if r.get("status") == "completed")
+    n_cycles_completed = sum(1 for r in cycle_runs if r.get("status") in {"completed", "completed_with_holds"})
+    n_cycles_held = sum(1 for r in cycle_runs if r.get("status") == "held")
     n_cycles_skipped = sum(1 for r in cycle_runs if (r.get("status") or "").startswith("skipped"))
     n_cycles_failed = sum(1 for r in cycle_runs if r.get("status") == "failed")
     n_proposals = len(proposal_runs)
 
+    total_selected = 0
+    total_held = 0
+    total_applied = 0
     total_applied_l1 = 0
     total_archived = 0
     total_promoted = 0
     total_merged = 0
+    total_marked_contested = 0
     total_quarantined = 0
     total_demoted = 0
     for r in cycle_runs:
-        counts = r.get("counts", {}) or {}
-        total_archived += counts.get("archived", 0) or 0
-        total_promoted += counts.get("promoted", 0) or 0
-        total_merged += counts.get("merged_duplicates", 0) or 0
-        total_quarantined += counts.get("quarantined", 0) or 0
-        total_demoted += counts.get("demoted", 0) or 0
+        run_counts = _run_operation_counts(r)
+        total_selected += run_counts["selected"]
+        total_held += run_counts["held"]
+        total_applied += run_counts["applied"]
+        total_archived += run_counts["archived"]
+        total_promoted += run_counts["promoted"]
+        total_merged += run_counts["merged"]
+        total_marked_contested += run_counts["marked_contested"]
+        total_quarantined += run_counts["quarantined"]
+        total_demoted += run_counts["demoted"]
+    total_applied_l1 = total_archived + total_promoted + total_merged + total_marked_contested
 
     judge_applied = sum(1 for r in judge_history if r.get("outcome") == "applied")
     judge_skipped = sum(1 for r in judge_history if r.get("outcome") == "skipped")
@@ -286,11 +349,14 @@ def render_digest(
     lines.append("")
     lines.append("| Metric | This week |")
     lines.append("|---|---|")
-    lines.append(f"| Cycle runs (completed / skipped / failed) | {n_cycles_completed} / {n_cycles_skipped} / {n_cycles_failed} |")
+    lines.append(f"| Cycle runs (completed / held / skipped / failed) | {n_cycles_completed} / {n_cycles_held} / {n_cycles_skipped} / {n_cycles_failed} |")
     lines.append(f"| Proposal-only runs | {n_proposals} |")
+    lines.append(f"| Governed operations selected / held / applied | {total_selected} / {total_held} / {total_applied} |")
+    lines.append(f"| Total L1 operations applied | {total_applied_l1} |")
     lines.append(f"| L1 duplicate merges applied | {total_merged} |")
     lines.append(f"| L1 archives applied | {total_archived} |")
     lines.append(f"| L1 promotions applied | {total_promoted} |")
+    lines.append(f"| L1 contested marks applied | {total_marked_contested} |")
     lines.append(f"| L2 quarantines applied | {total_quarantined} |")
     lines.append(f"| L2 tier demotions applied | {total_demoted} |")
     lines.append(f"| Opus judge decisions: applied / skipped / stale | {judge_applied} / {judge_skipped} / {judge_stale} |")
@@ -337,10 +403,15 @@ def render_digest(
             phases = r.get("phases", {}) or {}
             l2 = phases.get("layer2_quarantine_and_demote", {}) or {}
             jq = phases.get("judge_queue", {}) or {}
+            run_counts = _run_operation_counts(r)
             lines.append(f"### {run_id} — `{status}`")
             lines.append("")
             lines.append(f"- run_at: {r.get('run_at')}, completed_at: {r.get('completed_at')}")
-            lines.append(f"- merged: {counts.get('merged_duplicates', 0)}, archived: {counts.get('archived', 0)}, promoted: {counts.get('promoted', 0)}")
+            if r.get("auto_apply_mode") == "governed":
+                lines.append(f"- governed: selected {run_counts['selected']}, applied {run_counts['applied']}, held {run_counts['held']}")
+                lines.append(f"- proposed_by_type: {_format_type_counts(counts.get('operation_counts'))}")
+                lines.append(f"- selected_by_type: {_format_type_counts(counts.get('selected_counts'))}")
+            lines.append(f"- merged: {run_counts['merged']}, archived: {run_counts['archived']}, promoted: {run_counts['promoted']}, marked_contested: {run_counts['marked_contested']}")
             lines.append(f"- quarantined: {l2.get('quarantined_count', 0)}, demoted: {l2.get('demoted_count', 0)}, streak_reset: {l2.get('streak_reset_count', 0)}, streak_increment: {l2.get('streak_increment_count', 0)} (cap_hit: {l2.get('cap_hit', False)})")
             lines.append(f"- judge_queue: enqueued {jq.get('enqueued_count', 0)}, verdicts applied {jq.get('verdicts_applied_count', 0)}, skipped {jq.get('verdicts_skipped_count', 0)} (mode: {jq.get('opus_mode', '?')})")
             lines.append("")

@@ -43,7 +43,9 @@ import {
 import {
 	checkDestructiveTripwire,
 	checkRetrievalTripwire,
+	clearKillFlag,
 	getEffectiveMode,
+	readKillFlag,
 	recordSearchQuery,
 	setKillFlag,
 } from "./tripwires";
@@ -3295,6 +3297,12 @@ export default {
 						`[tripwire] destructive spike observed; scheduled Dream remains governed: ${destructive.reason}`,
 						JSON.stringify(destructive.day_counts),
 					);
+				} else {
+					const staleDreamFlag = await readKillFlag(tripwireRedis, "DREAM_AUTO_APPLY_MODE");
+					if (staleDreamFlag?.source_tripwire === "destructive_spike") {
+						await clearKillFlag(tripwireRedis, "DREAM_AUTO_APPLY_MODE");
+						console.warn("[tripwire] cleared stale DREAM_AUTO_APPLY_MODE destructive-spike kill flag; scheduled Dream remains governed.");
+					}
 				}
 				const retrieval = await checkRetrievalTripwire(tripwireRedis);
 				if (retrieval.tripped && retrieval.reason) {
