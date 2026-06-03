@@ -18,6 +18,20 @@ LOG_DIR="$INGESTION/logs/nightly"
 DATE=$(date +%Y-%m-%d)
 LOG="$LOG_DIR/$DATE.log"
 
+# launchd provides a minimal PATH. Include the user-managed tool locations so
+# Claude CLI, node-based hooks, Homebrew tools, and local helpers are visible.
+export PATH="/Users/arjundivecha/.nvm/versions/node/v24.12.0/bin:/Users/arjundivecha/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+# Prefer the repo-level consolidated env file. Individual Python modules still
+# load ingestion/.env for backward compatibility, but this gives launchd one
+# place for all local runtime keys.
+if [ -f "$REPO/.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$REPO/.env"
+    set +a
+fi
+
 mkdir -p "$LOG_DIR"
 
 log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG"; }
@@ -39,6 +53,13 @@ if [ ! -f "$VENV/bin/python" ]; then
     exit 1
 fi
 log "Ingestion venv: OK"
+
+# Pre-flight: verify Claude CLI is available for Dream judge subscription path.
+if ! command -v claude >/dev/null 2>&1; then
+    log "FATAL: claude CLI not on PATH; Dream judge would fall back to API."
+    exit 1
+fi
+log "Claude CLI: $(command -v claude)"
 
 # --------------------------------------------------------------------------
 # Twitter

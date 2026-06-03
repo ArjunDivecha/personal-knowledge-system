@@ -11,7 +11,8 @@ declare global {
 		GITHUB_TOKEN: string;
 		DREAM_OPERATOR_TOKEN: string;
 		// Dream + forgetting design (see docs/dream-and-forgetting-design-2026-05-17.md).
-		// All default to "off" if unset — preserves pre-implementation behavior.
+		// Scheduled Dream now always runs the governed live path; these legacy
+		// values may still appear in old records or operator endpoints.
 		DREAM_AUTO_APPLY_MODE?: "off" | "governed" | "full";
 		DREAM_OPUS_MODE?: "off" | "on";
 		RETRIEVAL_POLICY_MODE?: "off" | "on";

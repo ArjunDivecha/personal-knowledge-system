@@ -54,6 +54,7 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -89,9 +90,15 @@ WORKER_BASE_URL = os.getenv("DREAM_MCP_BASE_URL", "https://mcp.dancing-ganesh.co
 OPERATOR_TOKEN = os.getenv("DREAM_OPERATOR_TOKEN", "")
 OPUS_MODEL = os.getenv("DREAM_OPUS_MODEL", "claude-opus-4-6")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+CLAUDE_CLI_PATH = os.getenv("CLAUDE_CLI_PATH", "")
 
 REQUEST_TIMEOUT = 60  # seconds
 CLAUDE_CLI_TIMEOUT = 120  # seconds per judge call
+CLAUDE_CLI_CANDIDATES = [
+    Path.home() / ".nvm/versions/node/v24.12.0/bin/claude",
+    Path("/opt/homebrew/bin/claude"),
+    Path("/usr/local/bin/claude"),
+]
 
 
 def auth_headers() -> dict[str, str]:
@@ -190,22 +197,43 @@ def parse_verdict_response(text: str) -> tuple[str, str] | None:
 # ----------------------------------------------------------------------------
 # Judges
 # ----------------------------------------------------------------------------
+def resolve_claude_cli() -> str | None:
+    if CLAUDE_CLI_PATH:
+        candidate = Path(CLAUDE_CLI_PATH).expanduser()
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+
+    found = shutil.which("claude")
+    if found:
+        return found
+
+    for candidate in CLAUDE_CLI_CANDIDATES:
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
 def judge_via_claude_cli(prompt: str, model: str) -> tuple[str, str, str] | None:
     """
     Try `claude --print --model <model> <prompt>`.
     Returns (verdict, reason, source) or None on failure.
     Source = "claude_cli" on success, "claude_cli_failed" if invocation fails.
     """
+    claude_bin = resolve_claude_cli()
+    if not claude_bin:
+        log.warning("claude CLI not found; falling back to API")
+        return None
+
     try:
         result = subprocess.run(
-            ["claude", "--print", "--model", model],
+            [claude_bin, "--print", "--model", model],
             input=prompt,
             capture_output=True,
             text=True,
             timeout=CLAUDE_CLI_TIMEOUT,
         )
     except FileNotFoundError:
-        log.warning("claude CLI not on PATH; falling back to API")
+        log.warning("claude CLI path disappeared; falling back to API")
         return None
     except subprocess.TimeoutExpired:
         log.warning("claude CLI timed out; falling back to API")
@@ -295,11 +323,12 @@ def main() -> int:
         return 2
 
     log.info(
-        "Starting dream_judge run: worker=%s model=%s force_api=%s dry_run=%s",
+        "Starting dream_judge run: worker=%s model=%s force_api=%s dry_run=%s claude_cli=%s",
         WORKER_BASE_URL,
         OPUS_MODEL,
         args.force_api,
         args.dry_run,
+        "api_forced" if args.force_api else (resolve_claude_cli() or "not_found"),
     )
 
     try:

@@ -15,7 +15,10 @@ USAGE:
 """
 
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
+from . import run
 from .run import parse_verdict_response
 
 
@@ -85,6 +88,24 @@ class BuildPromptTests(unittest.TestCase):
         self.assertIn("ke_b", prompt)
         # Should ask for JSON-only reply.
         self.assertIn("JSON object", prompt)
+
+
+class ClaudeCliResolverTests(unittest.TestCase):
+
+    def test_resolve_claude_cli_uses_env_path(self):
+        with patch.object(run, "CLAUDE_CLI_PATH", "/tmp/fake-claude"), \
+                patch.object(Path, "exists", return_value=True), \
+                patch("os.access", return_value=True):
+            self.assertEqual(run.resolve_claude_cli(), "/tmp/fake-claude")
+
+    def test_resolve_claude_cli_uses_known_candidate_when_path_is_empty(self):
+        fake_candidate = Path("/tmp/known-claude")
+        with patch.object(run, "CLAUDE_CLI_PATH", ""), \
+                patch("shutil.which", return_value=None), \
+                patch.object(run, "CLAUDE_CLI_CANDIDATES", [fake_candidate]), \
+                patch.object(Path, "exists", return_value=True), \
+                patch("os.access", return_value=True):
+            self.assertEqual(run.resolve_claude_cli(), str(fake_candidate))
 
 
 if __name__ == "__main__":

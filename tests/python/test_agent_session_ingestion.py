@@ -118,7 +118,6 @@ class AgentSessionCheckpointTests(unittest.TestCase):
                             path=path,
                             source_type="codex_cli",
                             state=state,
-                            anthropic_client=object(),
                             storage=object(),
                             linker=_DummyLinker(),
                             dry_run=False,
@@ -181,7 +180,6 @@ class AgentSessionCheckpointTests(unittest.TestCase):
                             path=path,
                             source_type="codex_cli",
                             state=state,
-                            anthropic_client=object(),
                             storage=object(),
                             linker=_DummyLinker(),
                             dry_run=False,
@@ -191,6 +189,47 @@ class AgentSessionCheckpointTests(unittest.TestCase):
             self.assertEqual(len(save_calls), 1)
             self.assertEqual(state["files"][str(path)]["offset"], 99)
             self.assertEqual(state["files"][str(path)]["mtime"], path.stat().st_mtime)
+
+    def test_save_state_keeps_local_checkpoint_when_redis_write_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / "agent_sessions_state.json"
+
+            class FailingRedis:
+                def set(self, *_args, **_kwargs):
+                    raise RuntimeError("ssl hiccup")
+
+            state = agent_run._default_state()
+            state["files"]["/tmp/session.jsonl"] = {"offset": 123, "mtime": 456}
+
+            with patch.object(agent_run, "STATE_FILE", state_file):
+                with patch.object(agent_run, "_get_state_redis_client", return_value=FailingRedis()):
+                    agent_run.save_state(state)
+
+            saved = json.loads(state_file.read_text())
+            self.assertEqual(saved["files"]["/tmp/session.jsonl"]["offset"], 123)
+
+    def test_load_state_prefers_local_when_redis_checkpoint_is_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / "agent_sessions_state.json"
+            local_state = agent_run._default_state()
+            local_state["files"]["/tmp/session.jsonl"] = {"offset": 200, "mtime": 20}
+            redis_state = agent_run._default_state()
+            redis_state["files"]["/tmp/session.jsonl"] = {"offset": 100, "mtime": 10}
+            state_file.write_text(json.dumps(local_state))
+
+            class StaleRedis:
+                def get(self, _key):
+                    return json.dumps(redis_state)
+
+                def set(self, *_args, **_kwargs):
+                    return None
+
+            with patch.object(agent_run, "STATE_FILE", state_file):
+                with patch.object(agent_run, "_get_state_redis_client", return_value=StaleRedis()):
+                    state, source = agent_run.load_state()
+
+            self.assertEqual(source, "file_ahead_of_redis")
+            self.assertEqual(state["files"]["/tmp/session.jsonl"]["offset"], 200)
 
 
 if __name__ == "__main__":

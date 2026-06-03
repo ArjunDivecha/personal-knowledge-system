@@ -5562,14 +5562,14 @@ export async function runDreamCycle(
 			enqueued: [] as Array<Record<string, unknown>>,
 			verdicts_applied: [] as Array<Record<string, unknown>>,
 			verdicts_skipped: [] as Array<Record<string, unknown>>,
-			opus_mode: env.DREAM_OPUS_MODE === "on" ? "on" : "off",
+			opus_mode: "on",
 			deferred: 0,
 		};
 
 		// Layer 3/4 — read any pending verdicts from the offline judge (Mac
-		// script) and act on them. Only runs when DREAM_OPUS_MODE === "on";
-		// otherwise verdicts stay pending until the operator enables Opus mode.
-		if (!options.dryRun && env.DREAM_OPUS_MODE === "on") {
+		// script) and act on them. This is always enabled for live cycles so
+		// judged items cannot sit forever because a mode flag was unset.
+		if (!options.dryRun) {
 			try {
 				const pendingVerdicts: PendingVerdict[] = await readPendingVerdicts(redis);
 				for (const { item, verdict } of pendingVerdicts) {
@@ -5648,15 +5648,9 @@ export async function runDreamCycle(
 					canonicalAccessCount: canonicalAccess,
 					duplicateAccessCounts: dupAccess,
 				});
-				// R1.6: a semantic-only merge must never auto-apply. With the judge
-				// off it is deferred (left for a judge-enabled run or operator).
-				// Access-borderline *lexical* merges retain their prior behavior
-				// (auto-apply when the judge is off).
-				if (plan.semanticOnly && env.DREAM_OPUS_MODE !== "on") {
-					judgeQueueSummary.deferred += 1;
-					continue;
-				}
-				if (borderline && env.DREAM_OPUS_MODE === "on") {
+				// R1.6: semantic-only or access-borderline merges never auto-apply;
+				// they always route to the judge queue during live cycles.
+				if (borderline) {
 					// Enqueue for Mac-side judge to decide on next run.
 					const opId = `op_${runId}_dup_${plan.canonical.id}`;
 					const item: JudgeQueueItem = {

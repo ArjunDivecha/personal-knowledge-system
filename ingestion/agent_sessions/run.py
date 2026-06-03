@@ -143,6 +143,22 @@ def _normalize_state(state: Optional[dict] = None) -> dict:
     return merged
 
 
+def _state_progress_score(state: dict) -> tuple[int, int, float]:
+    """Return a comparable checkpoint progress score."""
+    normalized = _normalize_state(state)
+    files = normalized.get("files", {})
+    offset_total = 0
+    max_mtime = 0.0
+
+    for file_state in files.values():
+        if not isinstance(file_state, dict):
+            continue
+        offset_total += int(file_state.get("offset", 0) or 0)
+        max_mtime = max(max_mtime, float(file_state.get("mtime", 0) or 0))
+
+    return (len(files), offset_total, max_mtime)
+
+
 def _parse_json_array_response(raw_text: str) -> list[dict]:
     """Parse a model response that should contain a JSON array."""
     candidate = raw_text.strip()
@@ -186,25 +202,40 @@ def _get_state_redis_client() -> Optional[Redis]:
 def load_state() -> tuple[dict, str]:
     """Load processing state from Redis when available, otherwise local disk."""
     STATE_FILE.parent.mkdir(exist_ok=True)
+    file_state = None
+    if STATE_FILE.exists():
+        file_state = _normalize_state(json.loads(STATE_FILE.read_text()))
+
     redis_client = _get_state_redis_client()
     if redis_client is not None:
         try:
             raw_state = redis_client.get(STATE_REDIS_KEY)
             if raw_state:
+                redis_state = None
                 if isinstance(raw_state, str):
-                    return _normalize_state(json.loads(raw_state)), "redis"
-                if isinstance(raw_state, dict):
-                    return _normalize_state(raw_state), "redis"
+                    redis_state = _normalize_state(json.loads(raw_state))
+                elif isinstance(raw_state, dict):
+                    redis_state = _normalize_state(raw_state)
+                if redis_state is None:
+                    raise ValueError(f"Unexpected Redis state payload: {type(raw_state).__name__}")
+                if file_state and _state_progress_score(file_state) > _state_progress_score(redis_state):
+                    log.warning(
+                        "Local agent session checkpoint is ahead of Redis; "
+                        "using local checkpoint and re-syncing Redis."
+                    )
+                    save_state(file_state)
+                    return file_state, "file_ahead_of_redis"
+                return redis_state, "redis"
         except Exception as exc:
             log.warning(f"Could not load agent session state from Redis: {exc}")
 
-    if STATE_FILE.exists():
-        return _normalize_state(json.loads(STATE_FILE.read_text())), "file"
+    if file_state:
+        return file_state, "file"
     return _default_state(), "default"
 
 
 def save_state(state: dict):
-    """Persist processing state atomically to disk and, when configured, Redis."""
+    """Persist processing state atomically to disk and best-effort to Redis."""
     normalized = _normalize_state(state)
     tmp = STATE_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(normalized, indent=2))
@@ -212,7 +243,10 @@ def save_state(state: dict):
 
     redis_client = _get_state_redis_client()
     if redis_client is not None:
-        redis_client.set(STATE_REDIS_KEY, json.dumps(normalized))
+        try:
+            redis_client.set(STATE_REDIS_KEY, json.dumps(normalized))
+        except Exception as exc:
+            log.warning(f"Could not save agent session state to Redis: {exc}")
 
 
 # ── Distillation ──────────────────────────────────────────────────────────────

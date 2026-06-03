@@ -21,7 +21,6 @@ DEFAULT_BASE_URL = "https://mcp.dancing-ganesh.com"
 DEFAULT_CRON_HOUR_UTC = 7
 DEFAULT_CRON_MINUTE_UTC = 10
 DEFAULT_MAX_START_DELAY_MINUTES = 45
-DEFAULT_EXPECTED_ARCHIVE_LIMIT = 10
 DEFAULT_EXPECTED_PROMOTION_LIMIT = 10
 UTC = timezone.utc
 
@@ -36,13 +35,18 @@ class ValidationResult:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Check whether the latest scheduled Dream governance proposal was generated without live mutation.",
+        description="Check whether the latest scheduled Dream governed live run executed.",
     )
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--cron-hour-utc", type=int, default=DEFAULT_CRON_HOUR_UTC)
     parser.add_argument("--cron-minute-utc", type=int, default=DEFAULT_CRON_MINUTE_UTC)
     parser.add_argument("--max-start-delay-minutes", type=int, default=DEFAULT_MAX_START_DELAY_MINUTES)
-    parser.add_argument("--expected-archive-limit", type=int, default=DEFAULT_EXPECTED_ARCHIVE_LIMIT)
+    parser.add_argument(
+        "--expected-archive-limit",
+        type=int,
+        default=None,
+        help="Expected scheduled archive limit. Defaults to shared/memory_policy.json dream_thresholds.scheduled_archive_limit.",
+    )
     parser.add_argument("--expected-promotion-limit", type=int, default=DEFAULT_EXPECTED_PROMOTION_LIMIT)
     parser.add_argument(
         "--now-utc",
@@ -68,6 +72,16 @@ def most_recent_scheduled_boundary(now_utc: datetime, cron_hour_utc: int, cron_m
     if now_utc < boundary:
         boundary -= timedelta(days=1)
     return boundary
+
+
+def load_scheduled_archive_limit(policy_path: Path | None = None) -> int:
+    path = policy_path or REPO_ROOT / "shared" / "memory_policy.json"
+    with path.open("r", encoding="utf-8") as handle:
+        policy = json.load(handle)
+    value = policy.get("dream_thresholds", {}).get("scheduled_archive_limit")
+    if not isinstance(value, int):
+        raise ValueError(f"Missing integer dream_thresholds.scheduled_archive_limit in {path}")
+    return value
 
 
 def parse_sse_json(text: str) -> dict[str, Any]:
@@ -244,10 +258,10 @@ def fetch_dream_summary(base_url: str) -> dict[str, Any]:
     )
 
 
-def validate_dream_proposal(
+def validate_dream_run(
     *,
     health: dict[str, Any],
-    dream_proposal: dict[str, Any],
+    dream_run: dict[str, Any],
     now_utc: datetime,
     cron_hour_utc: int,
     cron_minute_utc: int,
@@ -260,44 +274,33 @@ def validate_dream_proposal(
     expected_boundary = most_recent_scheduled_boundary(now_utc, cron_hour_utc, cron_minute_utc)
     expected_latest_start = expected_boundary + timedelta(minutes=max_start_delay_minutes)
 
-    run_at_raw = dream_proposal.get("run_at")
+    run_at_raw = dream_run.get("run_at")
     timestamp_field = "run_at"
     if not isinstance(run_at_raw, str):
-        run_at_raw = dream_proposal.get("created_at")
+        run_at_raw = dream_run.get("created_at")
         timestamp_field = "created_at"
     if not isinstance(run_at_raw, str):
-        issues.append("Dream proposal is missing run_at or created_at")
+        issues.append("Dream run is missing run_at or created_at")
         run_at = None
     else:
         run_at = parse_iso_datetime(run_at_raw)
 
-    if dream_proposal.get("status") != "proposal_ready":
-        issues.append(f"Dream proposal status is not proposal_ready: {dream_proposal.get('status')}")
+    valid_statuses = {"completed", "completed_with_holds", "held"}
+    if dream_run.get("status") not in valid_statuses:
+        issues.append(f"Dream run status is not governed-live successful/held: {dream_run.get('status')}")
 
-    if dream_proposal.get("actor_id") != "scheduled:dream-governance":
-        issues.append(f"Dream proposal actor is not scheduled governance: {dream_proposal.get('actor_id')}")
+    if dream_run.get("trigger") != "scheduled":
+        issues.append(f"Dream run trigger is not scheduled: {dream_run.get('trigger')}")
 
-    if dream_proposal.get("trigger") != "manual":
-        issues.append(f"Dream proposal trigger is not manual proposal path: {dream_proposal.get('trigger')}")
+    if dream_run.get("dry_run") is not False:
+        issues.append("Dream run is not marked dry_run=false; scheduled Dream should be live governed apply")
 
-    if dream_proposal.get("dry_run") is not True:
-        issues.append("Dream proposal is not marked dry_run=true; scheduled governance should generate proposals without live mutation")
+    if dream_run.get("auto_apply_mode") != "governed":
+        issues.append(f"Dream run auto_apply_mode is not governed: {dream_run.get('auto_apply_mode')}")
 
-    operations = dream_proposal.get("operations")
-    if not isinstance(operations, list):
-        issues.append("Dream proposal is missing operations list")
-    else:
-        unsupported_live_ops = [
-            operation.get("operation_id")
-            for operation in operations
-            if isinstance(operation, dict) and operation.get("applied_at") is not None
-        ]
-        if unsupported_live_ops:
-            issues.append(f"Dream proposal appears to include applied operations: {unsupported_live_ops}")
-
-    counts = dream_proposal.get("counts")
+    counts = dream_run.get("counts")
     if not isinstance(counts, dict):
-        issues.append("Dream proposal is missing counts")
+        issues.append("Dream run is missing counts")
         counts = {}
 
     if counts.get("archive_limit") != expected_archive_limit:
@@ -312,11 +315,11 @@ def validate_dream_proposal(
     if run_at is not None:
         if run_at < expected_boundary:
             issues.append(
-                f"Latest scheduled Dream proposal is too old: {timestamp_field}={run_at.isoformat()} expected_after={expected_boundary.isoformat()}",
+                f"Latest scheduled Dream run is too old: {timestamp_field}={run_at.isoformat()} expected_after={expected_boundary.isoformat()}",
             )
         if run_at > expected_latest_start and not allow_on_demand:
             issues.append(
-                f"Latest scheduled Dream proposal started later than expected window: {timestamp_field}={run_at.isoformat()} latest_expected={expected_latest_start.isoformat()}",
+                f"Latest scheduled Dream run started later than expected window: {timestamp_field}={run_at.isoformat()} latest_expected={expected_latest_start.isoformat()}",
             )
 
     if health.get("status") != "ok":
@@ -333,17 +336,22 @@ def validate_dream_proposal(
 def main() -> int:
     args = parse_args()
     now_utc = parse_iso_datetime(args.now_utc) if args.now_utc else datetime.now(UTC)
+    expected_archive_limit = (
+        args.expected_archive_limit
+        if args.expected_archive_limit is not None
+        else load_scheduled_archive_limit()
+    )
 
     health = fetch_health(args.base_url)
-    dream_proposal = fetch_latest_scheduled_proposal(args.base_url)
-    validation = validate_dream_proposal(
+    dream_run = fetch_dream_summary(args.base_url)
+    validation = validate_dream_run(
         health=health,
-        dream_proposal=dream_proposal,
+        dream_run=dream_run,
         now_utc=now_utc,
         cron_hour_utc=args.cron_hour_utc,
         cron_minute_utc=args.cron_minute_utc,
         max_start_delay_minutes=args.max_start_delay_minutes,
-        expected_archive_limit=args.expected_archive_limit,
+        expected_archive_limit=expected_archive_limit,
         expected_promotion_limit=args.expected_promotion_limit,
         allow_on_demand=args.allow_on_demand,
     )
@@ -357,7 +365,7 @@ def main() -> int:
         "passed": validation.passed,
         "issues": validation.issues,
         "health": health,
-        "dream_proposal": dream_proposal,
+        "dream_run": dream_run,
     }
     report_path = append_report(
         f"check_overnight_dream_run_{utc_now_iso().replace(':', '').replace('+00:00', 'Z')}.json",
@@ -379,9 +387,9 @@ def main() -> int:
                     "base_url": args.base_url,
                     "expected_boundary_utc": validation.expected_boundary_utc,
                     "expected_boundary_local": validation.expected_boundary_local,
-                    "dream_run_at": dream_proposal.get("run_at") or dream_proposal.get("created_at"),
-                    "dream_status": dream_proposal.get("status"),
-                    "dream_actor_id": dream_proposal.get("actor_id"),
+                    "dream_run_at": dream_run.get("run_at") or dream_run.get("created_at"),
+                    "dream_status": dream_run.get("status"),
+                    "dream_auto_apply_mode": dream_run.get("auto_apply_mode"),
                 },
             ),
         )
@@ -393,10 +401,10 @@ def main() -> int:
     print(f"Report written to {report_path}")
 
     if validation.passed:
-        print("PASS: latest scheduled Dream governance proposal is present and no live mutation is required.")
+        print("PASS: latest scheduled Dream governed live run is present.")
         return 0
 
-    print("FAIL: latest scheduled Dream proposal does not yet satisfy the overnight governance checks.")
+    print("FAIL: latest scheduled Dream governed live run does not satisfy the overnight checks.")
     for issue in validation.issues:
         print(f"- {issue}")
     return 1

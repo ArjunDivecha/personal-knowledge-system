@@ -1147,18 +1147,6 @@ function verifyScheduledGovernedApply(
 	};
 }
 
-async function setGovernedAutoApplyKillFlag(redis: Redis, reason: string): Promise<void> {
-	try {
-		await setKillFlag(redis, "DREAM_AUTO_APPLY_MODE", {
-			tripped_at: new Date().toISOString(),
-			reason,
-			source_tripwire: "manual",
-		});
-	} catch (error) {
-		console.error("[scheduled-governed] could not set DREAM_AUTO_APPLY_MODE kill flag", error);
-	}
-}
-
 async function runScheduledGovernedDream(
 	env: Env,
 	controller: ScheduledController,
@@ -1247,9 +1235,6 @@ async function runScheduledGovernedDream(
 				gradeId: typeof grade.grade_id === "string" ? grade.grade_id : null,
 			});
 			verification = verifyScheduledGovernedApply(applyResult, decision.selectedOperationIds);
-			if (verification.passed !== true) {
-				await setGovernedAutoApplyKillFlag(redis, "scheduled governed Dream apply verification failed");
-			}
 		}
 
 		const appliedCount = typeof applyResult?.applied_count === "number" ? applyResult.applied_count : 0;
@@ -1306,14 +1291,10 @@ async function runScheduledGovernedDream(
 				? "Scheduled governed Dream auto-apply completed within caps; held operations will be reconsidered by future runs or judge policy."
 				: "Scheduled governed Dream held or failed; inspect grade, held operations, and kill-flag state before enabling broader autonomy.",
 		};
-		if (status === "failed") {
-			await setGovernedAutoApplyKillFlag(redis, "scheduled governed Dream run failed");
-		}
 		await storeScheduledGovernedRunRecord(redis, runRecord, status !== "held");
 		return runRecord;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		await setGovernedAutoApplyKillFlag(redis, `scheduled governed Dream exception: ${message}`);
 		const failedRecord = {
 			schema_version: 1,
 			run_id: runId,
@@ -3303,23 +3284,15 @@ export default {
 	},
 	async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
 		// =========================================================================
-		// 1. Anomaly tripwires (run before deciding whether to auto-apply).
+		// 1. Anomaly tripwires (monitoring only; no Dream off switch).
 		// =========================================================================
-		// If either tripwire fires, write a kill flag to Redis and force the
-		// affected mode to "off" for this run. The flag persists until the
-		// operator clears it via the dream:clear_kill_flag MCP tool.
 		const tripwireRedis = createRedisForTripwires(env);
 		if (tripwireRedis) {
 			try {
 				const destructive = await checkDestructiveTripwire(tripwireRedis);
 				if (destructive.tripped && destructive.reason) {
-					await setKillFlag(tripwireRedis, "DREAM_AUTO_APPLY_MODE", {
-						tripped_at: new Date().toISOString(),
-						reason: destructive.reason,
-						source_tripwire: "destructive_spike",
-					});
 					console.warn(
-						`[tripwire] DREAM_AUTO_APPLY_MODE auto-flipped off: ${destructive.reason}`,
+						`[tripwire] destructive spike observed; scheduled Dream remains governed: ${destructive.reason}`,
 						JSON.stringify(destructive.day_counts),
 					);
 				}
@@ -3342,44 +3315,11 @@ export default {
 		}
 
 		// =========================================================================
-		// 2. Effective-mode resolution + cycle dispatch.
+		// 2. Governed cycle dispatch.
 		// =========================================================================
-		// Dream + forgetting design: governed mode is the cautious autonomous
-		// path. It proposes, grades, applies only allowlisted bounded operations,
-		// and writes an apply-verification record. Legacy "full" remains available
-		// for the older direct cycle path. Effective mode combines operator intent
-		// (env var) with any active kill flag (machine override): off wins.
-		const effective = tripwireRedis
-			? await getEffectiveMode(tripwireRedis, env.DREAM_AUTO_APPLY_MODE, "DREAM_AUTO_APPLY_MODE")
-			: {
-				effective: env.DREAM_AUTO_APPLY_MODE === "full" || env.DREAM_AUTO_APPLY_MODE === "governed"
-					? env.DREAM_AUTO_APPLY_MODE
-					: ("off" as const),
-				env_value: env.DREAM_AUTO_APPLY_MODE ?? "off",
-				tripped: false,
-				trip_record: null,
-			};
-		const autoApplyMode = effective.effective;
-		const promise =
-			autoApplyMode === "governed"
-				? runScheduledGovernedDream(env, controller)
-				: autoApplyMode === "full"
-				? runDreamCycle(env, {
-					dryRun: false,
-					trigger: "scheduled",
-					cron: controller.cron,
-					scheduledTime: controller.scheduledTime,
-					archiveLimit: SCHEDULED_DREAM_ARCHIVE_LIMIT,
-					promotionLimit: SCHEDULED_DREAM_PROMOTION_LIMIT,
-					note: `Nightly Dream cycle (auto-apply=full). cron=${controller.cron} scheduled_time=${controller.scheduledTime}`,
-				})
-				: runDreamProposal(env, {
-					trigger: "manual",
-					actorId: "scheduled:dream-governance",
-					archiveLimit: SCHEDULED_DREAM_ARCHIVE_LIMIT,
-					promotionLimit: SCHEDULED_DREAM_PROMOTION_LIMIT,
-					note: `Nightly Dream governance proposal. cron=${controller.cron} scheduled_time=${controller.scheduledTime}${effective.tripped ? " (FALLBACK: kill flag active)" : ""}`,
-				});
+		// Scheduled Dream has no env-var off switch. The cron always runs the
+		// cautious autonomous path: proposal -> grade -> bounded apply.
+		const promise = runScheduledGovernedDream(env, controller);
 		ctx.waitUntil(promise);
 		const result = await promise;
 		if (result.status === "skipped_no_backfill" || result.status === "skipped_locked") {

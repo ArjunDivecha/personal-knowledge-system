@@ -126,7 +126,7 @@ beforeEach(() => {
 });
 
 describe("Scheduled Dream runner", () => {
-	it("default (DREAM_AUTO_APPLY_MODE unset): proposal-only via runDreamProposal", async () => {
+	it("default (DREAM_AUTO_APPLY_MODE unset): governed live path", async () => {
 		const controller = createScheduledController({
 			cron: "10 7 * * *",
 			scheduledTime: Date.parse("2026-03-28T07:10:00.000Z"),
@@ -145,13 +145,15 @@ describe("Scheduled Dream runner", () => {
 				actorId: "scheduled:dream-governance",
 				archiveLimit: 50,
 				promotionLimit: 10,
-				note: "Nightly Dream governance proposal. cron=10 7 * * * scheduled_time=1774681800000",
+				note: "Nightly Dream governed proposal. cron=10 7 * * * scheduled_time=1774681800000",
 			}),
 		);
+		expect(dreamMock.gradeDreamProposal).toHaveBeenCalledTimes(1);
+		expect(redisMock.set).toHaveBeenCalledWith("dream:last_run", expect.anything());
 		expect(dreamMock.runDreamCycle).not.toHaveBeenCalled();
 	});
 
-	it("DREAM_AUTO_APPLY_MODE=off: still proposal-only", async () => {
+	it("DREAM_AUTO_APPLY_MODE=off is ignored by scheduled Dream", async () => {
 		const controller = createScheduledController({
 			cron: "10 7 * * *",
 			scheduledTime: Date.parse("2026-03-28T07:10:00.000Z"),
@@ -163,10 +165,12 @@ describe("Scheduled Dream runner", () => {
 		await waitOnExecutionContext(ctx);
 
 		expect(dreamMock.runDreamProposal).toHaveBeenCalledTimes(1);
+		expect(dreamMock.gradeDreamProposal).toHaveBeenCalledTimes(1);
+		expect(redisMock.set).toHaveBeenCalledWith("dream:last_run", expect.anything());
 		expect(dreamMock.runDreamCycle).not.toHaveBeenCalled();
 	});
 
-	it("DREAM_AUTO_APPLY_MODE=full: live cycle via runDreamCycle", async () => {
+	it("DREAM_AUTO_APPLY_MODE=full is ignored by scheduled Dream", async () => {
 		const controller = createScheduledController({
 			cron: "10 7 * * *",
 			scheduledTime: Date.parse("2026-03-28T07:10:00.000Z"),
@@ -177,21 +181,10 @@ describe("Scheduled Dream runner", () => {
 		await worker.scheduled(controller, testEnv, ctx);
 		await waitOnExecutionContext(ctx);
 
-		expect(dreamMock.runDreamProposal).not.toHaveBeenCalled();
-		expect(dreamMock.runDreamCycle).toHaveBeenCalledWith(
-			expect.objectContaining({
-				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
-			}),
-			expect.objectContaining({
-				dryRun: false,
-				trigger: "scheduled",
-				cron: "10 7 * * *",
-				scheduledTime: 1774681800000,
-				archiveLimit: 50,
-				promotionLimit: 10,
-				note: expect.stringContaining("auto-apply=full"),
-			}),
-		);
+		expect(dreamMock.runDreamProposal).toHaveBeenCalledTimes(1);
+		expect(dreamMock.gradeDreamProposal).toHaveBeenCalledTimes(1);
+		expect(redisMock.set).toHaveBeenCalledWith("dream:last_run", expect.anything());
+		expect(dreamMock.runDreamCycle).not.toHaveBeenCalled();
 	});
 
 	it("DREAM_AUTO_APPLY_MODE=governed: proposal, grade, bounded apply, and run record", async () => {
@@ -371,7 +364,7 @@ describe("Scheduled Dream runner", () => {
 		);
 	});
 
-	it("DREAM_AUTO_APPLY_MODE=full + destructive tripwire fired: falls back to proposal", async () => {
+	it("destructive tripwire fired: scheduled Dream still runs governed path", async () => {
 		// Tripwire says spike happened.
 		tripwireMock.checkDestructiveTripwire.mockResolvedValueOnce({
 			tripped: true,
@@ -381,17 +374,6 @@ describe("Scheduled Dream runner", () => {
 			consecutive_breaches: 2,
 			reason:
 				"destructive-action count breached threshold 3.0 for 2 consecutive days",
-		});
-		// And effective-mode resolves to off because the kill flag is now set.
-		tripwireMock.getEffectiveMode.mockResolvedValueOnce({
-			effective: "off",
-			env_value: "full",
-			tripped: true,
-			trip_record: {
-				tripped_at: "2026-03-28T07:00:00.000Z",
-				reason: "spike",
-				source_tripwire: "destructive_spike",
-			},
 		});
 
 		const controller = createScheduledController({
@@ -403,14 +385,15 @@ describe("Scheduled Dream runner", () => {
 		await worker.scheduled(controller, testEnv, ctx);
 		await waitOnExecutionContext(ctx);
 
-		// Even with env=full, the cycle does NOT auto-apply when tripwire is active.
+		// The tripwire is monitoring-only for scheduled Dream; it cannot flip
+		// the system into proposal-only/off mode.
 		expect(dreamMock.runDreamCycle).not.toHaveBeenCalled();
-		expect(dreamMock.runDreamProposal).toHaveBeenCalled();
-		// Tripwire setKillFlag was invoked for DREAM_AUTO_APPLY_MODE.
-		expect(tripwireMock.setKillFlag).toHaveBeenCalledWith(
+		expect(dreamMock.runDreamProposal).toHaveBeenCalledTimes(1);
+		expect(dreamMock.gradeDreamProposal).toHaveBeenCalledTimes(1);
+		expect(tripwireMock.setKillFlag).not.toHaveBeenCalledWith(
 			expect.anything(),
 			"DREAM_AUTO_APPLY_MODE",
-			expect.objectContaining({ source_tripwire: "destructive_spike" }),
+			expect.anything(),
 		);
 	});
 });

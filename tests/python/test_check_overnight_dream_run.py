@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,7 +12,11 @@ SCRIPTS_DIR = REPO_ROOT / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from check_overnight_dream_run import most_recent_scheduled_boundary, validate_dream_proposal
+from check_overnight_dream_run import (
+    load_scheduled_archive_limit,
+    most_recent_scheduled_boundary,
+    validate_dream_run,
+)
 
 UTC = timezone.utc
 
@@ -27,30 +32,39 @@ class CheckOvernightDreamRunTests(unittest.TestCase):
         boundary = most_recent_scheduled_boundary(now_utc, 7, 10)
         self.assertEqual(boundary, datetime(2026, 3, 27, 7, 10, tzinfo=UTC))
 
-    def test_validate_dream_proposal_passes_for_scheduled_proposal(self) -> None:
+    def test_load_scheduled_archive_limit_reads_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            policy_path = Path(tmp) / "memory_policy.json"
+            policy_path.write_text(
+                '{"dream_thresholds": {"scheduled_archive_limit": 50}}',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(load_scheduled_archive_limit(policy_path), 50)
+
+    def test_validate_dream_run_passes_for_governed_live_run(self) -> None:
         now_utc = datetime(2026, 3, 28, 15, 0, tzinfo=UTC)
-        created_at = "2026-03-28T07:10:41+00:00"
+        run_at = "2026-03-28T07:10:41+00:00"
         health = {
             "status": "ok",
         }
-        dream_proposal = {
-            "created_at": created_at,
-            "status": "proposal_ready",
-            "trigger": "manual",
-            "actor_id": "scheduled:dream-governance",
-            "dry_run": True,
-            "operations": [{"operation_id": "dop_archive_ke_test", "type": "archive_entry"}],
+        dream_run = {
+            "run_at": run_at,
+            "status": "completed",
+            "trigger": "scheduled",
+            "dry_run": False,
+            "auto_apply_mode": "governed",
             "counts": {
                 "archive_limit": 10,
                 "promotion_limit": 10,
-                "archive_candidates": 17,
-                "promotion_candidates": 4,
+                "operation_count": 17,
+                "applied_count": 4,
             },
         }
 
-        result = validate_dream_proposal(
+        result = validate_dream_run(
             health=health,
-            dream_proposal=dream_proposal,
+            dream_run=dream_run,
             now_utc=now_utc,
             cron_hour_utc=7,
             cron_minute_utc=10,
@@ -62,30 +76,28 @@ class CheckOvernightDreamRunTests(unittest.TestCase):
         self.assertTrue(result.passed)
         self.assertEqual(result.issues, [])
 
-    def test_validate_dream_proposal_fails_for_old_live_run_shape(self) -> None:
+    def test_validate_dream_run_fails_for_old_proposal_only_shape(self) -> None:
         now_utc = datetime(2026, 3, 28, 15, 0, tzinfo=UTC)
-        run_at = "2026-03-27T07:10:41+00:00"
+        created_at = "2026-03-28T07:10:41+00:00"
         health = {
             "status": "ok",
         }
-        dream_proposal = {
-            "run_at": run_at,
-            "status": "completed",
-            "trigger": "scheduled",
+        dream_run = {
+            "created_at": created_at,
+            "status": "proposal_ready",
+            "trigger": "manual",
             "dry_run": True,
-            "actor_id": "dream_scheduler",
+            "actor_id": "scheduled:dream-governance",
             "operations": [],
             "counts": {
                 "archive_limit": 10,
                 "promotion_limit": 10,
-                "archived": 0,
-                "promoted": 0,
             },
         }
 
-        result = validate_dream_proposal(
+        result = validate_dream_run(
             health=health,
-            dream_proposal=dream_proposal,
+            dream_run=dream_run,
             now_utc=now_utc,
             cron_hour_utc=7,
             cron_minute_utc=10,
@@ -95,31 +107,30 @@ class CheckOvernightDreamRunTests(unittest.TestCase):
         )
 
         self.assertFalse(result.passed)
-        self.assertTrue(any("status is not proposal_ready" in issue for issue in result.issues))
-        self.assertTrue(any("actor is not scheduled governance" in issue for issue in result.issues))
-        self.assertTrue(any("too old" in issue for issue in result.issues))
+        self.assertTrue(any("status is not governed-live" in issue for issue in result.issues))
+        self.assertTrue(any("trigger is not scheduled" in issue for issue in result.issues))
+        self.assertTrue(any("dry_run=false" in issue for issue in result.issues))
 
-    def test_validate_dream_proposal_allows_on_demand_operator_check(self) -> None:
+    def test_validate_dream_run_allows_on_demand_operator_check(self) -> None:
         now_utc = datetime(2026, 3, 28, 15, 0, tzinfo=UTC)
         health = {
             "status": "ok",
         }
-        dream_proposal = {
-            "created_at": "2026-03-28T12:15:00+00:00",
-            "status": "proposal_ready",
-            "trigger": "manual",
-            "actor_id": "scheduled:dream-governance",
-            "dry_run": True,
-            "operations": [{"operation_id": "dop_archive_ke_test", "type": "archive_entry"}],
+        dream_run = {
+            "run_at": "2026-03-28T12:15:00+00:00",
+            "status": "completed_with_holds",
+            "trigger": "scheduled",
+            "dry_run": False,
+            "auto_apply_mode": "governed",
             "counts": {
                 "archive_limit": 10,
                 "promotion_limit": 10,
             },
         }
 
-        result = validate_dream_proposal(
+        result = validate_dream_run(
             health=health,
-            dream_proposal=dream_proposal,
+            dream_run=dream_run,
             now_utc=now_utc,
             cron_hour_utc=7,
             cron_minute_utc=10,

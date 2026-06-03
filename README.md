@@ -133,7 +133,14 @@ This is the software analog of strategic forgetting: preserve what matters, but 
 
 The most ambitious part of the design is the Dream job.
 
-Dream is partially live now. The scheduler, audit trail, candidate discovery loop, proposal generation, deterministic grading, bounded apply, rollback mechanics, deterministic duplicate merge, contradiction handling, and write-capable operator tools are implemented. The nightly Worker is configured proposal-first: it generates bounded governance proposals and does not directly mutate live entries. The remaining gap is completing and repeatedly validating the full staging/production lifecycle before any scheduled auto-apply policy is considered. The intended structure is:
+Dream is live as a governed maintenance path. The scheduler, audit trail,
+candidate discovery loop, proposal generation, deterministic grading, bounded
+apply, rollback mechanics, deterministic duplicate merge, contradiction
+handling, judge queue, and write-capable operator tools are implemented. The
+nightly Worker runs governed live apply directly from the schedule; it is not
+controlled by proposal-only/off-mode environment switches.
+
+The intended structure is:
 
 1. Survey
    Load active entries, compute salience, and bucket them into stable, active, weak, and decay candidates.
@@ -346,7 +353,7 @@ Dream is the long-horizon maintenance loop. The idea is:
 - archive low-value memories with reversible pointers
 - rebuild the current self-model without re-injecting everything forever
 
-Dream is Phase 5 work. The live scheduler, audit output, proposal artifacts, deterministic grading, reversible apply/rollback path, and write-capable operator tools are implemented. The deployed scheduler now generates proposal-first nightly governance runs with 10 archive / 10 promotion caps; scheduled live auto-apply is not enabled.
+Dream is Phase 5 work. The live scheduler, audit output, proposal artifacts, deterministic grading, reversible apply/rollback path, judge queue, and write-capable operator tools are implemented. The deployed scheduler now runs governed live maintenance with policy-driven archive and promotion caps loaded from `shared/memory_policy.json`. Scheduled Dream is expected to record `dry_run=false`, `trigger=scheduled`, and `auto_apply_mode=governed`.
 
 ### Current Scheduling Model
 
@@ -368,20 +375,36 @@ X API rather than local files. The workflow lives at
 scheduled runners do not lose incremental state when the GitHub Actions runner
 is destroyed.
 
+Local machine ingestion still handles local-only AI session sources. The
+launchd wrapper is `scripts/run_nightly_ingestion.sh`; it sources the repo
+root `.env`, expands launchd's minimal `PATH`, verifies the ingestion venv,
+and fails fast if the Claude CLI cannot be found. That preflight exists because
+the Dream judge should use the Claude subscription CLI path, not silently fall
+back to paid Anthropic API calls.
+
+Cloudflare Worker deploys should use:
+
+```bash
+bash scripts/deploy_cloudflare_worker.sh
+```
+
+The script sources `.env`, requires `CLOUDFLARE_API_TOKEN`, and deploys the
+production Worker with `npx wrangler deploy --env=""`.
+
 ## What Is Live Today
 
-As of May 8, 2026, the live system has:
+As of June 3, 2026, the live system has:
 
-- `2,516` active knowledge topics
+- `4,620` total topics in the thin-index accounting
 - `34` active projects
 - schema version `2`
 - completed Phase 1, Phase 2, Phase 3, and Phase 4 of the current memory upgrade
 - `0` pending classifications in `classification:pending`
-- thin-index counts of `1,798` Tier 1, `31` Tier 2, `721` Tier 3
-- `4,434` archived entries at the time of the latest health check
-- latest scheduled-equivalent Dream proposal surfaced `656` archive candidates and proposed `10` bounded archive operations
-- deterministic grading has passed for the latest production proposal
-- proposal-first overnight checks and full strict memory consistency pass against production
+- thin-index counts of `887` Tier 1, `1,125` Tier 2, `2,642` Tier 3
+- `4,968` archived entries at the time of the latest health check
+- latest deployed Dream code is governed-live scheduled maintenance
+- the Dream judge queue is empty in production
+- strict overnight checks require the latest post-cron scheduled Dream run to be governed/live, not proposal-only
 
 Operationally, the following are live:
 
@@ -394,10 +417,12 @@ Operationally, the following are live:
 - write-capable MCP tools for `restore_archived` and `set_context_type`
 - remote scheduled Twitter/X ingestion with Redis-backed incremental state
 - remote scheduled GitHub ingestion with repo-attached Claude Code, Codex CLI, and Cursor context
-- nightly proposal-first Dream scheduler and audit records
+- local nightly ingestion for local-only AI session logs, with Redis-backed checkpointing and local checkpoint fallback
+- nightly governed-live Dream scheduler and audit records
 - deterministic Dream proposal grading
 - bounded Dream apply and conflict-aware rollback mechanics
 - deterministic duplicate merge and contradiction handling in Dream replay
+- Dream judge queue with local Claude CLI verdicting
 - `/health` and `/status` rollout endpoints
 
 Not live yet:
@@ -469,6 +494,27 @@ The public Worker exposes:
 - tier counts
 - archived count
 
+### Dream Run Checks
+
+The strict overnight check is:
+
+```bash
+set -a; source .env; set +a
+ingestion/.venv/bin/python scripts/check_overnight_dream_run.py
+```
+
+It validates the latest scheduled Dream run against the policy source of truth
+in `shared/memory_policy.json`. A passing post-cron run must be scheduled,
+governed, live (`dry_run=false`), and within the expected time window.
+
+The live judge queue can be inspected through the operator endpoint:
+
+```bash
+set -a; source .env; set +a
+curl -sS -H "Authorization: Bearer $DREAM_OPERATOR_TOKEN" \
+  https://mcp.dancing-ganesh.com/ops/dream/judge_queue
+```
+
 ### Migration Scripts
 
 The upgrade work introduced three important operator scripts:
@@ -534,7 +580,7 @@ There is now also a local Worker-runtime test layer under [cloudflare-mcp/mcp-se
 - OAuth discovery, client registration, auth-code exchange, and token issuance
 - MCP `initialize`, `tools/list`, `get_index`, and `get_dream_summary`
 - write-tool rejection without `mcp:write`
-- scheduled proposal-first Dream trigger wiring
+- scheduled governed-live Dream trigger wiring
 
 That local test layer is automated in GitHub Actions at [.github/workflows/worker-runtime-tests.yml](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/knowledge-system/.github/workflows/worker-runtime-tests.yml).
 
