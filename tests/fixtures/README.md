@@ -43,6 +43,10 @@ Phase 7C current-view fixtures:
 
 - `phase7c_current_projection_fixture.json` contains synthetic current projection and compile proposal-operation cases.
 
+Phase 7D memory-block fixtures:
+
+- `phase7d_memory_blocks_fixture.json` contains synthetic read-only operator, project-status, and policy-pointer block cases.
+
 ## Design Rules
 
 - keep bundles small

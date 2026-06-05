@@ -1,0 +1,145 @@
+{
+  "metadata": {
+    "fixture": "phase7d_memory_blocks_fixture",
+    "schema_version": 1,
+    "generated_at": "2026-06-05T00:00:00+00:00"
+  },
+  "observations": [
+    {
+      "observation_id": "obs_operator_style",
+      "subject_id": "operator-profile",
+      "memory_lane": "semantic",
+      "source_authority": "explicit",
+      "claim_text": "The operator prefers direct autonomous execution once the implementation direction is clear.",
+      "source_type": "fixture",
+      "source_id": "fixture-7d",
+      "message_ids": ["msg-operator-style"],
+      "source_path": "observations[operator_style]",
+      "snippet": "Direct execution after direction is clear.",
+      "observed_at": "2026-06-05T00:00:00+00:00",
+      "learned_at": "2026-06-05T00:00:00+00:00"
+    },
+    {
+      "observation_id": "obs_operator_testing",
+      "subject_id": "operator-profile",
+      "memory_lane": "semantic",
+      "source_authority": "explicit",
+      "claim_text": "The operator treats done as tested.",
+      "source_type": "fixture",
+      "source_id": "fixture-7d",
+      "message_ids": ["msg-operator-testing"],
+      "source_path": "observations[operator_testing]",
+      "snippet": "Done means tested.",
+      "observed_at": "2026-06-05T00:00:00+00:00",
+      "learned_at": "2026-06-05T00:00:00+00:00"
+    },
+    {
+      "observation_id": "obs_project_goal",
+      "subject_id": "project-pks-phase7",
+      "memory_lane": "semantic",
+      "source_authority": "manual",
+      "claim_text": "PKS Phase 7 is building evidence-log and compiled-current-view memory architecture.",
+      "source_type": "fixture",
+      "source_id": "fixture-7d",
+      "message_ids": ["msg-project-goal"],
+      "source_path": "observations[project_goal]",
+      "snippet": "Phase 7 memory architecture.",
+      "observed_at": "2026-06-05T00:00:00+00:00",
+      "learned_at": "2026-06-05T00:00:00+00:00"
+    },
+    {
+      "observation_id": "obs_project_next",
+      "subject_id": "project-pks-phase7",
+      "memory_lane": "semantic",
+      "source_authority": "manual",
+      "claim_text": "Phase 8 should wire retrieval to prefer compiled current claims after blocks are proven offline.",
+      "source_type": "fixture",
+      "source_id": "fixture-7d",
+      "message_ids": ["msg-project-next"],
+      "source_path": "observations[project_next]",
+      "snippet": "Phase 8 retrieval after blocks.",
+      "observed_at": "2026-06-05T00:00:00+00:00",
+      "learned_at": "2026-06-05T00:00:00+00:00"
+    }
+  ],
+  "current_view": {
+    "generated_at": "2026-06-05T00:00:00+00:00",
+    "current_claims": [
+      {
+        "claim_id": "claim_operator_style",
+        "subject_id": "operator-profile",
+        "memory_lane": "semantic",
+        "compiled_text": "The operator prefers direct autonomous execution once the implementation direction is clear.",
+        "status": "current",
+        "support_observation_ids": ["obs_operator_style"],
+        "primary_source_authority": "explicit",
+        "scope": {
+          "memory_block": "operator_profile",
+          "rank": "01"
+        }
+      },
+      {
+        "claim_id": "claim_operator_testing",
+        "subject_id": "operator-profile",
+        "memory_lane": "semantic",
+        "compiled_text": "The operator treats done as tested.",
+        "status": "current",
+        "support_observation_ids": ["obs_operator_testing"],
+        "primary_source_authority": "explicit",
+        "scope": {
+          "memory_block": "operator_profile",
+          "rank": "02"
+        }
+      },
+      {
+        "claim_id": "claim_project_goal",
+        "subject_id": "project-pks-phase7",
+        "memory_lane": "semantic",
+        "compiled_text": "PKS Phase 7 is building evidence-log and compiled-current-view memory architecture.",
+        "status": "current",
+        "support_observation_ids": ["obs_project_goal"],
+        "primary_source_authority": "manual",
+        "scope": {
+          "memory_block": "project_status",
+          "project_id": "pks-phase-7",
+          "rank": "01"
+        }
+      },
+      {
+        "claim_id": "claim_project_next",
+        "subject_id": "project-pks-phase7",
+        "memory_lane": "semantic",
+        "compiled_text": "Phase 8 should wire retrieval to prefer compiled current claims after blocks are proven offline.",
+        "status": "current",
+        "support_observation_ids": ["obs_project_next"],
+        "primary_source_authority": "manual",
+        "scope": {
+          "memory_block": "project_status",
+          "project_id": "pks-phase-7",
+          "rank": "02"
+        }
+      }
+    ],
+    "provisional_claims": [],
+    "excluded_claims": [],
+    "observation_count": 4,
+    "claim_count": 4,
+    "schema_version": 1
+  },
+  "policy_source_paths": [
+    "docs/pks-phase-7a-compile-latency-policy-2026-06-05.md",
+    "docs/pks-phase-7a-contradiction-supersession-taxonomy-2026-06-05.md",
+    "AGENTS.md"
+  ],
+  "expected_blocks": {
+    "labels": ["operator_profile", "project_status", "policy_pointer"],
+    "operator_claim_ids": ["claim_operator_style", "claim_operator_testing"],
+    "project_claim_ids": ["claim_project_goal", "claim_project_next"],
+    "project_scope_ref": "pks-phase-7",
+    "policy_paths": [
+      "docs/pks-phase-7a-compile-latency-policy-2026-06-05.md",
+      "docs/pks-phase-7a-contradiction-supersession-taxonomy-2026-06-05.md",
+      "AGENTS.md"
+    ]
+  }
+}

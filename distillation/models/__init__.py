@@ -78,6 +78,15 @@ from .phase7c import (
     generate_compiled_current_view,
     grade_phase7c_compile_operations,
 )
+from .phase7d import (
+    PHASE7D_SCHEMA_VERSION,
+    Phase7MemoryBlock,
+    build_operator_profile_block,
+    build_phase7d_memory_blocks,
+    build_policy_pointer_block,
+    build_project_status_block,
+    stable_memory_block_id,
+)
 
 __all__ = [
     # Entry types
@@ -145,4 +154,12 @@ __all__ = [
     "build_supersede_claim_operation",
     "generate_compiled_current_view",
     "grade_phase7c_compile_operations",
+    # Phase 7D memory blocks
+    "PHASE7D_SCHEMA_VERSION",
+    "Phase7MemoryBlock",
+    "build_operator_profile_block",
+    "build_phase7d_memory_blocks",
+    "build_policy_pointer_block",
+    "build_project_status_block",
+    "stable_memory_block_id",
 ]

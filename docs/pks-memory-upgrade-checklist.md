@@ -178,11 +178,11 @@ Phase 5 notes:
 
 ## Phase 7D: Memory Blocks
 
-- [ ] Add memory block schema
-- [ ] Add read-only operator profile block
-- [ ] Add current project status block
-- [ ] Add procedural/policy pointer block
-- [ ] Add tests for size limits and source traceability
+- [x] Add memory block schema
+- [x] Add read-only operator profile block
+- [x] Add current project status block
+- [x] Add procedural/policy pointer block
+- [x] Add tests for size limits and source traceability
 
 Phase 6.5 audit notes:
 - Concurrent-run safety: the full Dream cycle path has a Redis single-flight guard (`dream:lock`) with a 30-minute TTL and stale-lock reclaim before live mutations. The scheduled governance proposal path and the operator `run_dream_proposal` path currently call `runDreamProposal` directly, which snapshots all entries without taking that lock; `apply_dream_proposal` is protected by proposal grading, candidate snapshots, and expected revisions, but proposal generation itself can still overlap. Follow-up issue: add the same proposal-level single-flight guard, or an explicit idempotency key, around `runDreamProposal` before correction-derived contest proposals increase replay volume.
