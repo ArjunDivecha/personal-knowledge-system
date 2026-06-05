@@ -33,6 +33,22 @@ from .thin_index import (
     ThinIndexEvolution,
     ThinIndex,
 )
+from .phase7 import (
+    AUTHORITY_RANK,
+    PHASE7_SCHEMA_VERSION,
+    Phase7CompiledClaim,
+    Phase7MigrationPreview,
+    Phase7Observation,
+    Phase7SupersessionEdge,
+    compiled_claims_from_observations,
+    highest_source_authority,
+    normalize_claim_text,
+    observations_from_legacy_entry,
+    preview_phase7_migration,
+    provisional_claim_from_observation,
+    retrieval_projection_from_claims,
+    stable_phase7_id,
+)
 
 __all__ = [
     # Entry types
@@ -58,5 +74,19 @@ __all__ = [
     "ThinIndexProject",
     "ThinIndexEvolution",
     "ThinIndex",
+    # Phase 7A schema
+    "AUTHORITY_RANK",
+    "PHASE7_SCHEMA_VERSION",
+    "Phase7CompiledClaim",
+    "Phase7MigrationPreview",
+    "Phase7Observation",
+    "Phase7SupersessionEdge",
+    "compiled_claims_from_observations",
+    "highest_source_authority",
+    "normalize_claim_text",
+    "observations_from_legacy_entry",
+    "preview_phase7_migration",
+    "provisional_claim_from_observation",
+    "retrieval_projection_from_claims",
+    "stable_phase7_id",
 ]
-

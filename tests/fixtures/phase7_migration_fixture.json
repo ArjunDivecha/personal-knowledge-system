@@ -1,0 +1,303 @@
+{
+  "legacy_entries": [
+    {
+      "id": "ke_phase7_primary",
+      "type": "knowledge",
+      "domain": "Phase 7 primary fixture",
+      "state": "active",
+      "detail_level": "full",
+      "current_view": "Phase 7A uses offline observations before live claims.",
+      "confidence": "high",
+      "positions": [
+        {
+          "view": "Offline previews should not mutate live storage.",
+          "confidence": "high",
+          "as_of": "2026-06-05T10:00:00+00:00",
+          "evidence": {
+            "conversation_id": "conv-phase7",
+            "message_ids": ["msg-position"],
+            "snippet": "Keep Phase 7A offline."
+          }
+        }
+      ],
+      "key_insights": [
+        {
+          "insight": "Compiled claims group duplicate semantic observations deterministically.",
+          "evidence": {
+            "conversation_id": "conv-phase7",
+            "message_ids": ["msg-insight"],
+            "snippet": "Duplicate grouping should be deterministic."
+          }
+        }
+      ],
+      "knows_how_to": [
+        {
+          "capability": "Build pure migration previews without Redis writes.",
+          "evidence": {
+            "conversation_id": "conv-phase7",
+            "message_ids": ["msg-capability"],
+            "snippet": "No Redis writes in Phase 7A."
+          }
+        }
+      ],
+      "open_questions": [
+        {
+          "question": "When should Dream compile observations into current claims?",
+          "context": "Phase 7C design question",
+          "evidence": {
+            "conversation_id": "conv-phase7",
+            "message_ids": ["msg-question"],
+            "snippet": "Compilation timing is later."
+          }
+        }
+      ],
+      "related_repos": [],
+      "related_knowledge": [],
+      "evolution": [],
+      "metadata": {
+        "created_at": "2026-06-05T09:30:00+00:00",
+        "updated_at": "2026-06-05T09:45:00+00:00",
+        "source_conversations": ["conv-phase7"],
+        "source_messages": ["msg-position", "msg-insight", "msg-capability", "msg-question"],
+        "signal_flags": []
+      },
+      "full_content_ref": null
+    },
+    {
+      "id": "pe_phase7_project",
+      "type": "project",
+      "name": "Phase 7A fixture project",
+      "status": "active",
+      "detail_level": "full",
+      "goal": "Create an offline schema migration preview.",
+      "current_phase": "schema",
+      "blocked_on": null,
+      "decisions_made": [
+        {
+          "decision": "Keep Phase 7A offline-only.",
+          "rationale": "Avoid live retrieval or Dream mutation changes.",
+          "date": "2026-06-05T11:00:00+00:00",
+          "evidence": {
+            "conversation_id": "conv-phase7-project",
+            "message_ids": ["msg-decision"],
+            "snippet": "Do not touch live retrieval in Phase 7A."
+          }
+        }
+      ],
+      "tech_stack": ["python"],
+      "related_repos": [],
+      "related_knowledge": [],
+      "phase_history": [],
+      "metadata": {
+        "created_at": "2026-06-05T10:30:00+00:00",
+        "updated_at": "2026-06-05T10:45:00+00:00",
+        "source_conversations": ["conv-phase7-project"],
+        "source_messages": ["msg-decision"],
+        "last_touched": "2026-06-05T11:00:00+00:00"
+      },
+      "full_content_ref": null
+    },
+    {
+      "id": "ke_phase7_explicit",
+      "type": "knowledge",
+      "domain": "Explicit save fixture",
+      "current_view": "Explicit-save observations should carry explicit source authority.",
+      "metadata": {
+        "created_at": "2026-06-05T12:00:00+00:00",
+        "updated_at": "2026-06-05T12:00:00+00:00",
+        "source_conversations": ["conv-explicit"],
+        "source_messages": ["msg-explicit"],
+        "signal_flags": ["explicit_save"]
+      }
+    },
+    {
+      "id": "ke_phase7_multi_positions",
+      "type": "knowledge",
+      "domain": "List index fixture",
+      "current_view": "",
+      "positions": [
+        {
+          "view": "First indexed position.",
+          "confidence": "medium",
+          "as_of": "2026-06-05T12:10:00+00:00",
+          "evidence": {
+            "conversation_id": "conv-shared",
+            "message_ids": ["msg-shared"],
+            "snippet": "Shared evidence"
+          }
+        },
+        {
+          "view": "Second indexed position.",
+          "confidence": "medium",
+          "as_of": "2026-06-05T12:11:00+00:00",
+          "evidence": {
+            "conversation_id": "conv-shared",
+            "message_ids": ["msg-shared"],
+            "snippet": "Shared evidence"
+          }
+        }
+      ],
+      "metadata": {
+        "created_at": "2026-06-05T12:00:00+00:00",
+        "updated_at": "2026-06-05T12:00:00+00:00",
+        "source_conversations": ["conv-shared"],
+        "source_messages": ["msg-shared"],
+        "signal_flags": []
+      }
+    }
+  ],
+  "observations": [
+    {
+      "observation_id": "obs_procedural",
+      "subject_id": "rules-phase7",
+      "memory_lane": "procedural",
+      "source_authority": "manual",
+      "claim_text": "Procedural rules stay out of semantic compilation.",
+      "source_type": "fixture",
+      "source_id": "fixture-procedural",
+      "message_ids": [],
+      "source_path": "observations[procedural]",
+      "snippet": "",
+      "observed_at": "2026-06-05T12:20:00+00:00",
+      "learned_at": "2026-06-05T12:20:00+00:00"
+    },
+    {
+      "observation_id": "obs_dup_a",
+      "subject_id": "subject-duplicate",
+      "memory_lane": "semantic",
+      "source_authority": "inferred",
+      "claim_text": "Duplicate semantic claim.",
+      "source_type": "fixture",
+      "source_id": "fixture-dup-a",
+      "message_ids": ["msg-dup-a"],
+      "source_path": "observations[dup_a]",
+      "snippet": "Duplicate semantic claim.",
+      "observed_at": "2026-06-05T12:21:00+00:00",
+      "learned_at": "2026-06-05T12:21:00+00:00"
+    },
+    {
+      "observation_id": "obs_dup_b",
+      "subject_id": "subject-duplicate",
+      "memory_lane": "semantic",
+      "source_authority": "explicit",
+      "claim_text": "  duplicate   semantic claim. ",
+      "source_type": "fixture",
+      "source_id": "fixture-dup-b",
+      "message_ids": ["msg-dup-b"],
+      "source_path": "observations[dup_b]",
+      "snippet": "duplicate semantic claim.",
+      "observed_at": "2026-06-05T12:22:00+00:00",
+      "learned_at": "2026-06-05T12:22:00+00:00"
+    }
+  ],
+  "compiled_claims": [
+    {
+      "claim_id": "claim_tax_duplicate",
+      "subject_id": "tax-duplicate",
+      "memory_lane": "semantic",
+      "compiled_text": "Duplicate support merge.",
+      "status": "current",
+      "support_observation_ids": ["obs_tax_duplicate"],
+      "taxonomy_decision": "duplicate"
+    },
+    {
+      "claim_id": "claim_tax_refinement",
+      "subject_id": "tax-refinement",
+      "memory_lane": "semantic",
+      "compiled_text": "Refinement preserving old evidence.",
+      "status": "historical",
+      "support_observation_ids": ["obs_tax_refinement"],
+      "taxonomy_decision": "refinement"
+    },
+    {
+      "claim_id": "claim_tax_supersession",
+      "subject_id": "tax-supersession",
+      "memory_lane": "semantic",
+      "compiled_text": "Superseded claim.",
+      "status": "superseded",
+      "support_observation_ids": ["obs_tax_supersession"],
+      "valid_to": "2026-06-05T00:00:00+00:00",
+      "taxonomy_decision": "supersession"
+    },
+    {
+      "claim_id": "claim_tax_scoped_exception",
+      "subject_id": "tax-scope",
+      "memory_lane": "semantic",
+      "compiled_text": "Scoped exception claim.",
+      "status": "current",
+      "support_observation_ids": ["obs_tax_scope"],
+      "taxonomy_decision": "scoped_exception",
+      "scope": {"repo": "fixture"}
+    },
+    {
+      "claim_id": "claim_tax_contestation",
+      "subject_id": "tax-contestation",
+      "memory_lane": "semantic",
+      "compiled_text": "Contested claim.",
+      "status": "contested",
+      "support_observation_ids": ["obs_tax_contestation"],
+      "taxonomy_decision": "contestation"
+    },
+    {
+      "claim_id": "claim_tax_temporal_expiry",
+      "subject_id": "tax-expiry",
+      "memory_lane": "semantic",
+      "compiled_text": "Expired temporal claim.",
+      "status": "expired",
+      "support_observation_ids": ["obs_tax_expiry"],
+      "temporal_status": "expired",
+      "taxonomy_decision": "temporal_expiry"
+    },
+    {
+      "claim_id": "claim_tax_deprecation",
+      "subject_id": "tax-deprecation",
+      "memory_lane": "semantic",
+      "compiled_text": "Deprecated claim.",
+      "status": "deprecated",
+      "support_observation_ids": [],
+      "taxonomy_decision": "deprecation",
+      "compile_notes": ["Deprecated without replacement in fixture."]
+    }
+  ],
+  "supersession_edges": [
+    {
+      "from_claim_id": "claim_old_refinement",
+      "to_claim_id": "claim_new_refinement",
+      "decision": "refinement",
+      "reason": "New claim adds precision.",
+      "observation_id": "obs_edge_refinement",
+      "observed_at": "2026-06-05T13:00:00+00:00"
+    },
+    {
+      "from_claim_id": "claim_old_supersession",
+      "to_claim_id": "claim_new_supersession",
+      "decision": "supersession",
+      "reason": "New claim replaces old claim.",
+      "observation_id": "obs_edge_supersession",
+      "observed_at": "2026-06-05T13:01:00+00:00"
+    },
+    {
+      "from_claim_id": "claim_old_expiry",
+      "to_claim_id": "claim_new_expiry",
+      "decision": "temporal_expiry",
+      "reason": "Old claim expired.",
+      "observation_id": "obs_edge_expiry",
+      "observed_at": "2026-06-05T13:02:00+00:00"
+    },
+    {
+      "from_claim_id": "claim_old_deprecation",
+      "to_claim_id": "claim_new_deprecation",
+      "decision": "deprecation",
+      "reason": "Old claim is deprecated.",
+      "observation_id": "obs_edge_deprecation",
+      "observed_at": "2026-06-05T13:03:00+00:00"
+    }
+  ],
+  "malformed_entries": [
+    {
+      "type": "knowledge",
+      "domain": "Malformed fixture without id",
+      "current_view": "This should be skipped by migration preview."
+    }
+  ]
+}

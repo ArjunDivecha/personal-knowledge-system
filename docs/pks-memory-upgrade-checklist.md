@@ -156,11 +156,11 @@ Phase 5 notes:
 - [x] Write compile-latency/provisional-claim policy spec
 - [x] Write builder-ready Phase 7A implementation plan
 - [x] Vet Phase 7A builder packet with Opus
-- [ ] Add offline Phase 7A dataclasses for observations, compiled claims, and supersession edges
-- [ ] Add offline migration preview from legacy knowledge/project entries
-- [ ] Add synthetic Phase 7A fixtures
-- [ ] Add unit tests proving no live storage mutation
-- [ ] Export Phase 7A helpers from `distillation/models/__init__.py`
+- [x] Add offline Phase 7A dataclasses for observations, compiled claims, and supersession edges
+- [x] Add offline migration preview from legacy knowledge/project entries
+- [x] Add synthetic Phase 7A fixtures
+- [x] Add unit tests proving no live storage mutation
+- [x] Export Phase 7A helpers from `distillation/models/__init__.py`
 
 ## Phase 7B: Temporal Normalization And Entity Linking
 

@@ -30,6 +30,10 @@ Outcome-quality probe files:
 - `recall_probes.json` contains carry-forward recall probes for M6.
 - `temporal_staleness_probes.json` contains temporal freshness probes for M8. Disabled examples document the schema only; enable temporal probes only when the stale/fresh expectation is source-verified.
 
+Phase 7A schema fixture:
+
+- `phase7_migration_fixture.json` contains synthetic legacy entries, Phase 7 observations, compiled claims, and supersession edges for offline observation/claim schema tests. It must stay synthetic and must not include live user facts.
+
 ## Design Rules
 
 - keep bundles small
