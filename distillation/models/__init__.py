@@ -87,6 +87,13 @@ from .phase7d import (
     build_project_status_block,
     stable_memory_block_id,
 )
+from .phase7_acceptance import (
+    PHASE7_ACCEPTANCE_SCHEMA_VERSION,
+    Phase7AcceptanceCheck,
+    Phase7AcceptanceReport,
+    run_phase7_acceptance,
+    run_phase7_acceptance_fixture,
+)
 
 __all__ = [
     # Entry types
@@ -162,4 +169,10 @@ __all__ = [
     "build_policy_pointer_block",
     "build_project_status_block",
     "stable_memory_block_id",
+    # Phase 7 acceptance harness
+    "PHASE7_ACCEPTANCE_SCHEMA_VERSION",
+    "Phase7AcceptanceCheck",
+    "Phase7AcceptanceReport",
+    "run_phase7_acceptance",
+    "run_phase7_acceptance_fixture",
 ]

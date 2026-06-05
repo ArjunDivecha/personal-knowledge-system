@@ -47,6 +47,10 @@ Phase 7D memory-block fixtures:
 
 - `phase7d_memory_blocks_fixture.json` contains synthetic read-only operator, project-status, and policy-pointer block cases.
 
+Phase 7 acceptance fixtures:
+
+- `phase7_acceptance_fixture.json` runs the offline Phase 7 chain through current recall, stale exclusion, provisional TTL, compile-grade, memory-block, policy-pointer, and procedural-isolation probes.
+
 ## Design Rules
 
 - keep bundles small

@@ -1,0 +1,320 @@
+{
+  "metadata": {
+    "fixture": "phase7_acceptance_fixture",
+    "schema_version": 1,
+    "now_utc": "2026-06-05T00:00:00+00:00"
+  },
+  "project_scope_ref": "pks-phase-7",
+  "policy_source_paths": [
+    "docs/pks-phase-7a-compile-latency-policy-2026-06-05.md",
+    "docs/pks-phase-7a-contradiction-supersession-taxonomy-2026-06-05.md",
+    "AGENTS.md"
+  ],
+  "observations": [
+    {
+      "observation_id": "obs_accept_operator",
+      "subject_id": "operator-profile",
+      "memory_lane": "semantic",
+      "source_authority": "explicit",
+      "claim_text": "The operator wants autonomous execution once direction is clear.",
+      "source_type": "fixture",
+      "source_id": "fixture-phase7-acceptance",
+      "message_ids": ["msg-operator"],
+      "source_path": "observations[operator]",
+      "snippet": "Autonomous execution once direction is clear.",
+      "observed_at": "2026-06-05T00:00:00+00:00",
+      "learned_at": "2026-06-05T00:00:00+00:00"
+    },
+    {
+      "observation_id": "obs_accept_project",
+      "subject_id": "project-pks-phase7",
+      "memory_lane": "semantic",
+      "source_authority": "manual",
+      "claim_text": "Phase 7 is validating the offline evidence-to-current-memory pipeline.",
+      "source_type": "fixture",
+      "source_id": "fixture-phase7-acceptance",
+      "message_ids": ["msg-project"],
+      "source_path": "observations[project]",
+      "snippet": "Phase 7 validates the offline pipeline.",
+      "observed_at": "2026-06-05T00:00:00+00:00",
+      "learned_at": "2026-06-05T00:00:00+00:00"
+    },
+    {
+      "observation_id": "obs_accept_pending",
+      "subject_id": "subject-pending",
+      "memory_lane": "semantic",
+      "source_authority": "explicit",
+      "claim_text": "An explicit provisional fact remains visible until Dream compiles it.",
+      "source_type": "fixture",
+      "source_id": "fixture-phase7-acceptance",
+      "message_ids": ["msg-pending"],
+      "source_path": "observations[pending]",
+      "snippet": "Explicit provisional fact.",
+      "observed_at": "2026-06-05T00:00:00+00:00",
+      "learned_at": "2026-06-05T00:00:00+00:00"
+    },
+    {
+      "observation_id": "obs_accept_pending_expired",
+      "subject_id": "subject-pending-expired",
+      "memory_lane": "semantic",
+      "source_authority": "explicit",
+      "claim_text": "An expired provisional fact is no longer default current memory.",
+      "source_type": "fixture",
+      "source_id": "fixture-phase7-acceptance",
+      "message_ids": ["msg-pending-expired"],
+      "source_path": "observations[pending_expired]",
+      "snippet": "Expired provisional fact.",
+      "observed_at": "2026-06-01T00:00:00+00:00",
+      "learned_at": "2026-06-01T00:00:00+00:00"
+    },
+    {
+      "observation_id": "obs_accept_temporal_expired",
+      "subject_id": "subject-temporal-expired",
+      "memory_lane": "semantic",
+      "source_authority": "manual",
+      "claim_text": "The Phase 7 acceptance review is scheduled for 2026-05-01.",
+      "source_type": "fixture",
+      "source_id": "fixture-phase7-acceptance",
+      "message_ids": ["msg-temporal-expired"],
+      "source_path": "observations[temporal_expired]",
+      "snippet": "Expired temporal review.",
+      "observed_at": "2026-04-20T00:00:00+00:00",
+      "learned_at": "2026-04-20T00:00:00+00:00"
+    },
+    {
+      "observation_id": "obs_accept_superseded",
+      "subject_id": "subject-superseded",
+      "memory_lane": "semantic",
+      "source_authority": "manual",
+      "claim_text": "Superseded claims must remain auditable but not current.",
+      "source_type": "fixture",
+      "source_id": "fixture-phase7-acceptance",
+      "message_ids": ["msg-superseded"],
+      "source_path": "observations[superseded]",
+      "snippet": "Superseded but auditable.",
+      "observed_at": "2026-06-01T00:00:00+00:00",
+      "learned_at": "2026-06-01T00:00:00+00:00"
+    },
+    {
+      "observation_id": "obs_accept_compile",
+      "subject_id": "subject-compile",
+      "memory_lane": "semantic",
+      "source_authority": "manual",
+      "claim_text": "A new semantic observation can compile into a current claim after grading.",
+      "source_type": "fixture",
+      "source_id": "fixture-phase7-acceptance",
+      "message_ids": ["msg-compile"],
+      "source_path": "observations[compile]",
+      "snippet": "Compile new semantic observation.",
+      "observed_at": "2026-06-05T00:00:00+00:00",
+      "learned_at": "2026-06-05T00:00:00+00:00"
+    },
+    {
+      "observation_id": "obs_accept_procedural",
+      "subject_id": "subject-procedural",
+      "memory_lane": "procedural",
+      "source_authority": "manual",
+      "claim_text": "Procedural memory stays in policy files and does not become semantic current memory.",
+      "source_type": "fixture",
+      "source_id": "fixture-phase7-acceptance",
+      "message_ids": ["msg-procedural"],
+      "source_path": "observations[procedural]",
+      "snippet": "Procedural memory pointer only.",
+      "observed_at": "2026-06-05T00:00:00+00:00",
+      "learned_at": "2026-06-05T00:00:00+00:00"
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "claim_accept_operator",
+      "subject_id": "operator-profile",
+      "memory_lane": "semantic",
+      "compiled_text": "The operator wants autonomous execution once direction is clear.",
+      "status": "current",
+      "support_observation_ids": ["obs_accept_operator"],
+      "primary_source_authority": "explicit",
+      "scope": {
+        "memory_block": "operator_profile",
+        "rank": "01"
+      }
+    },
+    {
+      "claim_id": "claim_accept_project",
+      "subject_id": "project-pks-phase7",
+      "memory_lane": "semantic",
+      "compiled_text": "Phase 7 is validating the offline evidence-to-current-memory pipeline.",
+      "status": "current",
+      "support_observation_ids": ["obs_accept_project"],
+      "primary_source_authority": "manual",
+      "scope": {
+        "memory_block": "project_status",
+        "project_id": "pks-phase-7",
+        "rank": "01"
+      }
+    },
+    {
+      "claim_id": "claim_accept_pending",
+      "subject_id": "subject-pending",
+      "memory_lane": "semantic",
+      "compiled_text": "An explicit provisional fact remains visible until Dream compiles it.",
+      "status": "pending_compile",
+      "support_observation_ids": ["obs_accept_pending"],
+      "primary_source_authority": "explicit",
+      "ttl_expires_at": "2026-06-12T00:00:00+00:00",
+      "compiled_by": "provisional_projection"
+    },
+    {
+      "claim_id": "claim_accept_pending_expired",
+      "subject_id": "subject-pending-expired",
+      "memory_lane": "semantic",
+      "compiled_text": "An expired provisional fact is no longer default current memory.",
+      "status": "pending_compile",
+      "support_observation_ids": ["obs_accept_pending_expired"],
+      "primary_source_authority": "explicit",
+      "ttl_expires_at": "2026-06-04T00:00:00+00:00",
+      "compiled_by": "provisional_projection"
+    },
+    {
+      "claim_id": "claim_accept_temporal_expired",
+      "subject_id": "subject-temporal-expired",
+      "memory_lane": "semantic",
+      "compiled_text": "The Phase 7 acceptance review is scheduled for 2026-05-01.",
+      "status": "current",
+      "support_observation_ids": ["obs_accept_temporal_expired"],
+      "primary_source_authority": "manual"
+    },
+    {
+      "claim_id": "claim_accept_superseded",
+      "subject_id": "subject-superseded",
+      "memory_lane": "semantic",
+      "compiled_text": "Superseded claims must remain auditable but not current.",
+      "status": "superseded",
+      "support_observation_ids": ["obs_accept_superseded"],
+      "primary_source_authority": "manual",
+      "taxonomy_decision": "supersession"
+    }
+  ],
+  "compile_operations": [
+    {
+      "operation_id": "op_accept_compile",
+      "type": "compile_claim",
+      "target_claim_id": "claim_accept_compile",
+      "source_observation_id": "obs_accept_compile",
+      "decision": "duplicate",
+      "reason": "Compile a source-backed semantic observation into a current claim.",
+      "evidence": {
+        "source_observation_id": "obs_accept_compile",
+        "source_authority": "manual",
+        "support_observation_ids": ["obs_accept_compile"],
+        "source_path": "observations[compile]"
+      },
+      "rollback": {
+        "method": "delete_compiled_claim",
+        "claim_id": "claim_accept_compile"
+      },
+      "expected_revisions": {
+        "claim_accept_compile": 0
+      },
+      "old_claim_id": null,
+      "proposed_claim": {
+        "claim_id": "claim_accept_compile",
+        "subject_id": "subject-compile",
+        "memory_lane": "semantic",
+        "compiled_text": "A new semantic observation can compile into a current claim after grading.",
+        "status": "current",
+        "support_observation_ids": ["obs_accept_compile"],
+        "primary_source_authority": "manual",
+        "taxonomy_decision": "duplicate",
+        "compiled_at": "2026-06-05T00:00:00+00:00",
+        "compiled_by": "dream_compile"
+      },
+      "scope_comparison": {
+        "same_scope": true,
+        "scope": {}
+      },
+      "temporal_comparison": {
+        "temporal_status": "unknown",
+        "valid_from": null,
+        "valid_to": null
+      },
+      "requires_operator_review": false
+    }
+  ],
+  "probes": [
+    {
+      "id": "current_claims_preserved",
+      "axis": "carry_forward_recall",
+      "kind": "current_contains",
+      "expected_claim_ids": ["claim_accept_operator", "claim_accept_project"]
+    },
+    {
+      "id": "unexpired_provisional_visible",
+      "axis": "compile_latency",
+      "kind": "provisional_contains",
+      "expected_claim_ids": ["claim_accept_pending"]
+    },
+    {
+      "id": "stale_claims_excluded",
+      "axis": "temporal_freshness",
+      "kind": "excluded_contains",
+      "expected_reasons": {
+        "claim_accept_pending_expired": "pending_compile_ttl_expired",
+        "claim_accept_superseded": "status_not_current:superseded",
+        "claim_accept_temporal_expired": "temporal_not_current:expired"
+      }
+    },
+    {
+      "id": "excluded_claims_not_current",
+      "axis": "temporal_freshness",
+      "kind": "current_excludes",
+      "claim_ids": [
+        "claim_accept_pending_expired",
+        "claim_accept_superseded",
+        "claim_accept_temporal_expired"
+      ]
+    },
+    {
+      "id": "compile_operations_grade",
+      "axis": "mutation_safety",
+      "kind": "compile_grade_passes",
+      "expected_passed": true
+    },
+    {
+      "id": "memory_blocks_generated",
+      "axis": "presentation_blocks",
+      "kind": "memory_blocks_include",
+      "expected_labels": ["operator_profile", "project_status", "policy_pointer"]
+    },
+    {
+      "id": "operator_block_claims_trace",
+      "axis": "source_traceability",
+      "kind": "memory_block_claims",
+      "label": "operator_profile",
+      "expected_claim_ids": ["claim_accept_operator"]
+    },
+    {
+      "id": "project_block_sources_trace",
+      "axis": "source_traceability",
+      "kind": "memory_block_sources",
+      "label": "project_status",
+      "expected_source_paths": ["observations[project]"],
+      "expected_source_observation_ids": ["obs_accept_project"]
+    },
+    {
+      "id": "policy_block_is_pointer_only",
+      "axis": "preference_procedural_following",
+      "kind": "policy_pointer_only",
+      "expected_source_paths": [
+        "docs/pks-phase-7a-compile-latency-policy-2026-06-05.md",
+        "docs/pks-phase-7a-contradiction-supersession-taxonomy-2026-06-05.md",
+        "AGENTS.md"
+      ]
+    },
+    {
+      "id": "procedural_observation_not_compiled",
+      "axis": "preference_procedural_following",
+      "kind": "procedural_isolation",
+      "observation_ids": ["obs_accept_procedural"]
+    }
+  ]
+}

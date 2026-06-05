@@ -184,6 +184,10 @@ Phase 5 notes:
 - [x] Add procedural/policy pointer block
 - [x] Add tests for size limits and source traceability
 
+## Phase 7 Acceptance Gate
+
+- [x] Add end-to-end offline acceptance harness for current recall, stale exclusion, provisional TTL, compile-grade, memory-block, policy-pointer, and procedural-isolation probes
+
 Phase 6.5 audit notes:
 - Concurrent-run safety: the full Dream cycle path has a Redis single-flight guard (`dream:lock`) with a 30-minute TTL and stale-lock reclaim before live mutations. The scheduled governance proposal path and the operator `run_dream_proposal` path currently call `runDreamProposal` directly, which snapshots all entries without taking that lock; `apply_dream_proposal` is protected by proposal grading, candidate snapshots, and expected revisions, but proposal generation itself can still overlap. Follow-up issue: add the same proposal-level single-flight guard, or an explicit idempotency key, around `runDreamProposal` before correction-derived contest proposals increase replay volume.
 - Replay narrowness: candidate discovery is not delta-scoped today. Both scheduled and operator proposal generation load the full `knowledge:*` and `project:*` active sets unless `candidate_ids` are supplied, then run deterministic duplicate/contradiction replay over labels, current views, and position snippets. The scans are bounded to structured entry fields rather than full content embeddings, but Phase 6.5/7 should add a last-successful-run delta path before replay-heavy correction handling ships.
