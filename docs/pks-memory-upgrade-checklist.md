@@ -137,12 +137,57 @@ Phase 5 notes:
 - [x] Add explicit-save signal detection in chat-export distillation
 - [x] Add `signal_flags` metadata and shared salience multipliers
 - [x] Add LLM correction-event extraction and contestation proposals
+- [x] Add read-only outcome-quality baseline for recall, temporal freshness, and project lifecycle staleness
+- [x] Research current memory-system designs before Phase 7 schema work
+- [x] Vet the revised Phase 7 direction with Opus
+
+## Phase 6.75: Memory Research Refresh
+
+- [x] Write `docs/pks-memory-research-refresh-design-memo-2026-06-05.md`
+- [x] Save Opus review in `docs/pks-memory-research-refresh-opus-review-2026-06-05.md`
+- [x] Narrow Phase 7A to observations plus compiled claims only
+- [x] Move explicit-vs-inferred distinction to `source_authority`
+- [x] Keep procedural memory out of the Phase 7A compiler
+- [x] Defer memory blocks until compiled claims exist
+
+## Phase 7A: Offline Observation And Claim Schema
+
+- [x] Write contradiction/supersession taxonomy spec
+- [x] Write compile-latency/provisional-claim policy spec
+- [x] Write builder-ready Phase 7A implementation plan
+- [x] Vet Phase 7A builder packet with Opus
+- [ ] Add offline Phase 7A dataclasses for observations, compiled claims, and supersession edges
+- [ ] Add offline migration preview from legacy knowledge/project entries
+- [ ] Add synthetic Phase 7A fixtures
+- [ ] Add unit tests proving no live storage mutation
+- [ ] Export Phase 7A helpers from `distillation/models/__init__.py`
+
+## Phase 7B: Temporal Normalization And Entity Linking
+
 - [ ] Fold temporal-language normalization into Phase 7 compile
+- [ ] Add entity mention extraction and stable entity IDs
+- [ ] Add source-aware entity index fixture
+- [ ] Add outcome probes for current vs stale temporal facts
+
+## Phase 7C: Compiled Current View
+
+- [ ] Add offline compiled-view generator
+- [ ] Add current projection fixtures
+- [ ] Add Dream proposal operations for compile/supersede/mark-current
+- [ ] Add deterministic grade checks for compile operations
+
+## Phase 7D: Memory Blocks
+
+- [ ] Add memory block schema
+- [ ] Add read-only operator profile block
+- [ ] Add current project status block
+- [ ] Add procedural/policy pointer block
+- [ ] Add tests for size limits and source traceability
 
 Phase 6.5 audit notes:
 - Concurrent-run safety: the full Dream cycle path has a Redis single-flight guard (`dream:lock`) with a 30-minute TTL and stale-lock reclaim before live mutations. The scheduled governance proposal path and the operator `run_dream_proposal` path currently call `runDreamProposal` directly, which snapshots all entries without taking that lock; `apply_dream_proposal` is protected by proposal grading, candidate snapshots, and expected revisions, but proposal generation itself can still overlap. Follow-up issue: add the same proposal-level single-flight guard, or an explicit idempotency key, around `runDreamProposal` before correction-derived contest proposals increase replay volume.
 - Replay narrowness: candidate discovery is not delta-scoped today. Both scheduled and operator proposal generation load the full `knowledge:*` and `project:*` active sets unless `candidate_ids` are supplied, then run deterministic duplicate/contradiction replay over labels, current views, and position snippets. The scans are bounded to structured entry fields rather than full content embeddings, but Phase 6.5/7 should add a last-successful-run delta path before replay-heavy correction handling ships.
-- Phase 7 framing: evidence-log plus compiled-view separation is motivated by contradiction repair at the source. The compiled view can be rewritten when a belief changes, while the superseded claim remains preserved as evidence for auditability and future Dream review.
+- Phase 7 framing: evidence-log plus compiled-view separation is still motivated by contradiction repair at the source, but Opus review narrowed the first implementation slice. Phase 7A is offline-only observations plus compiled claims; contradiction/supersession taxonomy and compile-latency policy are required before schema code. The compiled view can be rewritten when a belief changes, while the superseded claim remains preserved as evidence for auditability and future Dream review.
 - Correction-event path: distillation now classifies user correction turns, creates a `correction_derived` knowledge entry for the new belief, searches active Tier 1/2 memories for the corrected belief, LLM-judges contradictions, and writes pending `dream:contest_hint:*` records. Dream proposal generation consumes those hints as governed `mark_contested` operations with `proposal_kind: "contest"`; apply marks the hint `applied` after the proposal passes grading and is applied.
 
 ## Acceptance Gates
