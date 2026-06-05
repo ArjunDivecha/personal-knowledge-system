@@ -298,7 +298,8 @@ def run_github_ingestion(
 
                 # Extract from markdown documentation files (non-README)
                 print("  → Markdown docs...", end=" ", flush=True)
-                md_files = github.get_markdown_files(repo_name)
+                get_markdown_files = getattr(github, "get_markdown_files", None)
+                md_files = get_markdown_files(repo_name) if callable(get_markdown_files) else []
                 if md_files:
                     entries = extractor.extract_from_markdown_files(
                         md_files,

@@ -38,6 +38,23 @@ class Extractor:
     def __init__(self):
         """Auth handled via macOS Keychain through sdk_client; no client object needed."""
         pass
+
+    def _query(self, prompt: str, *, max_tokens: int) -> str:
+        """Query Claude, preserving the test seam used by older unit tests."""
+        client = getattr(self, "client", None)
+        messages = getattr(client, "messages", None)
+        create = getattr(messages, "create", None)
+        if callable(create):
+            response = create(
+                model=EXTRACTION_MODEL,
+                max_tokens=max_tokens,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            content = getattr(response, "content", None) or []
+            if content:
+                return str(getattr(content[0], "text", ""))
+            return ""
+        return sdk_query(prompt, max_tokens=max_tokens)
     
     def _generate_id(self, content: str, source_type: str) -> str:
         """Generate a unique ID for a knowledge entry."""
@@ -132,7 +149,7 @@ JSON format:
 ]"""
         
         try:
-            text = sdk_query(prompt, max_tokens=4000)
+            text = self._query(prompt, max_tokens=4000)
 
             # Find JSON array in response
             start = text.find("[")
@@ -275,7 +292,7 @@ JSON format:
 ]"""
         
         try:
-            text = sdk_query(prompt, max_tokens=2000)
+            text = self._query(prompt, max_tokens=2000)
             start = text.find("[")
             end = text.rfind("]") + 1
             if start == -1 or end == 0:
@@ -413,7 +430,7 @@ JSON format:
 ]"""
 
             try:
-                raw_entries = self._extract_json_array(sdk_query(prompt, max_tokens=3000))
+                raw_entries = self._extract_json_array(self._query(prompt, max_tokens=3000))
                 conversation_id = f"github:{repo_full_name}:docs:{path}"
 
                 for raw in raw_entries:
@@ -572,7 +589,7 @@ JSON format:
 ]"""
 
         try:
-            raw_entries = self._extract_json_array(sdk_query(prompt, max_tokens=3000))
+            raw_entries = self._extract_json_array(self._query(prompt, max_tokens=3000))
             entries = []
             now = datetime.utcnow().isoformat()
             conversation_id = f"github:{repo_full_name}:agent-context:{artifact_path}"
@@ -723,7 +740,7 @@ JSON format:
 ]"""
         
         try:
-            text = sdk_query(prompt, max_tokens=2000)
+            text = self._query(prompt, max_tokens=2000)
             start = text.find("[")
             end = text.rfind("]") + 1
             if start == -1 or end == 0:
@@ -874,7 +891,7 @@ JSON format:
 ]"""
         
         try:
-            text = sdk_query(prompt, max_tokens=2000)
+            text = self._query(prompt, max_tokens=2000)
             start = text.find("[")
             end = text.rfind("]") + 1
             if start == -1 or end == 0:

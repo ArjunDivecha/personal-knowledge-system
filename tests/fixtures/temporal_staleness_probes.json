@@ -1,0 +1,13 @@
+[
+  {
+    "id": "temporal_example_disabled",
+    "axis": "temporal_freshness",
+    "enabled": false,
+    "query": "example stale plan query",
+    "as_of": "2026-06-04T00:00:00+00:00",
+    "stale_after": "2026-01-01T00:00:00+00:00",
+    "expect_no_text_any_of": ["example stale phrase"],
+    "expect_text_any_of": [],
+    "notes": "Disabled schema example only. Do not enable without source verification."
+  }
+]

@@ -113,9 +113,15 @@
     "SEMANTIC_MAX_CLUSTER_SIZE": 6,
     "_tuning_note": "COSINE_DUP_THRESHOLD raised 0.86->0.95 from the 2026-05-29 sweep: 0.86 chained a 1980-member mega-cluster; 0.95 yields tight 2-6 clusters with the size guard splitting the rest to lexical. Operator decision (PRD open Q#1) — retune as needed."
   },
+  "project_lifecycle": {
+    "active_stale_after_days": 90,
+    "active_recent_access_grace_days": 30
+  },
   "quality_gate": {
     "threshold_tier1": 0.40,
     "threshold_dup": 0.20,
-    "threshold_recall": 0.60
+    "threshold_recall": 0.60,
+    "threshold_temporal_freshness": 0.80,
+    "threshold_stale_active_projects": 0
   }
 }

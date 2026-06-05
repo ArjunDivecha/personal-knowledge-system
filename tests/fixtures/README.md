@@ -25,6 +25,11 @@ The sample file is:
 
 - [sample_memory_fixture.json](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/knowledge-system/tests/fixtures/sample_memory_fixture.json)
 
+Outcome-quality probe files:
+
+- `recall_probes.json` contains carry-forward recall probes for M6.
+- `temporal_staleness_probes.json` contains temporal freshness probes for M8. Disabled examples document the schema only; enable temporal probes only when the stale/fresh expectation is source-verified.
+
 ## Design Rules
 
 - keep bundles small

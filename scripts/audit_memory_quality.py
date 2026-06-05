@@ -5,9 +5,9 @@ SCRIPT NAME: audit_memory_quality.py
 =============================================================================
 
 PURPOSE:
-Read-only memory-quality audit (PRD Phase 0, spec
-docs/pks-phase0-audit-script-spec-2026-05-29.md). Computes seven metrics
-(M1-M7) over the live store and writes a JSON report to scripts/reports/.
+Read-only memory-quality audit (PRD Phase 0 + Phase 6.5 outcome baseline).
+Computes nine metrics (M1-M9) over the live store and writes a JSON report
+to scripts/reports/.
 Optionally records a `verify_memory_quality` validation-ledger gate.
 
 STRICTLY READ-ONLY over the corpus: it never mutates knowledge/project
@@ -19,6 +19,7 @@ INPUT:
 - Upstash Redis + Vector via distillation storage clients (read-only).
 - shared/memory_policy.json (dedup thresholds + quality_gate thresholds).
 - tests/fixtures/recall_probes.json (M6 oracle).
+- tests/fixtures/temporal_staleness_probes.json (M8 oracle).
 
 OUTPUT:
 - scripts/reports/audit_memory_quality_<ISO8601>.json
@@ -31,7 +32,7 @@ USAGE:
     python scripts/audit_memory_quality.py --skip-recall  # skip M6 (no OpenAI)
 
 VERSION: 1.0
-LAST UPDATED: 2026-05-29
+LAST UPDATED: 2026-06-04
 =============================================================================
 """
 
@@ -43,6 +44,7 @@ import math
 import sys
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -59,6 +61,7 @@ from storage.vector_client import VectorClient  # noqa: E402
 
 POLICY_PATH = REPO_ROOT / "shared" / "memory_policy.json"
 RECALL_PROBES_PATH = REPO_ROOT / "tests" / "fixtures" / "recall_probes.json"
+TEMPORAL_PROBES_PATH = REPO_ROOT / "tests" / "fixtures" / "temporal_staleness_probes.json"
 
 # ---------------------------------------------------------------------------
 # Read-only guards. Wrap the storage clients so any corpus-write method call
@@ -106,33 +109,94 @@ def load_recall_probes() -> list[dict[str, Any]]:
     if not RECALL_PROBES_PATH.exists():
         return []
     with RECALL_PROBES_PATH.open() as fh:
-        return json.load(fh)
+        probes = json.load(fh)
+    return [p for p in probes if isinstance(p, dict) and p.get("enabled", True) is not False]
+
+
+def load_temporal_staleness_probes() -> list[dict[str, Any]]:
+    if not TEMPORAL_PROBES_PATH.exists():
+        return []
+    with TEMPORAL_PROBES_PATH.open() as fh:
+        probes = json.load(fh)
+    return [p for p in probes if isinstance(p, dict) and p.get("enabled", True) is not False]
 
 
 # ---------------------------------------------------------------------------
 # Entry helpers (work on KnowledgeEntry | ProjectEntry dataclasses)
 # ---------------------------------------------------------------------------
 def entry_type(entry: Any) -> str:
-    eid = str(getattr(entry, "id", ""))
+    eid = str(get_value(entry, "id", ""))
     if eid.startswith("pe_"):
         return "project"
     if eid.startswith("ke_"):
         return "knowledge"
     # fall back to attribute shape
-    return "project" if hasattr(entry, "name") and not hasattr(entry, "domain") else "knowledge"
+    return "project" if get_value(entry, "name") and not get_value(entry, "domain") else "knowledge"
 
 
 def entry_label(entry: Any) -> str:
-    return getattr(entry, "domain", None) or getattr(entry, "name", None) or str(getattr(entry, "id", ""))
+    return get_value(entry, "domain") or get_value(entry, "name") or str(get_value(entry, "id", ""))
 
 
 def entry_meta(entry: Any) -> Any:
-    return getattr(entry, "metadata", None)
+    return get_value(entry, "metadata")
 
 
 def is_archived(entry: Any) -> bool:
     meta = entry_meta(entry)
-    return bool(getattr(meta, "archived", False))
+    return bool(get_value(meta, "archived", False))
+
+
+def get_value(obj: Any, key: str, default: Any = None) -> Any:
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def iter_items(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def entry_text_for_probe(entry: Any) -> str:
+    parts: list[str] = []
+    for key in ("id", "domain", "name", "current_view", "goal", "current_phase", "blocked_on"):
+        value = get_value(entry, key)
+        if value:
+            parts.append(str(value))
+
+    for item in iter_items(get_value(entry, "key_insights")):
+        value = get_value(item, "insight")
+        if value:
+            parts.append(str(value))
+    for item in iter_items(get_value(entry, "positions")):
+        value = get_value(item, "view")
+        if value:
+            parts.append(str(value))
+    for item in iter_items(get_value(entry, "evolution")):
+        for key in ("to_view", "from_view"):
+            value = get_value(item, key)
+            if value:
+                parts.append(str(value))
+    for item in iter_items(get_value(entry, "decisions_made")):
+        value = get_value(item, "decision")
+        if value:
+            parts.append(str(value))
+
+    return " ".join(parts).lower()
+
+
+def parse_iso_datetime(value: Any) -> Optional[datetime]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +247,7 @@ def clusters_from_edges(nodes: list[str], edges: list[tuple[str, str]]) -> list[
 def compute_m1_tiers(active: list[Any]) -> dict[str, Any]:
     counts = {1: 0, 2: 0, 3: 0}
     for e in active:
-        tier = getattr(entry_meta(e), "injection_tier", None)
+        tier = get_value(entry_meta(e), "injection_tier")
         if tier in (1, 2, 3):
             counts[tier] += 1
     total = max(1, len(active))
@@ -200,7 +264,7 @@ def compute_m1_tiers(active: list[Any]) -> dict[str, Any]:
 def compute_m3_salience(active: list[Any], top_n: int = 15) -> dict[str, Any]:
     values: list[float] = []
     for e in active:
-        s = getattr(entry_meta(e), "salience_score", None)
+        s = get_value(entry_meta(e), "salience_score")
         if isinstance(s, (int, float)):
             values.append(round(float(s), 4))
     total = max(1, len(values))
@@ -234,7 +298,9 @@ def run_audit(
     dup_workers: int,
     skip_dup: bool,
     skip_recall: bool,
+    skip_temporal: bool,
     recall_k: int,
+    now_utc: str | None = None,
 ) -> dict[str, Any]:
     policy = load_policy()
     dedup_cfg = policy.get("dedup", {})
@@ -249,7 +315,7 @@ def run_audit(
     projects = [e for e in redis.get_all_project_entries() if not is_archived(e)]
     active = knowledge + projects
     active_total = len(active)
-    by_id = {str(e.id): e for e in active}
+    by_id = {str(get_value(e, "id")): e for e in active}
 
     print(f"[audit] active entries: knowledge={len(knowledge)} project={len(projects)} total={active_total}")
 
@@ -294,8 +360,25 @@ def run_audit(
     m7 = compute_m7_access(active, m6)
     print(f"[audit] M7 access coverage: {m7['active_with_access_share']:.1%} of active entries")
 
+    # --- M8 temporal freshness ---
+    m8 = compute_m8_temporal_freshness(
+        vector,
+        by_id,
+        recall_k=recall_k,
+        skip=skip_temporal,
+    )
+    if m8.get("skipped"):
+        print("[audit] M8 temporal freshness: skipped")
+    else:
+        print(f"[audit] M8 temporal freshness@{recall_k}: {m8.get('freshness_at_5')}")
+
+    # --- M9 project lifecycle ---
+    m9 = compute_m9_project_lifecycle(projects, policy, now_iso=now_utc)
+    print(f"[audit] M9 project lifecycle: stale-active={m9['stale_active_project_count']} "
+          f"of {m9['active_project_count']} active projects")
+
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": utc_now_iso(),
         "active_counts": {
             "knowledge": len(knowledge),
@@ -308,6 +391,8 @@ def run_audit(
         "m5_growth": m5,
         "m6_recall": m6,
         "m7_access": m7,
+        "m8_temporal_freshness": m8,
+        "m9_project_lifecycle": m9,
     }
     return report
 
@@ -606,13 +691,94 @@ def compute_m6_recall(vector: Any, *, recall_k: int) -> dict[str, Any]:
     return {"recall_at_5": recall, "probes": results}
 
 
+def evaluate_temporal_probe_text(entry_texts: list[str], probe: dict[str, Any]) -> tuple[bool, list[str]]:
+    combined_text = "\n".join(entry_texts).lower()
+    issues: list[str] = []
+    forbidden = [str(x).lower() for x in probe.get("expect_no_text_any_of", []) or []]
+    required = [str(x).lower() for x in probe.get("expect_text_any_of", []) or []]
+
+    for phrase in forbidden:
+        if phrase and phrase in combined_text:
+            issues.append(f"stale phrase present: {phrase}")
+
+    if required and not any(phrase and phrase in combined_text for phrase in required):
+        issues.append(f"none of expected fresh phrases present: {required}")
+
+    return (len(issues) == 0), issues
+
+
+def compute_m8_temporal_freshness(
+    vector: Any,
+    by_id: dict[str, Any],
+    *,
+    recall_k: int,
+    skip: bool,
+) -> dict[str, Any]:
+    base = {
+        "skipped": skip,
+        "probe_count": 0,
+        "passed_count": 0,
+        "freshness_at_5": None,
+        "probes": [],
+    }
+    if skip:
+        return base
+
+    probes = load_temporal_staleness_probes()
+    if not probes:
+        return {
+            **base,
+            "skipped": False,
+            "note": "no enabled temporal_staleness_probes.json probes",
+        }
+
+    from utils.embedding import get_embedding  # local import; needs OpenAI key
+
+    results: list[dict[str, Any]] = []
+    passed_count = 0
+    for probe in probes:
+        query = str(probe.get("query", ""))
+        try:
+            vec, _tokens = get_embedding(query)
+            hitlist = vector.query(vector=vec, top_k=recall_k, include_metadata=True)
+            returned_ids = [str(r["id"]) for r in hitlist]
+            entry_texts = [entry_text_for_probe(by_id[rid]) for rid in returned_ids if rid in by_id]
+            passed, issues = evaluate_temporal_probe_text(entry_texts, probe)
+            error = None
+        except Exception as exc:  # noqa: BLE001
+            returned_ids = []
+            passed = False
+            error = str(exc)
+            issues = [error]
+        if passed:
+            passed_count += 1
+        results.append({
+            "id": probe.get("id"),
+            "query": query,
+            "hit": passed,
+            "issues": issues,
+            "error": error,
+            "returned_ids": returned_ids,
+            "expect_no_text_any_of": probe.get("expect_no_text_any_of", []),
+            "expect_text_any_of": probe.get("expect_text_any_of", []),
+        })
+
+    return {
+        "skipped": False,
+        "probe_count": len(probes),
+        "passed_count": passed_count,
+        "freshness_at_5": round(passed_count / len(probes), 4) if probes else None,
+        "probes": results,
+    }
+
+
 def compute_m7_access(active: list[Any], m6: dict[str, Any]) -> dict[str, Any]:
     total = max(1, len(active))
     with_access = 0
     for e in active:
         meta = entry_meta(e)
-        ac = getattr(meta, "access_count", 0) or 0
-        la = getattr(meta, "last_accessed", None)
+        ac = get_value(meta, "access_count", 0) or 0
+        la = get_value(meta, "last_accessed")
         if ac > 0 and la:
             with_access += 1
 
@@ -620,7 +786,7 @@ def compute_m7_access(active: list[Any], m6: dict[str, Any]) -> dict[str, Any]:
     returned_ids: set[str] = set()
     for p in m6.get("probes", []) or []:
         returned_ids.update(p.get("returned_ids", []) or [])
-    by_id = {str(e.id): e for e in active}
+    by_id = {str(get_value(e, "id")): e for e in active}
     probe_with_access = 0
     probe_total = 0
     for rid in returned_ids:
@@ -629,7 +795,7 @@ def compute_m7_access(active: list[Any], m6: dict[str, Any]) -> dict[str, Any]:
             continue
         probe_total += 1
         meta = entry_meta(e)
-        if (getattr(meta, "access_count", 0) or 0) > 0 and getattr(meta, "last_accessed", None):
+        if (get_value(meta, "access_count", 0) or 0) > 0 and get_value(meta, "last_accessed"):
             probe_with_access += 1
 
     return {
@@ -637,6 +803,78 @@ def compute_m7_access(active: list[Any], m6: dict[str, Any]) -> dict[str, Any]:
         "active_with_access_count": with_access,
         "probe_returned_with_access_share": round(probe_with_access / probe_total, 4) if probe_total else None,
         "probe_returned_total": probe_total,
+    }
+
+
+def compute_m9_project_lifecycle(
+    projects: list[Any],
+    policy: dict[str, Any],
+    *,
+    now_iso: str | None = None,
+) -> dict[str, Any]:
+    lifecycle = policy.get("project_lifecycle", {})
+    stale_after_days = int(lifecycle.get("active_stale_after_days", 90))
+    access_grace_days = int(lifecycle.get("active_recent_access_grace_days", 30))
+    now = parse_iso_datetime(now_iso) if now_iso else datetime.now(timezone.utc)
+    if now is None:
+        raise ValueError(f"Invalid --now-utc timestamp: {now_iso}")
+
+    active_projects: list[Any] = []
+    stale_projects: list[dict[str, Any]] = []
+    for project in projects:
+        if is_archived(project):
+            continue
+        status = str(get_value(project, "status", ""))
+        if status != "active":
+            continue
+        active_projects.append(project)
+
+        meta = entry_meta(project)
+        activity_candidates = [
+            get_value(meta, "last_touched"),
+            get_value(meta, "last_seen"),
+            get_value(meta, "updated_at"),
+            get_value(meta, "last_accessed"),
+        ]
+        parsed_activity = [dt for dt in (parse_iso_datetime(v) for v in activity_candidates) if dt is not None]
+        last_activity = max(parsed_activity) if parsed_activity else None
+        last_accessed = parse_iso_datetime(get_value(meta, "last_accessed"))
+
+        if last_activity is None:
+            stale_projects.append({
+                "id": str(get_value(project, "id", "")),
+                "name": str(get_value(project, "name", "")),
+                "status": status,
+                "last_activity": None,
+                "days_since_activity": None,
+                "reason": "active_project_missing_activity_timestamp",
+            })
+            continue
+
+        days_since_activity = int((now - last_activity).total_seconds() // 86400)
+        accessed_recently = (
+            last_accessed is not None and
+            (now - last_accessed).total_seconds() / 86400 <= access_grace_days
+        )
+        if days_since_activity > stale_after_days and not accessed_recently:
+            stale_projects.append({
+                "id": str(get_value(project, "id", "")),
+                "name": str(get_value(project, "name", "")),
+                "status": status,
+                "last_activity": last_activity.isoformat(),
+                "days_since_activity": days_since_activity,
+                "reason": f"active_project_older_than_{stale_after_days}_days",
+            })
+
+    active_count = len(active_projects)
+    stale_count = len(stale_projects)
+    return {
+        "active_project_count": active_count,
+        "stale_active_project_count": stale_count,
+        "stale_active_project_share": round(stale_count / max(1, active_count), 4),
+        "stale_after_days": stale_after_days,
+        "active_recent_access_grace_days": access_grace_days,
+        "stale_projects": stale_projects,
     }
 
 
@@ -648,6 +886,8 @@ def evaluate_gate(report: dict[str, Any], policy: dict[str, Any]) -> tuple[bool,
     t_tier1 = float(gate.get("threshold_tier1", 0.40))
     t_dup = float(gate.get("threshold_dup", 0.20))
     t_recall = float(gate.get("threshold_recall", 0.60))
+    t_temporal = float(gate.get("threshold_temporal_freshness", 0.80))
+    t_stale_projects = int(gate.get("threshold_stale_active_projects", 0))
 
     issues: list[str] = []
 
@@ -664,6 +904,16 @@ def evaluate_gate(report: dict[str, Any], policy: dict[str, Any]) -> tuple[bool,
     if recall is not None and recall < t_recall:
         issues.append(f"M6 recall@5 {recall:.3f} < threshold {t_recall}")
 
+    temporal = report.get("m8_temporal_freshness", {}).get("freshness_at_5")
+    if temporal is not None and temporal < t_temporal:
+        issues.append(f"M8 temporal_freshness_at_5 {temporal:.3f} < threshold {t_temporal}")
+
+    stale_projects = report.get("m9_project_lifecycle", {}).get("stale_active_project_count")
+    if stale_projects is not None and stale_projects > t_stale_projects:
+        issues.append(
+            f"M9 stale_active_project_count {stale_projects} > threshold {t_stale_projects}"
+        )
+
     return (len(issues) == 0), issues
 
 
@@ -676,9 +926,12 @@ def main() -> int:
     parser.add_argument("--dup-workers", type=int, default=8)
     parser.add_argument("--skip-dup", action="store_true", help="skip M4 (no vector NN)")
     parser.add_argument("--skip-recall", action="store_true", help="skip M6 (no OpenAI embed)")
+    parser.add_argument("--skip-temporal", action="store_true", help="skip M8 temporal freshness (no OpenAI embed)")
     parser.add_argument("--recall-k", type=int, default=5)
+    parser.add_argument("--now-utc", default=None,
+                        help="Override current time for deterministic M9 checks, e.g. 2026-06-04T00:00:00+00:00")
     parser.add_argument("--cosine-sweep", type=str, default=None,
-                        help="comma-separated thresholds, e.g. '0.86,0.90,0.92,0.94,0.96' — runs a read-only sweep and exits")
+                        help="comma-separated thresholds, e.g. '0.86,0.90,0.92,0.94,0.96' - runs a read-only sweep and exits")
     args = parser.parse_args()
 
     ensure_runtime_dirs()
@@ -709,7 +962,9 @@ def main() -> int:
         dup_workers=args.dup_workers,
         skip_dup=args.skip_dup,
         skip_recall=args.skip_recall,
+        skip_temporal=args.skip_temporal,
         recall_k=args.recall_k,
+        now_utc=args.now_utc,
     )
 
     passed, issues = evaluate_gate(report, policy)
@@ -745,6 +1000,9 @@ def main() -> int:
                     "multi_member_clusters": report["m4_duplicates"]["multi_member_clusters"],
                     "recall_at_5": report["m6_recall"].get("recall_at_5"),
                     "active_with_access_share": report["m7_access"]["active_with_access_share"],
+                    "temporal_freshness_at_5": report["m8_temporal_freshness"].get("freshness_at_5"),
+                    "stale_active_project_count": report["m9_project_lifecycle"]["stale_active_project_count"],
+                    "stale_active_project_share": report["m9_project_lifecycle"]["stale_active_project_share"],
                 },
             ),
         )
