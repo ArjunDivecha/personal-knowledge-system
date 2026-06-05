@@ -171,10 +171,10 @@ Phase 5 notes:
 
 ## Phase 7C: Compiled Current View
 
-- [ ] Add offline compiled-view generator
-- [ ] Add current projection fixtures
-- [ ] Add Dream proposal operations for compile/supersede/mark-current
-- [ ] Add deterministic grade checks for compile operations
+- [x] Add offline compiled-view generator
+- [x] Add current projection fixtures
+- [x] Add Dream proposal operations for compile/supersede/mark-current
+- [x] Add deterministic grade checks for compile operations
 
 ## Phase 7D: Memory Blocks
 

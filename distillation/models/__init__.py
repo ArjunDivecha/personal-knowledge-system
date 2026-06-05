@@ -64,6 +64,20 @@ from .phase7b import (
     normalize_temporal_text,
     stable_entity_id,
 )
+from .phase7c import (
+    PHASE7C_SCHEMA_VERSION,
+    Phase7CompileGrade,
+    Phase7CompileGradeIssue,
+    Phase7CompileProposalOperation,
+    Phase7CurrentView,
+    Phase7ProjectionExcludedClaim,
+    build_compile_claim_operation,
+    build_compile_claim_operations_from_observations,
+    build_mark_current_operation,
+    build_supersede_claim_operation,
+    generate_compiled_current_view,
+    grade_phase7c_compile_operations,
+)
 
 __all__ = [
     # Entry types
@@ -118,4 +132,17 @@ __all__ = [
     "normalize_entity_name",
     "normalize_temporal_text",
     "stable_entity_id",
+    # Phase 7C compiled current view
+    "PHASE7C_SCHEMA_VERSION",
+    "Phase7CompileGrade",
+    "Phase7CompileGradeIssue",
+    "Phase7CompileProposalOperation",
+    "Phase7CurrentView",
+    "Phase7ProjectionExcludedClaim",
+    "build_compile_claim_operation",
+    "build_compile_claim_operations_from_observations",
+    "build_mark_current_operation",
+    "build_supersede_claim_operation",
+    "generate_compiled_current_view",
+    "grade_phase7c_compile_operations",
 ]

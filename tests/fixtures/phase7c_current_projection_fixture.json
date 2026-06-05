@@ -1,0 +1,386 @@
+{
+  "metadata": {
+    "fixture": "phase7c_current_projection_fixture",
+    "schema_version": 1,
+    "now_utc": "2026-06-05T00:00:00+00:00"
+  },
+  "observations": [
+    {
+      "observation_id": "obs_current_view",
+      "subject_id": "subject-current-view",
+      "memory_lane": "semantic",
+      "source_authority": "system",
+      "claim_text": "Phase 7C generates an offline compiled current view.",
+      "source_type": "fixture",
+      "source_id": "fixture-7c",
+      "message_ids": ["msg-current"],
+      "source_path": "observations[current]",
+      "snippet": "Phase 7C current view fixture.",
+      "observed_at": "2026-06-05T00:00:00+00:00",
+      "learned_at": "2026-06-05T00:00:00+00:00",
+      "scope": {"repo": "knowledge-system"}
+    },
+    {
+      "observation_id": "obs_pending_explicit",
+      "subject_id": "subject-pending",
+      "memory_lane": "semantic",
+      "source_authority": "explicit",
+      "claim_text": "Phase 7C provisional claims can be promoted after Dream grading.",
+      "source_type": "fixture",
+      "source_id": "fixture-7c",
+      "message_ids": ["msg-pending"],
+      "source_path": "observations[pending]",
+      "snippet": "Promote pending after grade.",
+      "observed_at": "2026-06-05T00:00:00+00:00",
+      "learned_at": "2026-06-05T00:00:00+00:00"
+    },
+    {
+      "observation_id": "obs_pending_expired",
+      "subject_id": "subject-pending-expired",
+      "memory_lane": "semantic",
+      "source_authority": "explicit",
+      "claim_text": "Expired provisional claims drop out of default current projection.",
+      "source_type": "fixture",
+      "source_id": "fixture-7c",
+      "message_ids": ["msg-pending-expired"],
+      "source_path": "observations[pending_expired]",
+      "snippet": "Expired pending claim.",
+      "observed_at": "2026-06-01T00:00:00+00:00",
+      "learned_at": "2026-06-01T00:00:00+00:00"
+    },
+    {
+      "observation_id": "obs_old_path_support",
+      "subject_id": "subject-mcp-path",
+      "memory_lane": "semantic",
+      "source_authority": "system",
+      "claim_text": "Legacy notes described the MCP runtime path as root mcp-server.",
+      "source_type": "fixture",
+      "source_id": "fixture-7c",
+      "message_ids": ["msg-old-path"],
+      "source_path": "observations[old_path]",
+      "snippet": "Old path claim.",
+      "observed_at": "2026-06-01T00:00:00+00:00",
+      "learned_at": "2026-06-01T00:00:00+00:00",
+      "scope": {"repo": "knowledge-system"}
+    },
+    {
+      "observation_id": "obs_new_path_support",
+      "subject_id": "subject-mcp-path",
+      "memory_lane": "semantic",
+      "source_authority": "system",
+      "claim_text": "The live MCP runtime path is cloudflare-mcp/mcp-server.",
+      "source_type": "fixture",
+      "source_id": "fixture-7c",
+      "message_ids": ["msg-new-path"],
+      "source_path": "observations[new_path]",
+      "snippet": "New path claim.",
+      "observed_at": "2026-06-05T00:00:00+00:00",
+      "learned_at": "2026-06-05T00:00:00+00:00",
+      "scope": {"repo": "knowledge-system"}
+    },
+    {
+      "observation_id": "obs_compile_a",
+      "subject_id": "subject-compile",
+      "memory_lane": "semantic",
+      "source_authority": "manual",
+      "claim_text": "Phase 7C compiles duplicate semantic observations.",
+      "source_type": "fixture",
+      "source_id": "fixture-7c",
+      "message_ids": ["msg-compile-a"],
+      "source_path": "observations[compile_a]",
+      "snippet": "Compile duplicate semantic observations.",
+      "observed_at": "2026-06-05T00:00:00+00:00",
+      "learned_at": "2026-06-05T00:00:00+00:00"
+    },
+    {
+      "observation_id": "obs_compile_b",
+      "subject_id": "subject-compile",
+      "memory_lane": "semantic",
+      "source_authority": "inferred",
+      "claim_text": " phase   7c compiles duplicate semantic observations. ",
+      "source_type": "fixture",
+      "source_id": "fixture-7c",
+      "message_ids": ["msg-compile-b"],
+      "source_path": "observations[compile_b]",
+      "snippet": "Same duplicate semantic observation.",
+      "observed_at": "2026-06-05T00:00:00+00:00",
+      "learned_at": "2026-06-05T00:00:00+00:00"
+    },
+    {
+      "observation_id": "obs_procedural_compile",
+      "subject_id": "subject-procedural",
+      "memory_lane": "procedural",
+      "source_authority": "manual",
+      "claim_text": "Procedural memory must not be compiled through semantic current view.",
+      "source_type": "fixture",
+      "source_id": "fixture-7c",
+      "message_ids": ["msg-procedural"],
+      "source_path": "observations[procedural]",
+      "snippet": "Procedural memory is out of scope.",
+      "observed_at": "2026-06-05T00:00:00+00:00",
+      "learned_at": "2026-06-05T00:00:00+00:00"
+    },
+    {
+      "observation_id": "obs_system_unscoped",
+      "subject_id": "subject-system-unscoped",
+      "memory_lane": "semantic",
+      "source_authority": "system",
+      "claim_text": "Unscoped system observations cannot be promoted directly.",
+      "source_type": "fixture",
+      "source_id": "fixture-7c",
+      "message_ids": ["msg-system-unscoped"],
+      "source_path": "observations[system_unscoped]",
+      "snippet": "Unscoped system fact.",
+      "observed_at": "2026-06-05T00:00:00+00:00",
+      "learned_at": "2026-06-05T00:00:00+00:00"
+    },
+    {
+      "observation_id": "obs_expired_temporal",
+      "subject_id": "subject-expired-temporal",
+      "memory_lane": "semantic",
+      "source_authority": "manual",
+      "claim_text": "The Phase 7C fixture review is scheduled for 2026-05-01.",
+      "source_type": "fixture",
+      "source_id": "fixture-7c",
+      "message_ids": ["msg-expired-temporal"],
+      "source_path": "observations[expired_temporal]",
+      "snippet": "Expired temporal fact.",
+      "observed_at": "2026-04-20T00:00:00+00:00",
+      "learned_at": "2026-04-20T00:00:00+00:00"
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "claim_current_view",
+      "subject_id": "subject-current-view",
+      "memory_lane": "semantic",
+      "compiled_text": "Phase 7C generates an offline compiled current view.",
+      "status": "current",
+      "support_observation_ids": ["obs_current_view"],
+      "primary_source_authority": "system",
+      "scope": {"repo": "knowledge-system"}
+    },
+    {
+      "claim_id": "claim_pending_explicit",
+      "subject_id": "subject-pending",
+      "memory_lane": "semantic",
+      "compiled_text": "Phase 7C provisional claims can be promoted after Dream grading.",
+      "status": "pending_compile",
+      "support_observation_ids": ["obs_pending_explicit"],
+      "primary_source_authority": "explicit",
+      "ttl_expires_at": "2026-06-12T00:00:00+00:00",
+      "compiled_by": "provisional_projection"
+    },
+    {
+      "claim_id": "claim_pending_expired",
+      "subject_id": "subject-pending-expired",
+      "memory_lane": "semantic",
+      "compiled_text": "Expired provisional claims drop out of default current projection.",
+      "status": "pending_compile",
+      "support_observation_ids": ["obs_pending_expired"],
+      "primary_source_authority": "explicit",
+      "ttl_expires_at": "2026-06-04T00:00:00+00:00",
+      "compiled_by": "provisional_projection"
+    },
+    {
+      "claim_id": "claim_old_path",
+      "subject_id": "subject-mcp-path",
+      "memory_lane": "semantic",
+      "compiled_text": "Legacy notes described the MCP runtime path as root mcp-server.",
+      "status": "current",
+      "support_observation_ids": ["obs_old_path_support"],
+      "primary_source_authority": "system",
+      "scope": {"repo": "knowledge-system"}
+    },
+    {
+      "claim_id": "claim_expired_temporal",
+      "subject_id": "subject-expired-temporal",
+      "memory_lane": "semantic",
+      "compiled_text": "The Phase 7C fixture review is scheduled for 2026-05-01.",
+      "status": "current",
+      "support_observation_ids": ["obs_expired_temporal"],
+      "primary_source_authority": "manual"
+    },
+    {
+      "claim_id": "claim_superseded",
+      "subject_id": "subject-superseded",
+      "memory_lane": "semantic",
+      "compiled_text": "Superseded claims are excluded from current projection.",
+      "status": "superseded",
+      "support_observation_ids": ["obs_current_view"],
+      "primary_source_authority": "manual",
+      "superseded_by_claim_id": "claim_current_view",
+      "taxonomy_decision": "supersession"
+    },
+    {
+      "claim_id": "claim_contested",
+      "subject_id": "subject-contested",
+      "memory_lane": "semantic",
+      "compiled_text": "Contested claims require review and are excluded from default current projection.",
+      "status": "contested",
+      "support_observation_ids": ["obs_current_view"],
+      "primary_source_authority": "inferred",
+      "taxonomy_decision": "contestation"
+    },
+    {
+      "claim_id": "claim_deprecated",
+      "subject_id": "subject-deprecated",
+      "memory_lane": "semantic",
+      "compiled_text": "Deprecated claims are excluded without replacement.",
+      "status": "deprecated",
+      "support_observation_ids": [],
+      "taxonomy_decision": "deprecation",
+      "compile_notes": ["Fixture deprecated without replacement."]
+    }
+  ],
+  "proposal_operations": [
+    {
+      "operation_id": "op_fixture_compile",
+      "type": "compile_claim",
+      "target_claim_id": "claim_fixture_compile",
+      "source_observation_id": "obs_compile_a",
+      "decision": "duplicate",
+      "reason": "Compile duplicate fixture observations into one current claim.",
+      "evidence": {
+        "source_observation_id": "obs_compile_a",
+        "source_authority": "manual",
+        "support_observation_ids": ["obs_compile_a", "obs_compile_b"],
+        "source_path": "observations[compile_a]"
+      },
+      "rollback": {
+        "method": "delete_compiled_claim",
+        "claim_id": "claim_fixture_compile"
+      },
+      "expected_revisions": {
+        "claim_fixture_compile": 0
+      },
+      "old_claim_id": null,
+      "proposed_claim": {
+        "claim_id": "claim_fixture_compile",
+        "subject_id": "subject-compile",
+        "memory_lane": "semantic",
+        "compiled_text": "Phase 7C compiles duplicate semantic observations.",
+        "status": "current",
+        "support_observation_ids": ["obs_compile_a", "obs_compile_b"],
+        "primary_source_authority": "manual",
+        "taxonomy_decision": "duplicate",
+        "compiled_at": "2026-06-05T00:00:00+00:00",
+        "compiled_by": "dream_compile"
+      },
+      "scope_comparison": {
+        "same_scope": true,
+        "scope": {}
+      },
+      "temporal_comparison": {
+        "temporal_status": "unknown",
+        "valid_from": null,
+        "valid_to": null
+      },
+      "requires_operator_review": false
+    },
+    {
+      "operation_id": "op_fixture_supersede_path",
+      "type": "supersede_claim",
+      "target_claim_id": "claim_new_path",
+      "source_observation_id": "obs_new_path_support",
+      "decision": "supersession",
+      "reason": "The new scoped runtime-path observation supersedes the old path claim.",
+      "evidence": {
+        "source_observation_id": "obs_new_path_support",
+        "source_authority": "system",
+        "old_claim_id": "claim_old_path",
+        "new_claim_id": "claim_new_path"
+      },
+      "rollback": {
+        "method": "restore_claim_pair",
+        "old_claim_id": "claim_old_path",
+        "new_claim_id": "claim_new_path"
+      },
+      "expected_revisions": {
+        "claim_old_path": 3,
+        "claim_new_path": 0
+      },
+      "old_claim_id": "claim_old_path",
+      "proposed_claim": {
+        "claim_id": "claim_new_path",
+        "subject_id": "subject-mcp-path",
+        "memory_lane": "semantic",
+        "compiled_text": "The live MCP runtime path is cloudflare-mcp/mcp-server.",
+        "status": "current",
+        "support_observation_ids": ["obs_new_path_support"],
+        "primary_source_authority": "system",
+        "taxonomy_decision": "supersession",
+        "scope": {"repo": "knowledge-system"},
+        "compiled_at": "2026-06-05T00:00:00+00:00",
+        "compiled_by": "dream_compile"
+      },
+      "scope_comparison": {
+        "old_scope": {"repo": "knowledge-system"},
+        "new_scope": {"repo": "knowledge-system"},
+        "same_subject": true
+      },
+      "temporal_comparison": {
+        "old_temporal_status": "unknown",
+        "new_temporal_status": "unknown",
+        "old_valid_to": null,
+        "new_valid_from": null
+      },
+      "requires_operator_review": false
+    },
+    {
+      "operation_id": "op_fixture_mark_current",
+      "type": "mark_current",
+      "target_claim_id": "claim_pending_explicit",
+      "source_observation_id": "obs_pending_explicit",
+      "decision": "duplicate",
+      "reason": "Promote the unexpired explicit provisional claim after conflict check.",
+      "evidence": {
+        "source_observation_id": "obs_pending_explicit",
+        "source_authority": "explicit",
+        "ttl_expires_at": "2026-06-12T00:00:00+00:00",
+        "conflict_check_result": "clear"
+      },
+      "rollback": {
+        "method": "restore_pending_compile",
+        "claim_id": "claim_pending_explicit",
+        "ttl_expires_at": "2026-06-12T00:00:00+00:00"
+      },
+      "expected_revisions": {
+        "claim_pending_explicit": 2
+      },
+      "old_claim_id": null,
+      "proposed_claim": {
+        "claim_id": "claim_pending_explicit",
+        "subject_id": "subject-pending",
+        "memory_lane": "semantic",
+        "compiled_text": "Phase 7C provisional claims can be promoted after Dream grading.",
+        "status": "current",
+        "support_observation_ids": ["obs_pending_explicit"],
+        "primary_source_authority": "explicit",
+        "taxonomy_decision": "duplicate",
+        "compiled_at": "2026-06-05T00:00:00+00:00",
+        "compiled_by": "dream_compile"
+      },
+      "scope_comparison": {
+        "scope": {}
+      },
+      "temporal_comparison": {
+        "temporal_status": "unknown",
+        "valid_from": null,
+        "valid_to": null
+      },
+      "requires_operator_review": false
+    }
+  ],
+  "expected_projection": {
+    "current_claim_ids": ["claim_current_view", "claim_old_path"],
+    "provisional_claim_ids": ["claim_pending_explicit"],
+    "excluded_reasons": {
+      "claim_contested": "status_not_current:contested",
+      "claim_deprecated": "status_not_current:deprecated",
+      "claim_expired_temporal": "temporal_not_current:expired",
+      "claim_pending_expired": "pending_compile_ttl_expired",
+      "claim_superseded": "status_not_current:superseded"
+    }
+  }
+}

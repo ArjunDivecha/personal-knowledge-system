@@ -39,6 +39,10 @@ Phase 7B enrichment fixtures:
 - `phase7b_temporal_outcome_probes.json` contains synthetic temporal normalization probes for current/future/expired/unknown outcomes.
 - `phase7b_entity_index_fixture.json` contains synthetic observations and expected source-aware entity index rows.
 
+Phase 7C current-view fixtures:
+
+- `phase7c_current_projection_fixture.json` contains synthetic current projection and compile proposal-operation cases.
+
 ## Design Rules
 
 - keep bundles small
