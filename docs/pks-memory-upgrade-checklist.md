@@ -164,10 +164,10 @@ Phase 5 notes:
 
 ## Phase 7B: Temporal Normalization And Entity Linking
 
-- [ ] Fold temporal-language normalization into Phase 7 compile
-- [ ] Add entity mention extraction and stable entity IDs
-- [ ] Add source-aware entity index fixture
-- [ ] Add outcome probes for current vs stale temporal facts
+- [x] Fold temporal-language normalization into Phase 7 compile
+- [x] Add entity mention extraction and stable entity IDs
+- [x] Add source-aware entity index fixture
+- [x] Add outcome probes for current vs stale temporal facts
 
 ## Phase 7C: Compiled Current View
 

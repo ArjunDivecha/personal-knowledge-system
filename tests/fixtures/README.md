@@ -34,6 +34,11 @@ Phase 7A schema fixture:
 
 - `phase7_migration_fixture.json` contains synthetic legacy entries, Phase 7 observations, compiled claims, and supersession edges for offline observation/claim schema tests. It must stay synthetic and must not include live user facts.
 
+Phase 7B enrichment fixtures:
+
+- `phase7b_temporal_outcome_probes.json` contains synthetic temporal normalization probes for current/future/expired/unknown outcomes.
+- `phase7b_entity_index_fixture.json` contains synthetic observations and expected source-aware entity index rows.
+
 ## Design Rules
 
 - keep bundles small

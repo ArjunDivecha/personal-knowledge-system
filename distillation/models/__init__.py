@@ -49,6 +49,21 @@ from .phase7 import (
     retrieval_projection_from_claims,
     stable_phase7_id,
 )
+from .phase7b import (
+    Phase7EntityIndexEntry,
+    Phase7EntityMention,
+    Phase7TemporalResolution,
+    build_entity_index,
+    enrich_claim_temporal,
+    enrich_claims_phase7b,
+    enrich_observation_temporal,
+    enrich_observations_phase7b,
+    evaluate_phase7b_temporal_probe,
+    extract_entity_mentions,
+    normalize_entity_name,
+    normalize_temporal_text,
+    stable_entity_id,
+)
 
 __all__ = [
     # Entry types
@@ -89,4 +104,18 @@ __all__ = [
     "provisional_claim_from_observation",
     "retrieval_projection_from_claims",
     "stable_phase7_id",
+    # Phase 7B enrichment
+    "Phase7EntityIndexEntry",
+    "Phase7EntityMention",
+    "Phase7TemporalResolution",
+    "build_entity_index",
+    "enrich_claim_temporal",
+    "enrich_claims_phase7b",
+    "enrich_observation_temporal",
+    "enrich_observations_phase7b",
+    "evaluate_phase7b_temporal_probe",
+    "extract_entity_mentions",
+    "normalize_entity_name",
+    "normalize_temporal_text",
+    "stable_entity_id",
 ]

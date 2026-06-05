@@ -1,0 +1,54 @@
+{
+  "metadata": {
+    "fixture": "phase7b_entity_index_fixture",
+    "synthetic": true
+  },
+  "observations": [
+    {
+      "observation_id": "obs_entity_pks",
+      "subject_id": "subject-pks",
+      "memory_lane": "semantic",
+      "source_authority": "manual",
+      "claim_text": "PKS uses MCP with Redis for the offline Phase 7B fixture.",
+      "source_type": "fixture",
+      "source_id": "fixture-entity",
+      "message_ids": ["msg-entity-1"],
+      "source_path": "observations[0]",
+      "snippet": "PKS uses MCP with Redis.",
+      "observed_at": "2026-06-05T00:00:00+00:00",
+      "learned_at": "2026-06-05T00:00:00+00:00"
+    },
+    {
+      "observation_id": "obs_entity_artifact",
+      "subject_id": "subject-artifact",
+      "memory_lane": "semantic",
+      "source_authority": "system",
+      "claim_text": "`distillation/models/phase7b.py` adds entity extraction for Phase 7B.",
+      "source_type": "fixture",
+      "source_id": "fixture-entity",
+      "message_ids": ["msg-entity-2"],
+      "source_path": "observations[1]",
+      "snippet": "phase7b.py adds entity extraction.",
+      "observed_at": "2026-06-05T00:00:00+00:00",
+      "learned_at": "2026-06-05T00:00:00+00:00"
+    }
+  ],
+  "expected_entities": [
+    {
+      "canonical_name": "PKS",
+      "source_observation_ids": ["obs_entity_pks"]
+    },
+    {
+      "canonical_name": "MCP",
+      "source_observation_ids": ["obs_entity_pks"]
+    },
+    {
+      "canonical_name": "Redis",
+      "source_observation_ids": ["obs_entity_pks"]
+    },
+    {
+      "canonical_name": "distillation/models/phase7b.py",
+      "source_observation_ids": ["obs_entity_artifact"]
+    }
+  ]
+}

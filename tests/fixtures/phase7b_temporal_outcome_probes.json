@@ -1,0 +1,43 @@
+{
+  "metadata": {
+    "fixture": "phase7b_temporal_outcome_probes",
+    "synthetic": true,
+    "now_utc": "2026-06-05T00:00:00+00:00"
+  },
+  "probes": [
+    {
+      "id": "future_month_trip",
+      "text": "The operator is going to Singapore in July 2026.",
+      "observed_at": "2026-06-05T00:00:00+00:00",
+      "now_utc": "2026-06-05T00:00:00+00:00",
+      "expected_temporal_status": "future",
+      "expected_valid_from": "2026-07-01",
+      "expected_valid_to": "2026-07-31"
+    },
+    {
+      "id": "expired_month_trip",
+      "text": "The operator was going to Singapore in July 2025.",
+      "observed_at": "2026-06-05T00:00:00+00:00",
+      "now_utc": "2026-06-05T00:00:00+00:00",
+      "expected_temporal_status": "historical",
+      "expected_valid_from": "2025-07-01",
+      "expected_valid_to": "2025-07-31"
+    },
+    {
+      "id": "tomorrow_status",
+      "text": "The fixture review is planned for tomorrow.",
+      "observed_at": "2026-06-05T00:00:00+00:00",
+      "now_utc": "2026-06-05T00:00:00+00:00",
+      "expected_temporal_status": "future",
+      "expected_valid_from": "2026-06-06",
+      "expected_valid_to": "2026-06-06"
+    },
+    {
+      "id": "unknown_timeless",
+      "text": "PKS keeps observations separate from compiled claims.",
+      "observed_at": "2026-06-05T00:00:00+00:00",
+      "now_utc": "2026-06-05T00:00:00+00:00",
+      "expected_temporal_status": "unknown"
+    }
+  ]
+}
