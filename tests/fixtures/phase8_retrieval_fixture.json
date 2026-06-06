@@ -1,0 +1,214 @@
+{
+  "metadata": {
+    "fixture": "phase8_retrieval_fixture",
+    "schema_version": 1,
+    "now_utc": "2026-06-05T00:00:00+00:00"
+  },
+  "project_scope_ref": "pks-phase-8",
+  "policy_source_paths": [
+    "docs/pks-phase-7a-compile-latency-policy-2026-06-05.md",
+    "docs/pks-phase-7a-contradiction-supersession-taxonomy-2026-06-05.md",
+    "AGENTS.md"
+  ],
+  "observations": [
+    {
+      "observation_id": "obs_current_runtime",
+      "subject_id": "subject-mcp-runtime-path",
+      "memory_lane": "semantic",
+      "source_authority": "manual",
+      "claim_text": "The live MCP runtime path is cloudflare-mcp/mcp-server.",
+      "source_type": "fixture",
+      "source_id": "phase8-fixture",
+      "message_ids": ["msg-current-runtime"],
+      "source_path": "observations[current_runtime]",
+      "snippet": "Current MCP runtime path uses cloudflare-mcp/mcp-server.",
+      "observed_at": "2026-06-05T00:00:00+00:00",
+      "learned_at": "2026-06-05T00:00:00+00:00"
+    },
+    {
+      "observation_id": "obs_old_runtime",
+      "subject_id": "subject-mcp-runtime-path",
+      "memory_lane": "semantic",
+      "source_authority": "manual",
+      "claim_text": "Before the Phase 7 path update, the live MCP runtime path was knowledge-system/mcp-server.",
+      "source_type": "fixture",
+      "source_id": "phase8-fixture",
+      "message_ids": ["msg-old-runtime"],
+      "source_path": "observations[old_runtime]",
+      "snippet": "Older runtime path used knowledge-system/mcp-server.",
+      "observed_at": "2026-04-01T00:00:00+00:00",
+      "learned_at": "2026-04-01T00:00:00+00:00",
+      "valid_from": "2026-03-01",
+      "valid_to": "2026-04-30"
+    },
+    {
+      "observation_id": "obs_phase8_status",
+      "subject_id": "project-pks-phase8",
+      "memory_lane": "semantic",
+      "source_authority": "manual",
+      "claim_text": "Phase 8 retrieval upgrade is building the offline hybrid retrieval contract before live Worker wiring.",
+      "source_type": "fixture",
+      "source_id": "phase8-fixture",
+      "message_ids": ["msg-phase8-status"],
+      "source_path": "observations[phase8_status]",
+      "snippet": "Phase 8 builds offline retrieval first.",
+      "observed_at": "2026-06-05T00:00:00+00:00",
+      "learned_at": "2026-06-05T00:00:00+00:00"
+    },
+    {
+      "observation_id": "obs_pending_phase8",
+      "subject_id": "project-pks-phase8",
+      "memory_lane": "semantic",
+      "source_authority": "explicit",
+      "claim_text": "Phase 8 retrieval upgrade is pending live Worker wiring after offline evals pass.",
+      "source_type": "fixture",
+      "source_id": "phase8-fixture",
+      "message_ids": ["msg-pending-phase8"],
+      "source_path": "observations[pending_phase8]",
+      "snippet": "Live Worker wiring remains pending.",
+      "observed_at": "2026-06-05T00:00:00+00:00",
+      "learned_at": "2026-06-05T00:00:00+00:00"
+    },
+    {
+      "observation_id": "obs_expired_trip",
+      "subject_id": "operator-travel",
+      "memory_lane": "semantic",
+      "source_authority": "explicit",
+      "claim_text": "The operator is going to Singapore in May 2026.",
+      "source_type": "fixture",
+      "source_id": "phase8-fixture",
+      "message_ids": ["msg-expired-trip"],
+      "source_path": "observations[expired_trip]",
+      "snippet": "Singapore trip was scheduled for May 2026.",
+      "observed_at": "2026-04-15T00:00:00+00:00",
+      "learned_at": "2026-04-15T00:00:00+00:00"
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "claim_current_runtime",
+      "subject_id": "subject-mcp-runtime-path",
+      "memory_lane": "semantic",
+      "compiled_text": "The live MCP runtime path is cloudflare-mcp/mcp-server.",
+      "status": "current",
+      "support_observation_ids": ["obs_current_runtime"],
+      "primary_source_authority": "manual",
+      "scope": {
+        "memory_block": "project_status",
+        "project_id": "pks-phase-8",
+        "rank": "01"
+      }
+    },
+    {
+      "claim_id": "claim_old_runtime",
+      "subject_id": "subject-mcp-runtime-path",
+      "memory_lane": "semantic",
+      "compiled_text": "The live MCP runtime path was knowledge-system/mcp-server before the Phase 7 path update.",
+      "status": "historical",
+      "support_observation_ids": ["obs_old_runtime"],
+      "primary_source_authority": "manual",
+      "temporal_status": "historical",
+      "valid_from": "2026-03-01",
+      "valid_to": "2026-04-30",
+      "scope": {
+        "project_id": "pks-phase-8"
+      }
+    },
+    {
+      "claim_id": "claim_phase8_status",
+      "subject_id": "project-pks-phase8",
+      "memory_lane": "semantic",
+      "compiled_text": "Phase 8 retrieval upgrade is building the offline hybrid retrieval contract before live Worker wiring.",
+      "status": "current",
+      "support_observation_ids": ["obs_phase8_status"],
+      "primary_source_authority": "manual",
+      "scope": {
+        "memory_block": "project_status",
+        "project_id": "pks-phase-8",
+        "rank": "02"
+      }
+    },
+    {
+      "claim_id": "claim_pending_phase8",
+      "subject_id": "project-pks-phase8",
+      "memory_lane": "semantic",
+      "compiled_text": "Phase 8 retrieval upgrade is pending live Worker wiring after offline evals pass.",
+      "status": "pending_compile",
+      "support_observation_ids": ["obs_pending_phase8"],
+      "primary_source_authority": "explicit",
+      "ttl_expires_at": "2026-06-12T00:00:00+00:00",
+      "scope": {
+        "project_id": "pks-phase-8"
+      }
+    },
+    {
+      "claim_id": "claim_expired_trip",
+      "subject_id": "operator-travel",
+      "memory_lane": "semantic",
+      "compiled_text": "The operator is going to Singapore in May 2026.",
+      "status": "current",
+      "support_observation_ids": ["obs_expired_trip"],
+      "primary_source_authority": "explicit",
+      "scope": {
+        "memory_block": "operator_profile",
+        "rank": "01"
+      }
+    }
+  ],
+  "vector_scores": {
+    "claim_current_runtime": 0.4,
+    "claim_pending_phase8": 0.2,
+    "obs_old_runtime": 0.99,
+    "block:policy_pointer:knowledge-system": 0.2
+  },
+  "probes": [
+    {
+      "id": "current_runtime_prefers_compiled_current",
+      "query": "what is the live MCP runtime path now?",
+      "expected_intent": "current_answer",
+      "expected_top_candidate_id": "claim_current_runtime",
+      "excluded_candidate_ids": ["claim_old_runtime", "obs_old_runtime", "claim_expired_trip"],
+      "top_k": 6
+    },
+    {
+      "id": "runtime_history_reaches_observations",
+      "query": "why did the live MCP runtime path change?",
+      "expected_intent": "evidence_history",
+      "expected_candidate_ids": ["obs_current_runtime", "obs_old_runtime"],
+      "expected_source_types": ["observation"],
+      "top_k": 8
+    },
+    {
+      "id": "point_in_time_prefers_old_observation",
+      "query": "what was true as of 2026-04-01 for the MCP runtime path?",
+      "expected_intent": "point_in_time",
+      "expected_top_candidate_id": "obs_old_runtime",
+      "expected_candidate_ids": ["obs_old_runtime"],
+      "top_k": 8
+    },
+    {
+      "id": "policy_query_prefers_policy_pointer",
+      "query": "what policy file defines compile latency?",
+      "expected_intent": "procedural_policy",
+      "expected_top_candidate_id": "block:policy_pointer:knowledge-system",
+      "expected_labels": ["policy_pointer"],
+      "top_k": 5
+    },
+    {
+      "id": "pending_phase8_is_provisional",
+      "query": "what is pending in Phase 8?",
+      "expected_intent": "current_answer",
+      "expected_candidate_ids": ["claim_pending_phase8"],
+      "expected_source_types": ["provisional_claim"],
+      "top_k": 6
+    },
+    {
+      "id": "stale_temporal_fact_stays_out_of_current_answer",
+      "query": "what is the Singapore trip plan now?",
+      "expected_intent": "current_answer",
+      "excluded_candidate_ids": ["claim_expired_trip", "obs_expired_trip"],
+      "min_results": 1,
+      "top_k": 6
+    }
+  ]
+}

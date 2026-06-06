@@ -94,6 +94,20 @@ from .phase7_acceptance import (
     run_phase7_acceptance,
     run_phase7_acceptance_fixture,
 )
+from .phase8 import (
+    PHASE8_SCHEMA_VERSION,
+    Phase8EvalCheck,
+    Phase8EvalReport,
+    Phase8QueryIntent,
+    Phase8RetrievalCandidate,
+    Phase8RetrievalReport,
+    Phase8RetrievalResult,
+    build_phase8_candidates,
+    classify_phase8_query,
+    evaluate_phase8_retrieval_probes,
+    retrieve_phase8,
+    run_phase8_retrieval_fixture,
+)
 
 __all__ = [
     # Entry types
@@ -175,4 +189,17 @@ __all__ = [
     "Phase7AcceptanceReport",
     "run_phase7_acceptance",
     "run_phase7_acceptance_fixture",
+    # Phase 8 offline retrieval
+    "PHASE8_SCHEMA_VERSION",
+    "Phase8EvalCheck",
+    "Phase8EvalReport",
+    "Phase8QueryIntent",
+    "Phase8RetrievalCandidate",
+    "Phase8RetrievalReport",
+    "Phase8RetrievalResult",
+    "build_phase8_candidates",
+    "classify_phase8_query",
+    "evaluate_phase8_retrieval_probes",
+    "retrieve_phase8",
+    "run_phase8_retrieval_fixture",
 ]

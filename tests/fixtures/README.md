@@ -51,6 +51,10 @@ Phase 7 acceptance fixtures:
 
 - `phase7_acceptance_fixture.json` runs the offline Phase 7 chain through current recall, stale exclusion, provisional TTL, compile-grade, memory-block, policy-pointer, and procedural-isolation probes.
 
+Phase 8 retrieval fixtures:
+
+- `phase8_retrieval_fixture.json` runs the offline retrieval contract through current-answer recall, evidence/history recall, point-in-time recall, stale-current exclusion, provisional-claim recall, and policy-pointer probes.
+
 ## Design Rules
 
 - keep bundles small
