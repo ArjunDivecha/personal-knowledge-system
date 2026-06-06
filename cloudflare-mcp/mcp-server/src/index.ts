@@ -41,6 +41,11 @@ import {
 	type QueryIntent,
 } from "./retrievalPolicy";
 import {
+	classifyPhase8Query,
+	scorePhase8Candidate,
+	type Phase8QueryIntent,
+} from "./phase8Retrieval";
+import {
 	checkDestructiveTripwire,
 	checkRetrievalTripwire,
 	clearKillFlag,
@@ -2414,6 +2419,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 					const retrievalPolicyMode: "off" | "on" =
 						retrievalEffective.effective === "on" ? "on" : "off";
 					const queryIntent: QueryIntent = classifyQueryIntent(query);
+					const phase8QueryIntent: Phase8QueryIntent = classifyPhase8Query(query);
 
 					const rankedResults = await Promise.all(results.map(async (result) => {
 						const vectorMetadata = parseStoredObject(result.metadata) ?? {};
@@ -2484,13 +2490,25 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 							isQuarantined: Boolean(entryMetadata.injection_quarantine),
 						});
 						const policyMultiplier = crossContextPenalty * quarantinePenalty;
-						const finalScore = Math.round(baseScore * policyMultiplier * 10000) / 10000;
+						const label = getEntryLabel(entry);
+						const summary = getEntrySummary(entry);
+						const phase8Score = scorePhase8Candidate(query, phase8QueryIntent, {
+							entry,
+							metadata: entryMetadata,
+							label,
+							summary,
+							entryType,
+							vectorScore: result.score,
+						});
+						const finalScore = Math.round(
+							baseScore * policyMultiplier * phase8Score.score_multiplier * 10000,
+						) / 10000;
 
 						return {
 							id: String(result.id),
 							type: entryType,
-							label: getEntryLabel(entry),
-							summary: getEntrySummary(entry),
+							label,
+							summary,
 							top_repo: typeof entryMetadata.github_repo === "string" ? entryMetadata.github_repo : null,
 							state: getEntryState(entry),
 							context_type: typeof entryMetadata.context_type === "string" ? entryMetadata.context_type : null,
@@ -2505,8 +2523,10 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 							source_weight: sourceWeight,
 							base_score: baseScore,
 							policy_multiplier: policyMultiplier,
+							phase8_multiplier: phase8Score.score_multiplier,
 							final_score: finalScore,
 							topic_bucket: entryBucket,
+							phase8_retrieval: phase8Score,
 							quarantined: Boolean(entryMetadata.injection_quarantine),
 							updated: updatedAt ?? null,
 							metadata: {
@@ -2557,7 +2577,13 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 									query_confidence: queryIntent.confidence,
 									matched_keywords: queryIntent.matchedKeywords,
 								},
-								scoring: "ranked by retrieval tier, then a weighted score of semantic similarity, recency, salience, source weight, and (when RETRIEVAL_POLICY_MODE=on) Layer 0 cross-context + quarantine penalties; archived entries excluded by default"
+								phase8_retrieval: {
+									intent: phase8QueryIntent.intent,
+									temporal_mode: phase8QueryIntent.temporal_mode,
+									matched_terms: phase8QueryIntent.matched_terms,
+									as_of: phase8QueryIntent.as_of,
+								},
+								scoring: "ranked by retrieval tier, then a weighted score of semantic similarity, recency, salience, source weight, Phase 8 lexical/entity/vector/temporal/lane/source scoring, and (when RETRIEVAL_POLICY_MODE=on) Layer 0 cross-context + quarantine penalties; archived entries excluded by default"
 							})
 						}],
 					};

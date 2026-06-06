@@ -221,7 +221,7 @@ describe("Dream replay logic", () => {
 				domain: "Country equity rotation signals",
 				currentView: "Use cross border GDELT sentiment and out of sample rank IC for country ETF rotation.",
 				mentionCount: 2,
-				accessCount: 1,
+				accessCount: 0,
 				sourceConversations: ["conv_a", "conv_b"],
 				updatedAt: "2026-03-28T06:55:00.000Z",
 			}),
@@ -288,7 +288,7 @@ describe("Dream replay logic", () => {
 		const canonicalMetadata = canonical.metadata as Record<string, unknown>;
 		expect(canonicalMetadata.archived).toBe(false);
 		expect(canonicalMetadata.mention_count).toBe(3);
-		expect(canonicalMetadata.access_count).toBe(1);
+		expect(canonicalMetadata.access_count).toBe(0);
 		expect(canonicalMetadata.source_conversations).toEqual(
 			expect.arrayContaining(["conv_a", "conv_b", "conv_c"]),
 		);

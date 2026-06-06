@@ -17,6 +17,7 @@ const redisMock = vi.hoisted(() => ({
 }));
 
 const vectorMock = vi.hoisted(() => ({
+	query: vi.fn(),
 	update: vi.fn(),
 	upsert: vi.fn(),
 	delete: vi.fn(),
@@ -393,6 +394,26 @@ beforeEach(() => {
 	vectorMock.update.mockResolvedValue(undefined);
 	vectorMock.upsert.mockResolvedValue(undefined);
 	vectorMock.delete.mockResolvedValue(undefined);
+	vectorMock.query.mockResolvedValue([
+		{
+			id: "ke_quant",
+			score: 0.92,
+			metadata: {
+				type: "knowledge",
+				archived: false,
+				source: "fixture",
+			},
+		},
+		{
+			id: "ke_quant_old",
+			score: 0.88,
+			metadata: {
+				type: "knowledge",
+				archived: false,
+				source: "fixture",
+			},
+		},
+	]);
 	openaiEmbeddingsCreateMock.mockResolvedValue({
 		data: [{ embedding: [0.1, 0.2, 0.3] }],
 	});
@@ -819,6 +840,78 @@ describe("OAuth and MCP integration", () => {
 
 		expect(initializeResponse.status).toBe(200);
 		expect(initializeResponse.headers.get("mcp-session-id")).toBeTruthy();
+	});
+
+	it("returns Phase 8 retrieval diagnostics from the live search tool", async () => {
+		const baseUrl = "https://example.com";
+		const { accessToken } = await authorizeClient(baseUrl);
+
+		const initializeResponse = await dispatch(
+			new IncomingRequest(`${baseUrl}/openai/mcp`, {
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${accessToken}`,
+					accept: "application/json, text/event-stream",
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({
+					jsonrpc: "2.0",
+					id: 1,
+					method: "initialize",
+					params: {
+						protocolVersion: "2024-11-05",
+						capabilities: {},
+						clientInfo: { name: "worker-runtime-test", version: "1.0" },
+					},
+				}),
+			}),
+		);
+		expect(initializeResponse.status).toBe(200);
+		const sessionId = initializeResponse.headers.get("mcp-session-id");
+		expect(sessionId).toBeTruthy();
+
+		const searchResponse = await dispatch(
+			new IncomingRequest(`${baseUrl}/openai/mcp`, {
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${accessToken}`,
+					accept: "application/json, text/event-stream",
+					"content-type": "application/json",
+					"mcp-session-id": sessionId!,
+				},
+				body: JSON.stringify({
+					jsonrpc: "2.0",
+					id: 2,
+					method: "tools/call",
+					params: {
+						name: "search",
+						arguments: {
+							query: "what is the quantitative investing background now?",
+							limit: 2,
+						},
+					},
+				}),
+			}),
+		);
+
+		expect(searchResponse.status).toBe(200);
+		const searchEnvelope = await readRpcEnvelope(searchResponse);
+		const searchText = (((searchEnvelope.result as Record<string, unknown>).content as Array<Record<string, unknown>>)[0].text as string);
+		const payload = JSON.parse(searchText) as Record<string, any>;
+		expect(payload.phase8_retrieval).toMatchObject({
+			intent: "current_answer",
+			temporal_mode: "current",
+		});
+		expect(payload.results[0].id).toBe("ke_quant");
+		expect(payload.results[0].phase8_multiplier).toEqual(expect.any(Number));
+		expect(payload.results[0].phase8_retrieval).toMatchObject({
+			final_score: expect.any(Number),
+			lexical_score: expect.any(Number),
+			vector_score: expect.any(Number),
+			reasons: expect.arrayContaining(["current_surface_preferred"]),
+		});
+		expect(payload.scoring).toContain("Phase 8");
+		expect(vectorMock.query).toHaveBeenCalled();
 	});
 
 	it("downgrades OpenAI resource write requests to read-only scope", async () => {

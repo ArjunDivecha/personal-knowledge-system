@@ -16,7 +16,7 @@ Source PRD: [PKS-Upgrade-PRD.md](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Wo
 - [ ] Phase 6 complete
 - [x] Phase 7 offline memory architecture complete
 - [x] Phase 8 offline retrieval contract complete
-- [ ] Phase 8 live Worker retrieval wiring complete
+- [x] Phase 8 live Worker retrieval wiring complete
 
 ## Phase 0: Baseline Audit
 
@@ -199,7 +199,7 @@ Phase 5 notes:
 - [x] Add lane-aware and source-priority-aware scoring with lexical, entity, optional vector, temporal, and provenance components
 - [x] Add recall, evidence/history, point-in-time, stale-current, provisional, and policy-pointer fixture probes
 - [x] Export Phase 8 helpers from `distillation/models/__init__.py`
-- [ ] Wire the live Cloudflare MCP search path to the Phase 8 retrieval contract after offline evals stay green
+- [x] Wire the live Cloudflare MCP search path to the Phase 8 retrieval contract after offline evals stay green
 
 Phase 6.5 audit notes:
 - Concurrent-run safety: the full Dream cycle path has a Redis single-flight guard (`dream:lock`) with a 30-minute TTL and stale-lock reclaim before live mutations. The scheduled governance proposal path and the operator `run_dream_proposal` path currently call `runDreamProposal` directly, which snapshots all entries without taking that lock; `apply_dream_proposal` is protected by proposal grading, candidate snapshots, and expected revisions, but proposal generation itself can still overlap. Follow-up issue: add the same proposal-level single-flight guard, or an explicit idempotency key, around `runDreamProposal` before correction-derived contest proposals increase replay volume.
