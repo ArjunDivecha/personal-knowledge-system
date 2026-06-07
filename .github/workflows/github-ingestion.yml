@@ -40,14 +40,13 @@ concurrency:
 
 jobs:
   github-ingestion:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, knowledge-agent-sessions]
     timeout-minutes: 120
     defaults:
       run:
-        working-directory: ingestion/github
+        working-directory: ingestion
 
     env:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
       UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
@@ -57,22 +56,31 @@ jobs:
       GITHUB_USERNAME: ${{ github.repository_owner }}
       PYTHONUNBUFFERED: "1"
       ARCHIVE_PATH: /tmp/knowledge-system/archive
+      PYTHON_BIN: /opt/homebrew/bin/python3.12
+      PKS_ALLOW_ANTHROPIC_API_FALLBACK: "0"
+      PKS_SDK_MAX_TURNS: "1"
+      PKS_SDK_MAX_BUDGET_USD: "0.25"
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: "pip"
-          cache-dependency-path: distillation/requirements.txt
+      - name: Check SDK runtime
+        run: |
+          "$PYTHON_BIN" --version
+          command -v claude
+          claude --version
 
       - name: Install dependencies
         run: |
+          "$PYTHON_BIN" -m venv .venv
+          . .venv/bin/activate
           python -m pip install --upgrade pip
-          pip install -r ../../distillation/requirements.txt
+          pip install -r ../distillation/requirements.txt
+          python - <<'PY'
+          from claude_agent_sdk import query, ClaudeAgentOptions
+          print("claude_agent_sdk import OK")
+          PY
 
       - name: Run GitHub ingestion
         env:
@@ -98,4 +106,4 @@ jobs:
           if [ -n "$REPOS" ]; then
             args+=(--repos "$REPOS")
           fi
-          python run.py "${args[@]}"
+          caffeinate -i .venv/bin/python github/run.py "${args[@]}"

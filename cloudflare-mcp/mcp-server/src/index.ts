@@ -107,6 +107,8 @@ const DREAM_LAST_RUN_KEY = "dream:last_run";
 const DREAM_LAST_ATTEMPT_KEY = "dream:last_attempt";
 const DREAM_RUN_PREFIX = "dream:run:";
 const DREAM_RUN_INDEX_KEY = "dream:runs:index";
+const DREAM_SCHEDULED_BOUNDARY_PREFIX = "dream:scheduled-governed:boundary:";
+const DREAM_SCHEDULED_BOUNDARY_TTL_SECONDS = 72 * 60 * 60;
 const SCHEDULED_DREAM_ALLOWED_RISKS = new Set(["low", "medium"]);
 const SCHEDULED_DREAM_OPERATION_LIMITS: Record<string, number> = {
 	archive_entry: SCHEDULED_DREAM_ARCHIVE_LIMIT,
@@ -939,6 +941,59 @@ async function getDreamRun(redis: Redis, runId: string): Promise<Record<string, 
 	return { error: "dream_run_not_found", run_id: runId };
 }
 
+function getScheduledGovernedBoundaryKey(controller: ScheduledController): string {
+	const scheduledTime = typeof controller.scheduledTime === "number" ? controller.scheduledTime : Date.now();
+	const boundaryDate = new Date(scheduledTime).toISOString().slice(0, 10);
+	return `${DREAM_SCHEDULED_BOUNDARY_PREFIX}${boundaryDate}`;
+}
+
+function isScheduledGovernedRecord(run: Record<string, unknown> | null): run is Record<string, unknown> {
+	return Boolean(
+		run &&
+			run.trigger === "scheduled" &&
+			run.dry_run === false &&
+			run.auto_apply_mode === "governed" &&
+			typeof run.run_id === "string",
+	);
+}
+
+async function getScheduledGovernedBoundaryRun(
+	redis: Redis,
+	controller: ScheduledController,
+): Promise<Record<string, unknown> | null> {
+	const runId = await redis.get(getScheduledGovernedBoundaryKey(controller));
+	if (typeof runId !== "string" || !runId) return null;
+	const run = await getDreamRun(redis, runId);
+	if (!isScheduledGovernedRecord(run)) return null;
+	return {
+		...run,
+		boundary_deduped: true,
+		next_action: "Scheduled-governed Dream already ran for this UTC boundary; no duplicate apply attempted.",
+	};
+}
+
+async function storeScheduledGovernedBoundary(
+	redis: Redis,
+	controller: ScheduledController,
+	runId: string,
+): Promise<void> {
+	await redis.set(getScheduledGovernedBoundaryKey(controller), runId, {
+		ex: DREAM_SCHEDULED_BOUNDARY_TTL_SECONDS,
+	});
+}
+
+async function storeScheduledGovernedBoundaryBestEffort(
+	redis: Redis,
+	controller: ScheduledController,
+	runId: string,
+): Promise<void> {
+	try {
+		await storeScheduledGovernedBoundary(redis, controller, runId);
+	} catch (error) {
+		console.error("[scheduled-governed] could not store boundary dedupe key", error);
+	}
+}
+
 async function getDreamEvents(redis: Redis, runId: string): Promise<Record<string, unknown>> {
 	const events = parseStoredArray(await redis.get(`${DREAM_RUN_PREFIX}${runId}:events`));
 	return {
@@ -1188,6 +1243,11 @@ async function runScheduledGovernedDream(
 		}
 		lockAcquired = true;
 
+		const existingBoundaryRun = await getScheduledGovernedBoundaryRun(redis, controller);
+		if (existingBoundaryRun) {
+			return existingBoundaryRun;
+		}
+
 		const proposal = await runDreamProposal(env, {
 			trigger: "manual",
 			actorId: "scheduled:dream-governance",
@@ -1219,6 +1279,7 @@ async function runScheduledGovernedDream(
 				next_action: "Dream proposal did not reach proposal_ready; no autonomous apply attempted.",
 			};
 			await storeScheduledGovernedRunRecord(redis, skippedRecord, false);
+			await storeScheduledGovernedBoundaryBestEffort(redis, controller, runId);
 			return skippedRecord;
 		}
 
@@ -1299,6 +1360,7 @@ async function runScheduledGovernedDream(
 				: "Scheduled governed Dream held or failed; inspect grade, held operations, and kill-flag state before enabling broader autonomy.",
 		};
 		await storeScheduledGovernedRunRecord(redis, runRecord, status !== "held");
+		await storeScheduledGovernedBoundaryBestEffort(redis, controller, runId);
 		return runRecord;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -1322,6 +1384,7 @@ async function runScheduledGovernedDream(
 		};
 		try {
 			await storeScheduledGovernedRunRecord(redis, failedRecord, true);
+			await storeScheduledGovernedBoundaryBestEffort(redis, controller, runId);
 		} catch (storeError) {
 			console.error("[scheduled-governed] could not store failed run record", storeError);
 		}
@@ -2960,6 +3023,48 @@ const defaultHandler = {
 							? "Operator-triggered scheduled-equivalent Dream governance proposal."
 							: "Operator-triggered Dream governance proposal."),
 				});
+
+				return Response.json(result, { headers: { "Content-Type": "application/json" } });
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				return Response.json({ error: msg }, { status: 500 });
+			}
+		}
+
+		if (url.pathname === "/ops/dream/run_scheduled_governed" && request.method === "POST") {
+			if (!isAuthorizedOperatorRequest(request, env)) {
+				return Response.json({ error: "Unauthorized" }, { status: 401 });
+			}
+
+			try {
+				const redis = createRedisClient(env);
+				const rateLimit = await applyFixedWindowRateLimit(
+					redis,
+					"operator",
+					"ops_dream_run_scheduled_governed",
+					OPERATOR_WRITE_RATE_LIMIT,
+				);
+				if (!rateLimit.allowed) {
+					return Response.json(
+						{
+							error: `Rate limit exceeded for scheduled-governed Dream repairs. Allowed ${rateLimit.limit} calls per ${RATE_LIMIT_WINDOW_SECONDS} seconds.`,
+						},
+						{ status: 429 },
+					);
+				}
+
+				const body = await request.json();
+				const parsed = z.object({
+					cron: z.string().min(1).max(100).default("operator-repair"),
+					scheduled_time: z.number().int().positive().optional(),
+				}).parse(body);
+
+				const controller = {
+					cron: parsed.cron,
+					scheduledTime: parsed.scheduled_time ?? Date.now(),
+					noRetry: () => undefined,
+				} as ScheduledController;
+				const result = await runScheduledGovernedDream(env, controller);
 
 				return Response.json(result, { headers: { "Content-Type": "application/json" } });
 			} catch (error) {

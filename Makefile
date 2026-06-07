@@ -3,8 +3,9 @@ PYTHON := $(REPO_ROOT)/distillation/venv/bin/python
 WORKER_DIR := $(REPO_ROOT)/cloudflare-mcp/mcp-server
 FIXTURE_BUNDLE := $(REPO_ROOT)/tests/fixtures/sample_memory_fixture.json
 CHECK_OVERNIGHT_DREAM_ARGS ?=
+ENSURE_OVERNIGHT_DREAM_ARGS ?=
 
-.PHONY: worker-typecheck worker-test verify-memory-full dream-live-canary check-overnight-dream sleep-report check-overnight-streak test-python-checker seed-staging-dry-run staging-smoke-dry-run staging-smoke deploy-staging worker-secrets-staging audit-memory-quality verify-memory-quality
+.PHONY: worker-typecheck worker-test verify-memory-full dream-live-canary ensure-overnight-dream check-overnight-dream sleep-report check-overnight-streak test-python-checker seed-staging-dry-run staging-smoke-dry-run staging-smoke deploy-staging worker-secrets-staging audit-memory-quality verify-memory-quality
 
 worker-typecheck:
 	cd "$(WORKER_DIR)" && npm run type-check
@@ -24,10 +25,14 @@ verify-memory-quality:
 dream-live-canary:
 	cd "$(WORKER_DIR)" && npm run test:dream-live -- --count 3
 
+ensure-overnight-dream:
+	"$(PYTHON)" "$(REPO_ROOT)/scripts/ensure_overnight_dream_run.py" $(ENSURE_OVERNIGHT_DREAM_ARGS)
+
 check-overnight-dream:
 	"$(PYTHON)" "$(REPO_ROOT)/scripts/check_overnight_dream_run.py" $(CHECK_OVERNIGHT_DREAM_ARGS)
 
-sleep-report: check-overnight-dream
+sleep-report: ensure-overnight-dream
+	"$(PYTHON)" "$(REPO_ROOT)/scripts/check_overnight_dream_run.py" --allow-on-demand $(CHECK_OVERNIGHT_DREAM_ARGS)
 
 check-overnight-streak:
 	"$(PYTHON)" "$(REPO_ROOT)/scripts/check_validation_streak.py" --gate check_overnight_dream --required-days 7

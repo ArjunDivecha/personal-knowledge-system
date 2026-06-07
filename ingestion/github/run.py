@@ -43,6 +43,13 @@ from core.extractor import Extractor
 from github.client import GitHubClient
 
 
+def check_extractor_error(extractor: Extractor, label: str) -> None:
+    """Raise if an extractor swallowed a hard LLM/parse error and returned []."""
+    last_error = getattr(extractor, "last_error", None)
+    if last_error:
+        raise RuntimeError(f"{label} extraction failed: {last_error}")
+
+
 def save_checkpoint(name: str, data: any):
     """Save checkpoint data to disk."""
     path = CHECKPOINT_DIR / f"github_{name}.pkl"
@@ -125,7 +132,7 @@ def run_github_ingestion(
         print("Configuration errors:")
         for error in errors:
             print(f"  ✗ {error}")
-        return
+        raise SystemExit(1)
     
     # Initialize clients
     github = GitHubClient()
@@ -141,7 +148,7 @@ def run_github_ingestion(
         print(f"Storage: {msg}")
         if not ok:
             print("  ✗ Cannot connect to storage, aborting")
-            return
+            raise SystemExit(1)
     
     print()
     
@@ -253,6 +260,7 @@ def run_github_ingestion(
                         repo_url=repo_url,
                         repo_full_name=repo_full_name,
                     )
+                    check_extractor_error(extractor, "README")
                     repo_entries.extend(entries)
                     baseline_entry_count += len(entries)
                     stats["readme_entries"] += len(entries)
@@ -271,6 +279,7 @@ def run_github_ingestion(
                             repo_url=repo_url,
                             repo_full_name=repo_full_name,
                         )
+                        check_extractor_error(extractor, "commit")
                         repo_entries.extend(entries)
                         baseline_entry_count += len(entries)
                         stats["commit_entries"] += len(entries)
@@ -289,6 +298,7 @@ def run_github_ingestion(
                             repo_url=repo_url,
                             repo_full_name=repo_full_name,
                         )
+                        check_extractor_error(extractor, "code comment")
                         repo_entries.extend(entries)
                         baseline_entry_count += len(entries)
                         stats["code_entries"] += len(entries)
@@ -307,6 +317,7 @@ def run_github_ingestion(
                         repo_url=repo_url,
                         repo_full_name=repo_full_name,
                     )
+                    check_extractor_error(extractor, "markdown")
                     repo_entries.extend(entries)
                     baseline_entry_count += len(entries)
                     stats["markdown_entries"] += len(entries)
@@ -337,6 +348,7 @@ def run_github_ingestion(
                         artifact_path=artifact["path"],
                         artifact_sha=artifact.get("sha"),
                     )
+                    check_extractor_error(extractor, "agent context")
                     repo_entries.extend(entries)
                     agent_entries += len(entries)
                     processed_artifacts += 1
@@ -383,6 +395,14 @@ def run_github_ingestion(
             stats["errors"] += 1
     
     print()
+
+    if stats["errors"]:
+        save_checkpoint("entries", all_entries)
+        save_checkpoint("stats", stats)
+        raise RuntimeError(
+            f"GitHub ingestion failed for {stats['errors']} repos; "
+            "refusing to save partial extraction results."
+        )
     
     # -------------------------------------------------------------------------
     # STEP 3: Save to storage

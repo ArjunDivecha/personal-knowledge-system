@@ -32,6 +32,13 @@ if [ -f "$REPO/.env" ]; then
     set +a
 fi
 
+# Ingestion inference uses Claude Agent SDK subscription auth by default.
+# The SDK wrapper scrubs ANTHROPIC_API_KEY from its child process unless this
+# opt-in is set to 1 for a deliberate pay-as-you-go fallback run.
+export PKS_ALLOW_ANTHROPIC_API_FALLBACK="${PKS_ALLOW_ANTHROPIC_API_FALLBACK:-0}"
+export PKS_SDK_MAX_TURNS="${PKS_SDK_MAX_TURNS:-1}"
+export PKS_SDK_MAX_BUDGET_USD="${PKS_SDK_MAX_BUDGET_USD:-0.25}"
+
 mkdir -p "$LOG_DIR"
 
 log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG"; }
@@ -45,6 +52,7 @@ if ! ~/agent-sdk-venv/bin/python3 -c "from claude_agent_sdk import query" 2>/dev
     exit 1
 fi
 log "Agent SDK: OK"
+log "LLM billing policy: Agent SDK primary; API fallback opt-in=${PKS_ALLOW_ANTHROPIC_API_FALLBACK}"
 
 # Pre-flight: verify ingestion venv exists
 if [ ! -f "$VENV/bin/python" ]; then

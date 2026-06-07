@@ -37,7 +37,7 @@ class Extractor:
     
     def __init__(self):
         """Auth handled via macOS Keychain through sdk_client; no client object needed."""
-        pass
+        self.last_error: Optional[str] = None
 
     def _query(self, prompt: str, *, max_tokens: int) -> str:
         """Query Claude, preserving the test seam used by older unit tests."""
@@ -54,7 +54,16 @@ class Extractor:
             if content:
                 return str(getattr(content[0], "text", ""))
             return ""
-        return sdk_query(prompt, max_tokens=max_tokens)
+        self.last_error = None
+        try:
+            return sdk_query(prompt, max_tokens=max_tokens)
+        except Exception as error:
+            self.last_error = str(error)
+            raise
+
+    def _record_error(self, label: str, error: Exception) -> None:
+        self.last_error = str(error)
+        print(f"  Error extracting from {label}: {error}")
     
     def _generate_id(self, content: str, source_type: str) -> str:
         """Generate a unique ID for a knowledge entry."""
@@ -148,6 +157,7 @@ JSON format:
   }}
 ]"""
         
+        self.last_error = None
         try:
             text = self._query(prompt, max_tokens=4000)
 
@@ -232,7 +242,7 @@ JSON format:
             return entries
             
         except Exception as e:
-            print(f"  Error extracting from README: {e}")
+            self._record_error("README", e)
             return []
     
     def extract_from_commits(
@@ -291,6 +301,7 @@ JSON format:
   }}
 ]"""
         
+        self.last_error = None
         try:
             text = self._query(prompt, max_tokens=2000)
             start = text.find("[")
@@ -361,7 +372,7 @@ JSON format:
             return entries
             
         except Exception as e:
-            print(f"  Error extracting from commits: {e}")
+            self._record_error("commits", e)
             return []
 
     def extract_from_markdown_files(
@@ -388,6 +399,7 @@ JSON format:
         all_entries: list[dict] = []
         now = datetime.utcnow().isoformat()
 
+        self.last_error = None
         for file in files:
             path = file.get("path", "")
             content = file.get("content", "")
@@ -515,7 +527,7 @@ JSON format:
                     all_entries.append(entry)
 
             except Exception as e:
-                print(f"  Error extracting from {path}: {e}")
+                self._record_error(path, e)
                 continue
 
         return all_entries
@@ -588,6 +600,7 @@ JSON format:
   }}
 ]"""
 
+        self.last_error = None
         try:
             raw_entries = self._extract_json_array(self._query(prompt, max_tokens=3000))
             entries = []
@@ -685,7 +698,7 @@ JSON format:
             return entries
 
         except Exception as e:
-            print(f"  Error extracting from agent context artifact: {e}")
+            self._record_error("agent context artifact", e)
             return []
     
     # -------------------------------------------------------------------------
@@ -739,6 +752,7 @@ JSON format:
   }}
 ]"""
         
+        self.last_error = None
         try:
             text = self._query(prompt, max_tokens=2000)
             start = text.find("[")
@@ -810,7 +824,7 @@ JSON format:
             return entries
             
         except Exception as e:
-            print(f"  Error extracting from email: {e}")
+            self._record_error("email", e)
             return []
     
     # -------------------------------------------------------------------------
@@ -890,6 +904,7 @@ JSON format:
   }}
 ]"""
         
+        self.last_error = None
         try:
             text = self._query(prompt, max_tokens=2000)
             start = text.find("[")
@@ -963,5 +978,5 @@ JSON format:
             return entries
             
         except Exception as e:
-            print(f"  Error extracting from code: {e}")
+            self._record_error("code", e)
             return []

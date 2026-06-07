@@ -40,9 +40,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r distillation/requirements.txt
 
+      - name: Ensure scheduled Dream run
+        run: |
+          python scripts/ensure_overnight_dream_run.py
+
       - name: Generate sleep report
         run: |
-          python scripts/check_overnight_dream_run.py
+          python scripts/check_overnight_dream_run.py --allow-on-demand
 
       - name: Upload sleep report artifacts
         if: always()
@@ -50,6 +54,7 @@ jobs:
         with:
           name: nightly-dream-sleep-report
           path: |
+            scripts/reports/ensure_overnight_dream_run_*.json
             scripts/reports/check_overnight_dream_run_*.json
             scripts/reports/dream-sleep-*.md
           if-no-files-found: warn

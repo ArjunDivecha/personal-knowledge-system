@@ -50,7 +50,6 @@ jobs:
         working-directory: ingestion
 
     env:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
       UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
@@ -60,6 +59,9 @@ jobs:
       GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
       PYTHON_BIN: /opt/homebrew/bin/python3.12
       PYTHONUNBUFFERED: "1"
+      PKS_ALLOW_ANTHROPIC_API_FALLBACK: "0"
+      PKS_SDK_MAX_TURNS: "1"
+      PKS_SDK_MAX_BUDGET_USD: "0.25"
 
     steps:
       - name: Check out repository
@@ -68,6 +70,8 @@ jobs:
       - name: Check Python
         run: |
           "$PYTHON_BIN" --version
+          command -v claude
+          claude --version
 
       - name: Install dependencies
         run: |
@@ -75,6 +79,10 @@ jobs:
           . .venv/bin/activate
           python -m pip install --upgrade pip
           python -m pip install -r ../distillation/requirements.txt
+          python - <<'PY'
+          from claude_agent_sdk import query, ClaudeAgentOptions
+          print("claude_agent_sdk import OK")
+          PY
 
       - name: Run agent session ingestion
         env:

@@ -88,6 +88,8 @@ class _FakeGitHubClient:
 
 
 class _FakeExtractor:
+    last_error: Optional[str] = None
+
     def extract_from_readme(
         self,
         readme_content: str,
@@ -129,6 +131,18 @@ class _FakeExtractor:
         return []
 
     def extract_from_agent_context_artifact(self, **kwargs) -> list[dict]:
+        return []
+
+
+class _FailingExtractor(_FakeExtractor):
+    def extract_from_readme(
+        self,
+        readme_content: str,
+        repo_name: str,
+        repo_url: str,
+        repo_full_name: Optional[str] = None,
+    ) -> list[dict]:
+        self.last_error = "Agent SDK query failed: test failure"
         return []
 
 
@@ -202,6 +216,26 @@ class GitHubRunTests(unittest.TestCase):
         self.assertEqual(github.agent_calls, 1)
         github_marks = [mark for mark in storage.marked if mark[0] == "github"]
         self.assertEqual(github_marks, [])
+
+    def test_run_github_ingestion_aborts_on_swallowed_extractor_error(self) -> None:
+        storage = _FakeStorage()
+        github = _FakeGitHubClient([self.repo])
+        extractor = _FailingExtractor()
+
+        with patch.object(github_run, "validate_github_config", return_value=[]):
+            with patch.object(github_run, "GitHubClient", return_value=github):
+                with patch.object(github_run, "Extractor", return_value=extractor):
+                    with patch.object(github_run, "StorageClient", return_value=storage):
+                        with self.assertRaisesRegex(RuntimeError, "refusing to save partial"):
+                            github_run.run_github_ingestion(
+                                skip_commits=True,
+                                skip_code=True,
+                                dry_run=False,
+                                resume=True,
+                            )
+
+        self.assertEqual(storage.saved_batches, [])
+        self.assertEqual(storage.thin_index_updates, [])
 
 
 if __name__ == "__main__":

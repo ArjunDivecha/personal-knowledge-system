@@ -17,4 +17,4 @@ if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
 fi
 
 cd "$WORKER_DIR"
-npx wrangler deploy --env=""
+npx wrangler deploy --config wrangler.json --env=""
