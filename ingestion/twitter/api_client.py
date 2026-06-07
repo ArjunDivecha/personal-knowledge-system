@@ -269,6 +269,9 @@ class TwitterAPIClient:
         if not username:
             raise ValueError("username is required")
 
+        if max_tweets is not None and max_tweets <= 0:
+            return
+
         user_id = self.get_user_id(username)
         print(f"  Resolved @{username} → user_id {user_id}")
 
@@ -278,7 +281,7 @@ class TwitterAPIClient:
         total_yielded = 0
 
         while True:
-            if max_tweets and total_yielded >= max_tweets:
+            if max_tweets is not None and total_yielded >= max_tweets:
                 break
 
             page += 1
@@ -334,7 +337,7 @@ class TwitterAPIClient:
 
             # Yield records for this page
             for raw in tweets_on_page:
-                if max_tweets and total_yielded >= max_tweets:
+                if max_tweets is not None and total_yielded >= max_tweets:
                     return
 
                 text = _clean_text(raw.get("text", ""))

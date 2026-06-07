@@ -649,7 +649,7 @@ def main():
         files_to_process.extend([(f, "codex_cli") for f in codex_files])
         log.info(f"Codex CLI: {len(codex_files)} rollout files found")
 
-    if args.limit:
+    if args.limit is not None:
         files_to_process = files_to_process[:args.limit]
         log.info(f"Limited to {args.limit} files")
 
