@@ -94,7 +94,7 @@ jobs:
             echo "Claude Agent SDK inference preflight OK"
           else
             echo "available=false" >> "$GITHUB_OUTPUT"
-            cat /tmp/pks-sdk-auth.log
+            grep -E "Claude Agent SDK preflight failed|Refusing to run ingestion SDK|unexpected SDK preflight response" /tmp/pks-sdk-auth.log || tail -n 5 /tmp/pks-sdk-auth.log
             echo "::warning::Claude Agent SDK subscription auth is unavailable in this GitHub runner; skipping ingestion. Run scripts/run_nightly_ingestion.sh on the local Mac for production ingestion."
           fi
 
