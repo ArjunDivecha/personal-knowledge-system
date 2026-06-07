@@ -53,6 +53,11 @@ jobs:
       PKS_API_FALLBACK_MAX_CALLS: "200"
       PKS_API_FALLBACK_BUDGET_FILE: /tmp/pks-api-fallback-${{ github.run_id }}-${{ github.run_attempt }}.json
       PKS_SDK_MODEL: sonnet
+      # Hard no-browser guard for the whole job: a self-hosted runner must never
+      # open an interactive OAuth/login browser window. If subscription auth is
+      # absent the SDK preflight fails fast and we route to API fallback.
+      BROWSER: /usr/bin/false
+      GIT_TERMINAL_PROMPT: "0"
 
     steps:
       - name: Check out repository
@@ -79,14 +84,14 @@ jobs:
         id: claude_route
         run: |
           . .venv/bin/activate
-          if python ../scripts/check_claude_sdk_auth.py >/tmp/pks-sdk-auth.log 2>&1; then
+          if python ../scripts/check_claude_sdk_auth_noninteractive.py >/tmp/pks-sdk-auth.log 2>&1; then
             echo "billing_source=sdk" >> "$GITHUB_OUTPUT"
             echo "PKS_ALLOW_ANTHROPIC_API_FALLBACK=0" >> "$GITHUB_ENV"
             echo "Claude Agent SDK inference preflight OK; using SDK billing route."
           else
             echo "billing_source=api_fallback" >> "$GITHUB_OUTPUT"
             echo "PKS_ALLOW_ANTHROPIC_API_FALLBACK=1" >> "$GITHUB_ENV"
-            grep -E "Claude Agent SDK preflight failed|Refusing to run ingestion SDK|unexpected SDK preflight response" /tmp/pks-sdk-auth.log || tail -n 5 /tmp/pks-sdk-auth.log
+            grep -E "Claude Agent SDK preflight failed|Refusing to run ingestion SDK|unexpected SDK preflight response|SDK unavailable non-interactively" /tmp/pks-sdk-auth.log || tail -n 5 /tmp/pks-sdk-auth.log
             echo "::warning::Claude Agent SDK subscription auth is unavailable in this GitHub runner; using Anthropic API fallback for this ingestion run."
           fi
 

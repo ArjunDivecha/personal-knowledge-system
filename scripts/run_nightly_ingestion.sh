@@ -50,6 +50,12 @@ export PKS_AGENT_SESSION_DISTILL_RETRY_LIMIT="${PKS_AGENT_SESSION_DISTILL_RETRY_
 export PKS_AGENT_SESSION_STATUS_FILE="${PKS_AGENT_SESSION_STATUS_FILE:-$AGENT_SESSION_STATUS}"
 export DREAM_ALLOW_ANTHROPIC_API_FALLBACK="${DREAM_ALLOW_ANTHROPIC_API_FALLBACK:-0}"
 
+# Hard no-browser guard for the whole unattended (launchd) run. Subscription
+# auth must already be present; if it is not, the SDK preflight fails fast and we
+# route to API fallback. Never open an interactive OAuth/login browser window.
+export BROWSER="${BROWSER:-/usr/bin/false}"
+export GIT_TERMINAL_PROMPT="${GIT_TERMINAL_PROMPT:-0}"
+
 mkdir -p "$LOG_DIR"
 
 log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG"; }
@@ -83,7 +89,7 @@ log "Claude CLI: $(command -v claude)"
 # Pre-flight: run one real subscription-backed SDK inference before fetching
 # external sources. `claude --version` and SDK import can pass even when the
 # local OAuth/subscription context is unavailable to the process.
-if "$VENV/bin/python" "$REPO/scripts/check_claude_sdk_auth.py" >/dev/null 2>&1
+if "$VENV/bin/python" "$REPO/scripts/check_claude_sdk_auth_noninteractive.py" >/dev/null 2>&1
 then
     export PKS_ALLOW_ANTHROPIC_API_FALLBACK=0
     log "Claude Agent SDK inference preflight: OK (model=${PKS_SDK_MODEL}); using SDK billing route."

@@ -28,6 +28,12 @@ class IngestionBillingRouteTests(unittest.TestCase):
                 self.assertIn("PKS_ALLOW_ANTHROPIC_API_FALLBACK=1", text)
                 self.assertIn("Validate API fallback key", text)
                 self.assertIn("using Anthropic API fallback for this ingestion run", text)
+                # Route detection must use the no-browser preflight, never the
+                # raw probe that could launch an interactive OAuth login flow.
+                self.assertIn("check_claude_sdk_auth_noninteractive.py", text)
+                self.assertNotIn("check_claude_sdk_auth.py", text)
+                # Hard no-browser guard for the whole self-hosted-runner job.
+                self.assertIn("BROWSER: /usr/bin/false", text)
                 self.assertNotIn("steps.sdk_auth.outputs.available", text)
                 self.assertNotIn("Report skipped ingestion", text)
                 self.assertNotIn("intentionally skipped because this runner cannot", text)
@@ -41,6 +47,11 @@ class IngestionBillingRouteTests(unittest.TestCase):
         self.assertIn("PKS_API_FALLBACK_MAX_CALLS", text)
         self.assertIn("PKS_API_FALLBACK_BUDGET_FILE", text)
         self.assertIn('DREAM_ALLOW_ANTHROPIC_API_FALLBACK="${DREAM_ALLOW_ANTHROPIC_API_FALLBACK:-0}"', text)
+        # The local launchd wrapper must also use the no-browser preflight and
+        # carry a hard no-browser guard for the whole unattended run.
+        self.assertIn("check_claude_sdk_auth_noninteractive.py", text)
+        self.assertNotIn('"$REPO/scripts/check_claude_sdk_auth.py"', text)
+        self.assertIn('export BROWSER="${BROWSER:-/usr/bin/false}"', text)
         self.assertNotIn("This overnight runner must execute on the local Mac context", text)
 
 
