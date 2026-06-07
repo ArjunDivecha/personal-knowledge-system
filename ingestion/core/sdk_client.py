@@ -29,6 +29,8 @@ import sys
 
 
 DEFAULT_SDK_MAX_BUDGET_USD = 0.25
+DEFAULT_SDK_MAX_TURNS = 4
+DEFAULT_SDK_MODEL = "sonnet"
 _warned_api_fallback = False
 
 
@@ -95,18 +97,31 @@ def _build_sdk_env() -> dict[str, str]:
     return env
 
 
+def resolved_sdk_model() -> str:
+    return os.getenv("PKS_SDK_MODEL") or DEFAULT_SDK_MODEL
+
+
+def _assert_allowed_sdk_model(model: str) -> None:
+    if "opus" in model.lower() and not _truthy(os.getenv("PKS_ALLOW_OPUS_SDK_MODEL")):
+        raise RuntimeError(
+            "Refusing to run ingestion SDK with an Opus-class model. "
+            "Set PKS_SDK_MODEL=sonnet for normal ingestion, or explicitly set "
+            "PKS_ALLOW_OPUS_SDK_MODEL=1 for a deliberate Opus SDK run."
+        )
+
+
 def _build_options() -> ClaudeAgentOptions:
     kwargs: dict[str, object] = {
         "allowed_tools": [],
         "env": _build_sdk_env(),
-        "max_turns": _int_env("PKS_SDK_MAX_TURNS", 1),
+        "max_turns": _int_env("PKS_SDK_MAX_TURNS", DEFAULT_SDK_MAX_TURNS),
     }
     max_budget = _float_env("PKS_SDK_MAX_BUDGET_USD", DEFAULT_SDK_MAX_BUDGET_USD)
     if max_budget is not None:
         kwargs["max_budget_usd"] = max_budget
-    model = os.getenv("PKS_SDK_MODEL")
-    if model:
-        kwargs["model"] = model
+    model = resolved_sdk_model()
+    _assert_allowed_sdk_model(model)
+    kwargs["model"] = model
     return ClaudeAgentOptions(**kwargs)
 
 

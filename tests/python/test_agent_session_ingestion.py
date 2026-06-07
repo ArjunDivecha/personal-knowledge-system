@@ -65,7 +65,7 @@ class AgentSessionParserTests(unittest.TestCase):
 
 
 class AgentSessionCheckpointTests(unittest.TestCase):
-    def test_process_file_does_not_advance_checkpoint_on_distillation_failure(self) -> None:
+    def test_process_file_records_distillation_failure_before_retry_limit(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "rollout-test.jsonl"
             path.write_text("{}\n")
@@ -111,21 +111,89 @@ class AgentSessionCheckpointTests(unittest.TestCase):
                 },
             ]
 
-            with patch.object(agent_run, "parse_codex", return_value=(turns, 99, {"cwd": "", "project": "knowledge-system"})):
-                with patch.object(agent_run, "distill", side_effect=agent_run.DistillationFailure("bad json")):
-                    with patch.object(agent_run, "save_state", side_effect=lambda new_state: save_calls.append(dict(new_state))):
-                        saved = agent_run.process_file(
-                            path=path,
-                            source_type="codex_cli",
-                            state=state,
-                            storage=object(),
-                            linker=_DummyLinker(),
-                            dry_run=False,
-                        )
+            with patch.dict("os.environ", {"PKS_AGENT_SESSION_DISTILL_RETRY_LIMIT": "2"}, clear=False):
+                with patch.object(agent_run, "parse_codex", return_value=(turns, 99, {"cwd": "", "project": "knowledge-system"})):
+                    with patch.object(agent_run, "distill", side_effect=agent_run.DistillationFailure("bad json")):
+                        with patch.object(agent_run, "save_state", side_effect=lambda new_state: save_calls.append(dict(new_state))):
+                            saved = agent_run.process_file(
+                                path=path,
+                                source_type="codex_cli",
+                                state=state,
+                                storage=object(),
+                                linker=_DummyLinker(),
+                                dry_run=False,
+                            )
 
             self.assertEqual(saved, 0)
-            self.assertEqual(save_calls, [])
-            self.assertNotIn(str(path), state["files"])
+            self.assertEqual(len(save_calls), 1)
+            self.assertEqual(state["files"][str(path)]["offset"], 0)
+            self.assertEqual(state["files"][str(path)]["distill_failures"], 1)
+            self.assertNotIn("distill_failure_exhausted", state["files"][str(path)])
+
+    def test_process_file_advances_checkpoint_after_distillation_retry_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "rollout-test.jsonl"
+            path.write_text("{}\n")
+
+            state = agent_run._default_state()
+            save_calls: list[dict] = []
+            turns = [
+                {
+                    "role": "user",
+                    "content": "x" * 400,
+                    "timestamp": "",
+                    "session_id": "sid",
+                    "source": "codex_cli",
+                    "project": "knowledge-system",
+                    "cwd": "",
+                },
+                {
+                    "role": "assistant",
+                    "content": "Acknowledged.",
+                    "timestamp": "",
+                    "session_id": "sid",
+                    "source": "codex_cli",
+                    "project": "knowledge-system",
+                    "cwd": "",
+                },
+                {
+                    "role": "user",
+                    "content": "y" * 400,
+                    "timestamp": "",
+                    "session_id": "sid",
+                    "source": "codex_cli",
+                    "project": "knowledge-system",
+                    "cwd": "",
+                },
+                {
+                    "role": "assistant",
+                    "content": "Still working.",
+                    "timestamp": "",
+                    "session_id": "sid",
+                    "source": "codex_cli",
+                    "project": "knowledge-system",
+                    "cwd": "",
+                },
+            ]
+
+            with patch.dict("os.environ", {"PKS_AGENT_SESSION_DISTILL_RETRY_LIMIT": "1"}, clear=False):
+                with patch.object(agent_run, "parse_codex", return_value=(turns, 99, {"cwd": "", "project": "knowledge-system"})):
+                    with patch.object(agent_run, "distill", side_effect=agent_run.DistillationFailure("bad json")):
+                        with patch.object(agent_run, "save_state", side_effect=lambda new_state: save_calls.append(dict(new_state))):
+                            saved = agent_run.process_file(
+                                path=path,
+                                source_type="codex_cli",
+                                state=state,
+                                storage=object(),
+                                linker=_DummyLinker(),
+                                dry_run=False,
+                            )
+
+            self.assertEqual(saved, 0)
+            self.assertEqual(len(save_calls), 1)
+            self.assertEqual(state["files"][str(path)]["offset"], 99)
+            self.assertEqual(state["files"][str(path)]["mtime"], path.stat().st_mtime)
+            self.assertTrue(state["files"][str(path)]["distill_failure_exhausted"])
 
     def test_process_file_advances_checkpoint_when_distillation_succeeds_with_no_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -193,6 +261,7 @@ class AgentSessionCheckpointTests(unittest.TestCase):
     def test_save_state_keeps_local_checkpoint_when_redis_write_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             state_file = Path(tmpdir) / "agent_sessions_state.json"
+            status_file = Path(tmpdir) / "agent_sessions_status.json"
 
             class FailingRedis:
                 def set(self, *_args, **_kwargs):
@@ -203,10 +272,21 @@ class AgentSessionCheckpointTests(unittest.TestCase):
 
             with patch.object(agent_run, "STATE_FILE", state_file):
                 with patch.object(agent_run, "_get_state_redis_client", return_value=FailingRedis()):
-                    agent_run.save_state(state)
+                    with patch.dict("os.environ", {"PKS_AGENT_SESSION_STATUS_FILE": str(status_file)}, clear=False):
+                        agent_run._redis_write_failed = False
+                        agent_run.save_state(state)
+                        agent_run.write_run_status(
+                            state_source="redis",
+                            total_saved=0,
+                            total_files_processed=0,
+                            elapsed_seconds=1.25,
+                        )
 
             saved = json.loads(state_file.read_text())
             self.assertEqual(saved["files"]["/tmp/session.jsonl"]["offset"], 123)
+            status = json.loads(status_file.read_text())
+            self.assertTrue(status["redis_write_failed"])
+            self.assertEqual(status["state_source"], "redis")
 
     def test_load_state_prefers_local_when_redis_checkpoint_is_stale(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

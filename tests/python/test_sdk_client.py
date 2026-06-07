@@ -78,6 +78,62 @@ class SdkClientTests(unittest.TestCase):
 
         self.assertEqual(captured["env"].get("ANTHROPIC_API_KEY"), "sk-test")
 
+    def test_sdk_query_pins_default_model_and_turn_cap(self) -> None:
+        captured = {}
+
+        def fake_query(prompt, options):
+            captured["model"] = options.model
+            captured["max_turns"] = options.max_turns
+
+            async def messages():
+                yield AssistantMessage(
+                    content=[TextBlock("ok")],
+                    model="test-model",
+                )
+                yield _result_message()
+
+            return messages()
+
+        with patch.dict("os.environ", {}, clear=True):
+            with patch.object(sdk_client, "query", fake_query):
+                self.assertEqual(sdk_client.sdk_query("hello"), "ok")
+
+        self.assertEqual(captured["model"], "sonnet")
+        self.assertEqual(captured["max_turns"], 4)
+
+    def test_sdk_query_refuses_opus_model_without_explicit_override(self) -> None:
+        with patch.dict("os.environ", {"PKS_SDK_MODEL": "claude-opus-4-8"}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "Opus-class model"):
+                sdk_client.sdk_query("hello")
+
+    def test_sdk_query_allows_opus_model_with_explicit_override(self) -> None:
+        captured = {}
+
+        def fake_query(prompt, options):
+            captured["model"] = options.model
+
+            async def messages():
+                yield AssistantMessage(
+                    content=[TextBlock("ok")],
+                    model="test-model",
+                )
+                yield _result_message()
+
+            return messages()
+
+        with patch.dict(
+            "os.environ",
+            {
+                "PKS_SDK_MODEL": "claude-opus-4-8",
+                "PKS_ALLOW_OPUS_SDK_MODEL": "1",
+            },
+            clear=True,
+        ):
+            with patch.object(sdk_client, "query", fake_query):
+                self.assertEqual(sdk_client.sdk_query("hello"), "ok")
+
+        self.assertEqual(captured["model"], "claude-opus-4-8")
+
     def test_sdk_query_uses_result_text_when_assistant_text_is_empty(self) -> None:
         def fake_query(prompt, options):
             async def messages():

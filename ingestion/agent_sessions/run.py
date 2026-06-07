@@ -90,6 +90,8 @@ STATE_FILE = Path(__file__).parent.parent / "checkpoints" / "agent_sessions_stat
 LOG_FILE = Path(__file__).parent.parent / "logs" / "agent_sessions.log"
 STATE_REDIS_KEY = "ingestion:agent_sessions:state"
 _state_redis_client: Optional[Redis] = None
+_redis_write_failed = False
+DEFAULT_DISTILL_FAILURE_RETRY_LIMIT = 2
 
 # Filtering thresholds
 MIN_USER_CHARS = 300    # Skip trivial sessions (just cd/ls)
@@ -116,6 +118,23 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 class DistillationFailure(RuntimeError):
     """Raised when a session should be retried instead of checkpointed forward."""
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return default
+
+
+def _distill_failure_retry_limit() -> int:
+    return _int_env(
+        "PKS_AGENT_SESSION_DISTILL_RETRY_LIMIT",
+        DEFAULT_DISTILL_FAILURE_RETRY_LIMIT,
+    )
 
 
 def _default_state() -> dict:
@@ -236,6 +255,7 @@ def load_state() -> tuple[dict, str]:
 
 def save_state(state: dict):
     """Persist processing state atomically to disk and best-effort to Redis."""
+    global _redis_write_failed
     normalized = _normalize_state(state)
     tmp = STATE_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(normalized, indent=2))
@@ -246,7 +266,77 @@ def save_state(state: dict):
         try:
             redis_client.set(STATE_REDIS_KEY, json.dumps(normalized))
         except Exception as exc:
+            _redis_write_failed = True
             log.warning(f"Could not save agent session state to Redis: {exc}")
+
+
+def write_run_status(
+    *,
+    state_source: str,
+    total_saved: int,
+    total_files_processed: int,
+    elapsed_seconds: float,
+) -> None:
+    """Write optional machine-readable run status for the local overnight wrapper."""
+    status_path_raw = os.getenv("PKS_AGENT_SESSION_STATUS_FILE")
+    if not status_path_raw:
+        return
+
+    status_path = Path(status_path_raw).expanduser()
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    status = {
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "state_source": state_source,
+        "redis_write_failed": _redis_write_failed,
+        "total_saved": total_saved,
+        "files_yielded_entries": total_files_processed,
+        "elapsed_seconds": round(elapsed_seconds, 3),
+    }
+    tmp = status_path.with_suffix(status_path.suffix + ".tmp")
+    tmp.write_text(json.dumps(status, indent=2))
+    tmp.rename(status_path)
+
+
+def record_distillation_failure(
+    state: dict,
+    state_key: str,
+    file_state: dict,
+    *,
+    offset: int,
+    new_offset: int,
+    current_mtime: float,
+    exc: DistillationFailure,
+) -> bool:
+    """Record a failed distillation attempt; return True if checkpoint advanced."""
+    attempts = int(file_state.get("distill_failures", 0) or 0) + 1
+    retry_limit = _distill_failure_retry_limit()
+    now = datetime.now(timezone.utc).isoformat()
+    failure_metadata = {
+        "distill_failures": attempts,
+        "last_distill_error": str(exc)[:500],
+        "last_distill_failed_at": now,
+        "last_failed_offset": offset,
+        "last_failed_target_offset": new_offset,
+    }
+
+    if attempts >= retry_limit:
+        state["files"][state_key] = {
+            "offset": new_offset,
+            "mtime": current_mtime,
+            "distill_failure_exhausted": True,
+            **failure_metadata,
+        }
+        save_state(state)
+        return True
+
+    state["files"][state_key] = {
+        **file_state,
+        "offset": offset,
+        "mtime": float(file_state.get("mtime", 0) or 0),
+        **failure_metadata,
+    }
+    save_state(state)
+    return False
 
 
 # ── Distillation ──────────────────────────────────────────────────────────────
@@ -535,10 +625,24 @@ def process_file(
     try:
         entries = distill(turns, github_info)
     except DistillationFailure as exc:
-        log.warning(
-            "  Distillation failed; leaving checkpoint unchanged for retry: "
-            f"{exc}"
+        advanced = False
+        if not dry_run:
+            advanced = record_distillation_failure(
+                state,
+                state_key,
+                file_state,
+                offset=offset,
+                new_offset=new_offset,
+                current_mtime=current_mtime,
+                exc=exc,
+            )
+        retry_limit = _distill_failure_retry_limit()
+        action = (
+            f"advanced checkpoint after {retry_limit} failed attempt(s); window skipped"
+            if advanced
+            else "leaving checkpoint window eligible for bounded retry"
         )
+        log.warning("  Distillation failed; %s: %s", action, exc)
         return 0
 
     saved = 0
@@ -689,6 +793,12 @@ def main():
         save_state(state)
 
     elapsed = time.time() - start_time
+    write_run_status(
+        state_source=state_source,
+        total_saved=total_saved,
+        total_files_processed=total_files_processed,
+        elapsed_seconds=elapsed,
+    )
     log.info(
         f"Done: {total_files_processed} files yielded {total_saved} entries "
         f"in {elapsed:.0f}s"

@@ -7,7 +7,7 @@ SCRIPT NAME: dream_judge/run.py
 INPUT FILES:
 - ingestion/.env: DREAM_OPERATOR_TOKEN (auth to Worker), DREAM_MCP_BASE_URL
   (default https://mcp.dancing-ganesh.com), DREAM_OPUS_MODEL (default
-  claude-opus-4-6), ANTHROPIC_API_KEY (fallback)
+  claude-opus-4-6), ANTHROPIC_API_KEY (only when fallback is explicit)
 
 OUTPUT FILES:
 - Verdicts POSTed back to the Worker at /ops/dream/judge_verdict
@@ -22,9 +22,9 @@ Reads pending border-case ops from the Cloudflare Worker's judge queue and
 asks Opus to decide each one (apply or skip). Posts verdicts back so the
 next Worker cycle can act on them.
 
-Tries the `claude` CLI first (subscription credits, no API cost). Falls
-back to the Anthropic API and emits a warning if the CLI isn't available
-or fails (e.g., quota exceeded, not logged in).
+Tries the `claude` CLI first (subscription credits, no API cost). Anthropic API
+fallback is fail-closed unless explicitly enabled with
+DREAM_ALLOW_ANTHROPIC_API_FALLBACK=1 or --allow-api-fallback.
 
 Designed to run nightly via run_nightly_ingestion.sh, AFTER the other
 ingestion steps and BEFORE the remote Worker cron fires its next cycle.
@@ -45,8 +45,8 @@ USAGE:
     # Limit number of items judged this run
     python dream_judge/run.py --limit 5
 
-    # Force API fallback (skip claude CLI)
-    python dream_judge/run.py --force-api
+    # Force explicit API fallback (skip claude CLI)
+    DREAM_ALLOW_ANTHROPIC_API_FALLBACK=1 python dream_judge/run.py --force-api
 =============================================================================
 """
 
@@ -99,6 +99,14 @@ CLAUDE_CLI_CANDIDATES = [
     Path("/opt/homebrew/bin/claude"),
     Path("/usr/local/bin/claude"),
 ]
+
+
+def _truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def api_fallback_enabled(flag: bool = False) -> bool:
+    return flag or _truthy(os.getenv("DREAM_ALLOW_ANTHROPIC_API_FALLBACK"))
 
 
 def auth_headers() -> dict[str, str]:
@@ -221,7 +229,7 @@ def judge_via_claude_cli(prompt: str, model: str) -> tuple[str, str, str] | None
     """
     claude_bin = resolve_claude_cli()
     if not claude_bin:
-        log.warning("claude CLI not found; falling back to API")
+        log.warning("claude CLI not found")
         return None
 
     try:
@@ -233,18 +241,18 @@ def judge_via_claude_cli(prompt: str, model: str) -> tuple[str, str, str] | None
             timeout=CLAUDE_CLI_TIMEOUT,
         )
     except FileNotFoundError:
-        log.warning("claude CLI path disappeared; falling back to API")
+        log.warning("claude CLI path disappeared")
         return None
     except subprocess.TimeoutExpired:
-        log.warning("claude CLI timed out; falling back to API")
+        log.warning("claude CLI timed out")
         return None
     except Exception as e:
-        log.warning("claude CLI failed (%s); falling back to API", e)
+        log.warning("claude CLI failed (%s)", e)
         return None
 
     if result.returncode != 0:
         log.warning(
-            "claude CLI returned exit %s; stderr=%s; falling back to API",
+            "claude CLI returned exit %s; stderr=%s",
             result.returncode,
             (result.stderr or "")[:300],
         )
@@ -253,7 +261,7 @@ def judge_via_claude_cli(prompt: str, model: str) -> tuple[str, str, str] | None
     parsed = parse_verdict_response(result.stdout)
     if parsed is None:
         log.warning(
-            "claude CLI output was unparseable; falling back to API. stdout=%s",
+            "claude CLI output was unparseable. stdout=%s",
             (result.stdout or "")[:300],
         )
         return None
@@ -299,12 +307,20 @@ def judge_via_anthropic_api(prompt: str, model: str) -> tuple[str, str, str] | N
         return None
 
 
-def judge_item(item: dict[str, Any], model: str, force_api: bool) -> tuple[str, str, str] | None:
+def judge_item(
+    item: dict[str, Any],
+    model: str,
+    force_api: bool,
+    allow_api_fallback: bool,
+) -> tuple[str, str, str] | None:
     prompt = build_prompt(item)
     if not force_api:
         result = judge_via_claude_cli(prompt, model)
         if result is not None:
             return result
+    if not allow_api_fallback:
+        log.error("Anthropic API fallback disabled; set DREAM_ALLOW_ANTHROPIC_API_FALLBACK=1 or pass --allow-api-fallback for a deliberate API-billed judge run")
+        return None
     return judge_via_anthropic_api(prompt, model)
 
 
@@ -316,17 +332,20 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="classify but do not POST verdicts")
     parser.add_argument("--limit", type=int, default=None, help="max items to judge this run")
     parser.add_argument("--force-api", action="store_true", help="skip claude CLI; go straight to API")
+    parser.add_argument("--allow-api-fallback", action="store_true", help="allow deliberate Anthropic API fallback if the claude CLI path fails")
     args = parser.parse_args()
+    allow_api_fallback = api_fallback_enabled(args.allow_api_fallback)
 
     if not OPERATOR_TOKEN:
         log.error("DREAM_OPERATOR_TOKEN not set; cannot authenticate to Worker.")
         return 2
 
     log.info(
-        "Starting dream_judge run: worker=%s model=%s force_api=%s dry_run=%s claude_cli=%s",
+        "Starting dream_judge run: worker=%s model=%s force_api=%s allow_api_fallback=%s dry_run=%s claude_cli=%s",
         WORKER_BASE_URL,
         OPUS_MODEL,
         args.force_api,
+        allow_api_fallback,
         args.dry_run,
         "api_forced" if args.force_api else (resolve_claude_cli() or "not_found"),
     )
@@ -358,7 +377,7 @@ def main() -> int:
             continue
 
         log.info("Judging %s (op_type=%s)", op_id, item.get("op_type"))
-        judged = judge_item(item, OPUS_MODEL, args.force_api)
+        judged = judge_item(item, OPUS_MODEL, args.force_api, allow_api_fallback)
         if judged is None:
             log.error("  ✗ judge failed for %s", op_id)
             n_failed += 1
