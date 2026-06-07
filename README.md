@@ -378,9 +378,37 @@ is destroyed.
 Local machine ingestion still handles local-only AI session sources. The
 launchd wrapper is `scripts/run_nightly_ingestion.sh`; it sources the repo
 root `.env`, expands launchd's minimal `PATH`, verifies the ingestion venv,
-and fails fast if the Claude CLI cannot be found. That preflight exists because
-the Dream judge should use the Claude subscription CLI path, not silently fall
-back to paid Anthropic API calls.
+and fails fast if the Claude CLI cannot be found.
+
+#### Claude Billing Route (SDK primary, API fallback, never skip)
+
+Both the local wrapper and all three ingestion workflows
+(`twitter-ingestion.yml`, `github-ingestion.yml`,
+`agent-session-ingestion.yml`) select a Claude billing route before fetching
+any source data:
+
+1. A non-interactive preflight,
+   `scripts/check_claude_sdk_auth_noninteractive.py`, probes whether Claude
+   Agent SDK subscription auth works in this process.
+2. If it does, ingestion uses the SDK subscription route
+   (`PKS_ALLOW_ANTHROPIC_API_FALLBACK=0`).
+3. If it does not, ingestion routes to the project Anthropic API key as a
+   bounded fallback (`PKS_ALLOW_ANTHROPIC_API_FALLBACK=1`, with per-call and
+   per-run budget/call caps). Ingestion is **never** silently skipped, and the
+   wrapper fails loudly if fallback is needed but no `ANTHROPIC_API_KEY` exists.
+
+The preflight is deliberately **no-browser**. A self-hosted runner or launchd
+job has no interactive session, so a naive SDK auth probe could start an OAuth
+login *browser* flow (a listener on `localhost:18043`, `oauth/callback` URLs)
+and, when several jobs run at once, multiply into a session storm. The wrapper
+hardens the child environment (`CI=1`, `BROWSER=/usr/bin/false`,
+`GIT_TERMINAL_PROMPT=0`, and scrubs `ANTHROPIC_API_KEY` so it tests
+subscription auth specifically), runs the probe in its own process group under
+a hard timeout, and SIGKILLs that group if it stalls. The workflows and the
+launchd wrapper also export `BROWSER=/usr/bin/false` for the whole run as a
+second guard. The Dream judge still uses the Claude subscription CLI path and
+does not enable API fallback unless `DREAM_ALLOW_ANTHROPIC_API_FALLBACK=1` is
+set explicitly.
 
 Cloudflare Worker deploys should use:
 
@@ -442,10 +470,13 @@ knowledge-system/
     Also contains storage clients, models, and thin-index generation
 
   scripts/
-    Migration and verification scripts
+    Migration, verification, ingestion-billing, and health-monitor scripts
     backfill_context_type.py
     backfill_counts.py
     verify_memory_consistency.py
+    check_claude_sdk_auth_noninteractive.py   no-browser SDK auth preflight
+    nightly_health_monitor.py                 preflight / snapshot / verify
+    oauth_storm_watcher.sh                    OAuth/browser storm watchdog
 
   shared/
     Cross-language policy files
@@ -538,6 +569,41 @@ The upgrade work introduced three important operator scripts:
   Redis vs Vector vs thin-index verification.
 
 These scripts are how the repo moved from legacy mixed-schema data to the current retrieval model.
+
+### Nightly Ingestion Health Monitoring
+
+`scripts/nightly_health_monitor.py` is the end-to-end health check for the
+nightly ingestion run. It is read-only against production storage and has three
+modes:
+
+```bash
+# Readiness checks (env keys, source dirs, claude CLI, agent-sdk import,
+# Redis/Vector connectivity, and the no-browser SDK preflight). No browser opens.
+ingestion/.venv/bin/python scripts/nightly_health_monitor.py preflight
+
+# Capture observable state (storage counts, per-source dedup counts, checkpoints)
+# once before and once after a run.
+ingestion/.venv/bin/python scripts/nightly_health_monitor.py snapshot --label before --out /tmp/before.json
+ingestion/.venv/bin/python scripts/nightly_health_monitor.py snapshot --label after  --out /tmp/after.json
+
+# Per-pipeline PASS/WARN/FAIL report (also scans the run log for errors and any
+# OAuth/browser-storm references, scoped to the most recent run in the daily log).
+ingestion/.venv/bin/python scripts/nightly_health_monitor.py verify \
+  --before /tmp/before.json --after /tmp/after.json \
+  --log ingestion/logs/nightly/$(date +%F).log --out /tmp/nightly_report
+```
+
+A clean incremental run reports `WARN` when a pipeline simply found nothing new;
+`FAIL` means the run did not complete, the log contained errors, or any
+browser/OAuth-storm reference appeared.
+
+`scripts/oauth_storm_watcher.sh` is a watchdog meant to run in the background
+alongside a nightly run. It polls for a listener on port `18043` or any
+`oauth/callback` process and SIGKILLs only the offender's process group (it
+never runs a broad `pkill claude`). Stop it by creating `<log>.stop` or sending
+`SIGTERM`. The verification logic and the no-browser preflight are covered by
+`tests/python/test_nightly_health_monitor.py` and
+`tests/python/test_check_claude_sdk_auth_noninteractive.py`.
 
 ## Validation Strategy
 
@@ -645,6 +711,11 @@ The system is trying to enforce a few simple rules:
 
 ## Version History
 
+- **1.2.1** (June 2026)
+  No-browser Claude SDK auth preflight (`check_claude_sdk_auth_noninteractive.py`)
+  to stop the ingestion OAuth/browser session storm; SDK-primary / API-fallback /
+  never-skip billing route across all three ingestion workflows and the launchd
+  wrapper; end-to-end nightly health monitor and OAuth storm watcher with tests.
 - **1.2.0** (March 2026)
   Schema v2 migration, context-type backfill, tier-aware retrieval, shared salience policy, `/health` endpoint, OAuth-enabled Worker deployment.
 - **1.1.0** (March 2026)
