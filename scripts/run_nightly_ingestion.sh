@@ -34,12 +34,16 @@ if [ -f "$REPO/.env" ]; then
     set +a
 fi
 
-# Ingestion inference uses Claude Agent SDK subscription auth by default.
-# The SDK wrapper scrubs ANTHROPIC_API_KEY from its child process unless this
-# opt-in is set to 1 for a deliberate pay-as-you-go fallback run.
+# Ingestion inference uses Claude Agent SDK subscription auth first. If the real
+# SDK preflight fails and the project Anthropic key is configured, this wrapper
+# switches to API fallback instead of skipping the overnight run.
 export PKS_ALLOW_ANTHROPIC_API_FALLBACK="${PKS_ALLOW_ANTHROPIC_API_FALLBACK:-0}"
 export PKS_SDK_MAX_TURNS="${PKS_SDK_MAX_TURNS:-4}"
 export PKS_SDK_MAX_BUDGET_USD="${PKS_SDK_MAX_BUDGET_USD:-0.25}"
+export PKS_API_FALLBACK_RESERVE_USD="${PKS_API_FALLBACK_RESERVE_USD:-0.25}"
+export PKS_API_FALLBACK_RUN_MAX_BUDGET_USD="${PKS_API_FALLBACK_RUN_MAX_BUDGET_USD:-5.00}"
+export PKS_API_FALLBACK_MAX_CALLS="${PKS_API_FALLBACK_MAX_CALLS:-200}"
+export PKS_API_FALLBACK_BUDGET_FILE="${PKS_API_FALLBACK_BUDGET_FILE:-$INGESTION/checkpoints/api_fallback_budget_$DATE.json}"
 export PKS_SDK_MODEL="${PKS_SDK_MODEL:-sonnet}"
 export PKS_SDK_PREFLIGHT_ATTEMPTS="${PKS_SDK_PREFLIGHT_ATTEMPTS:-2}"
 export PKS_AGENT_SESSION_DISTILL_RETRY_LIMIT="${PKS_AGENT_SESSION_DISTILL_RETRY_LIMIT:-1}"
@@ -59,7 +63,7 @@ if ! ~/agent-sdk-venv/bin/python3 -c "from claude_agent_sdk import query" 2>/dev
     exit 1
 fi
 log "Agent SDK: OK"
-log "LLM billing policy: Agent SDK primary; API fallback opt-in=${PKS_ALLOW_ANTHROPIC_API_FALLBACK}; Dream API fallback opt-in=${DREAM_ALLOW_ANTHROPIC_API_FALLBACK}"
+log "LLM billing policy: Agent SDK primary; API fallback route=${PKS_ALLOW_ANTHROPIC_API_FALLBACK}; model=${PKS_SDK_MODEL}; per-call budget=${PKS_SDK_MAX_BUDGET_USD}; fallback reserve=${PKS_API_FALLBACK_RESERVE_USD}; fallback run budget=${PKS_API_FALLBACK_RUN_MAX_BUDGET_USD}; fallback call cap=${PKS_API_FALLBACK_MAX_CALLS}; fallback budget file=${PKS_API_FALLBACK_BUDGET_FILE}; Dream API fallback=${DREAM_ALLOW_ANTHROPIC_API_FALLBACK}"
 
 # Pre-flight: verify ingestion venv exists
 if [ ! -f "$VENV/bin/python" ]; then
@@ -79,13 +83,20 @@ log "Claude CLI: $(command -v claude)"
 # Pre-flight: run one real subscription-backed SDK inference before fetching
 # external sources. `claude --version` and SDK import can pass even when the
 # local OAuth/subscription context is unavailable to the process.
-if ! "$VENV/bin/python" "$REPO/scripts/check_claude_sdk_auth.py" >/dev/null 2>&1
+if "$VENV/bin/python" "$REPO/scripts/check_claude_sdk_auth.py" >/dev/null 2>&1
 then
-    log "FATAL: Claude Agent SDK real inference preflight failed."
-    log "This overnight runner must execute on the local Mac context where Claude subscription auth works."
-    exit 1
+    export PKS_ALLOW_ANTHROPIC_API_FALLBACK=0
+    log "Claude Agent SDK inference preflight: OK (model=${PKS_SDK_MODEL}); using SDK billing route."
+else
+    if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+        log "FATAL: Claude Agent SDK real inference preflight failed and ANTHROPIC_API_KEY is not set."
+        log "API fallback cannot run without the project Anthropic key."
+        exit 1
+    fi
+    export PKS_ALLOW_ANTHROPIC_API_FALLBACK=1
+    log "WARNING: Claude Agent SDK real inference preflight failed; using Anthropic API fallback for this overnight run."
+    log "API fallback controls: model=${PKS_SDK_MODEL}; per-call budget=${PKS_SDK_MAX_BUDGET_USD}; reserve=${PKS_API_FALLBACK_RESERVE_USD}; run budget=${PKS_API_FALLBACK_RUN_MAX_BUDGET_USD}; call cap=${PKS_API_FALLBACK_MAX_CALLS}; budget file=${PKS_API_FALLBACK_BUDGET_FILE}."
 fi
-log "Claude Agent SDK inference preflight: OK (model=${PKS_SDK_MODEL})"
 
 # --------------------------------------------------------------------------
 # Twitter
@@ -123,6 +134,8 @@ log "--- Dream judge done ---"
 # Log rotation: keep 30 days
 # --------------------------------------------------------------------------
 find "$LOG_DIR" -name "*.log" -mtime +30 -delete
+find "$INGESTION/checkpoints" -name "api_fallback_budget_*.json" -mtime +30 -delete
+find "$INGESTION/checkpoints" -name "api_fallback_budget_*.json.lock" -mtime +30 -delete
 
 mkdir -p "$(dirname "$SUCCESS_MARKER")"
 AGENT_SESSION_REDIS_WRITE_FAILED_JSON="null"

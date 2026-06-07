@@ -51,6 +51,7 @@ jobs:
 
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
       UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
       UPSTASH_VECTOR_REST_URL: ${{ secrets.UPSTASH_VECTOR_REST_URL }}
@@ -62,6 +63,10 @@ jobs:
       PKS_ALLOW_ANTHROPIC_API_FALLBACK: "0"
       PKS_SDK_MAX_TURNS: "4"
       PKS_SDK_MAX_BUDGET_USD: "0.25"
+      PKS_API_FALLBACK_RESERVE_USD: "0.25"
+      PKS_API_FALLBACK_RUN_MAX_BUDGET_USD: "5.00"
+      PKS_API_FALLBACK_MAX_CALLS: "200"
+      PKS_API_FALLBACK_BUDGET_FILE: /tmp/pks-api-fallback-${{ github.run_id }}-${{ github.run_attempt }}.json
       PKS_SDK_MODEL: sonnet
 
     steps:
@@ -85,21 +90,36 @@ jobs:
           print("claude_agent_sdk import OK")
           PY
 
-      - name: Check real SDK auth
-        id: sdk_auth
+      - name: Select Claude billing route
+        id: claude_route
         run: |
           . .venv/bin/activate
           if python ../scripts/check_claude_sdk_auth.py >/tmp/pks-sdk-auth.log 2>&1; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-            echo "Claude Agent SDK inference preflight OK"
+            echo "billing_source=sdk" >> "$GITHUB_OUTPUT"
+            echo "PKS_ALLOW_ANTHROPIC_API_FALLBACK=0" >> "$GITHUB_ENV"
+            echo "Claude Agent SDK inference preflight OK; using SDK billing route."
           else
-            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "billing_source=api_fallback" >> "$GITHUB_OUTPUT"
+            echo "PKS_ALLOW_ANTHROPIC_API_FALLBACK=1" >> "$GITHUB_ENV"
             grep -E "Claude Agent SDK preflight failed|Refusing to run ingestion SDK|unexpected SDK preflight response" /tmp/pks-sdk-auth.log || tail -n 5 /tmp/pks-sdk-auth.log
-            echo "::warning::Claude Agent SDK subscription auth is unavailable in this GitHub runner; skipping ingestion. Run scripts/run_nightly_ingestion.sh on the local Mac for production ingestion."
+            echo "::warning::Claude Agent SDK subscription auth is unavailable in this GitHub runner; using Anthropic API fallback for this ingestion run."
           fi
 
+      - name: Validate API fallback key
+        if: steps.claude_route.outputs.billing_source == 'api_fallback'
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "::error::Claude SDK preflight failed and ANTHROPIC_API_KEY secret is not configured; API fallback cannot run."
+            exit 1
+          fi
+          {
+            echo "### Agent session ingestion API fallback"
+            echo ""
+            echo "Claude Agent SDK subscription auth was unavailable in this runner, so this run will use the project Anthropic API fallback."
+            echo "Model: ${PKS_SDK_MODEL}; per-call budget: ${PKS_SDK_MAX_BUDGET_USD}; fallback reserve: ${PKS_API_FALLBACK_RESERVE_USD}; run budget: ${PKS_API_FALLBACK_RUN_MAX_BUDGET_USD}; call cap: ${PKS_API_FALLBACK_MAX_CALLS}."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Run agent session ingestion
-        if: steps.sdk_auth.outputs.available == 'true'
         env:
           DRY_RUN: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.dry_run || github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
           BACKFILL: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.backfill || github.event_name == 'workflow_dispatch' && inputs.backfill || 'false' }}
@@ -126,14 +146,3 @@ jobs:
             args+=(--limit "$LIMIT")
           fi
           caffeinate -i .venv/bin/python agent_sessions/run.py "${args[@]}"
-
-      - name: Report skipped ingestion
-        if: steps.sdk_auth.outputs.available != 'true'
-        run: |
-          {
-            echo "### Agent session ingestion skipped"
-            echo ""
-            echo "Claude Agent SDK subscription auth was unavailable in this GitHub runner."
-            echo "Production ingestion must run with scripts/run_nightly_ingestion.sh on the local Mac, or an API fallback must be enabled deliberately outside the default workflow path."
-          } >> "$GITHUB_STEP_SUMMARY"
-          echo "Agent session ingestion intentionally skipped because this runner cannot perform subscription-backed Claude Agent SDK inference."
