@@ -4656,7 +4656,7 @@ export async function archiveExistingEntry(
 
 	await persistEntry(redis, vector, loadedEntry, { skipVector: true });
 	await deleteVectorEntry(vector, params.entryId);
-	await patchThinIndexEntry(redis, loadedEntry, timestamp);
+	await rebuildThinIndexSafely(redis, runId);
 
 	const result = {
 		ok: true,
@@ -4816,7 +4816,7 @@ export async function restoreEntry(
 
 	const embedding = await getEmbedding(env, buildEntryEmbeddingText(restoredLoadedEntry));
 	await persistEntry(redis, vector, restoredLoadedEntry, { embedding });
-	await patchThinIndexEntry(redis, restoredLoadedEntry, timestamp);
+	await rebuildThinIndexSafely(redis, `restore_${params.entryId}_${timestamp.replace(/[:.]/g, "-")}`);
 
 	const result = {
 		ok: true,
@@ -5016,7 +5016,6 @@ export async function consolidateEntries(
 		const embedding = await getEmbedding(env, buildEntryEmbeddingText(canonical));
 		await persistEntry(redis, vector, canonical, { embedding });
 		await syncEntryAccessSignals(redis, canonical);
-		await patchThinIndexEntry(redis, canonical, timestamp);
 
 		for (const duplicate of duplicateEntries) {
 			const duplicateMetadata = duplicate.metadata;
@@ -5076,7 +5075,6 @@ export async function consolidateEntries(
 			const archivedDuplicate = buildLoadedEntry(duplicate.id, entryType, duplicate.entry);
 			await persistEntry(redis, vector, archivedDuplicate, { skipVector: true });
 			await deleteVectorEntry(vector, duplicate.id);
-			await patchThinIndexEntry(redis, archivedDuplicate, timestamp);
 			await redis.del(getEntryAccessKey(duplicate.id), getEntryLastAccessedKey(duplicate.id));
 
 			afterRevisions[duplicate.id] = duplicateMetadata.revision as number;
@@ -5087,6 +5085,7 @@ export async function consolidateEntries(
 				snapshot_key: snapshotKey,
 			});
 		}
+		await rebuildThinIndexWithHeldLock(redis, rebuildRunId);
 	} finally {
 		await releaseIndexRebuildLock(redis, rebuildRunId);
 	}
@@ -5636,7 +5635,11 @@ export async function updateEntry(
 			await persistEntry(redis, vector, loadedEntry);
 		}
 
-		await patchThinIndexEntry(redis, loadedEntry, timestamp);
+		if (contextTypeChanged) {
+			await rebuildThinIndexWithHeldLock(redis, rebuildRunId);
+		} else {
+			await patchThinIndexEntry(redis, loadedEntry, timestamp);
+		}
 	} finally {
 		await releaseIndexRebuildLock(redis, rebuildRunId);
 	}

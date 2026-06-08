@@ -6,7 +6,10 @@ import fxSimple from "./fixtures/fxtwitter-simple.json";
 const redisMock = vi.hoisted(() => ({
 	get: vi.fn(),
 	set: vi.fn(),
+	rename: vi.fn(),
 	del: vi.fn(),
+	scan: vi.fn(),
+	mget: vi.fn(),
 	sadd: vi.fn(),
 	srem: vi.fn(),
 	lpush: vi.fn(),
@@ -347,6 +350,34 @@ beforeEach(() => {
 					archived: false,
 				},
 			},
+			"project:pe_memory": {
+				id: "pe_memory",
+				type: "project",
+				name: "PKS memory upgrade",
+				status: "active",
+				detail_level: "full",
+				goal: "Build a selective AI memory system.",
+				current_phase: "testing",
+				blocked_on: null,
+				decisions_made: [],
+				tech_stack: [],
+				related_repos: [],
+				related_knowledge: [],
+				phase_history: [],
+				metadata: {
+					created_at: "2026-03-20T00:00:00.000Z",
+					updated_at: "2026-03-27T00:00:00.000Z",
+					source_conversations: ["conv_memory"],
+					source_messages: [],
+					context_type: "active_project",
+					injection_tier: 1,
+					salience_score: 0.9,
+					mention_count: 8,
+					access_count: 0,
+					revision: 0,
+					archived: false,
+				},
+			},
 		};
 	redisMock.get.mockImplementation(async (key: string) => {
 		if (!(key in redisStore)) {
@@ -362,6 +393,14 @@ beforeEach(() => {
 		redisStore[key] = value;
 		return "OK";
 	});
+	redisMock.rename.mockImplementation(async (source: string, destination: string) => {
+		if (!(source in redisStore)) {
+			throw new Error(`ERR no such key: ${source}`);
+		}
+		redisStore[destination] = redisStore[source];
+		delete redisStore[source];
+		return "OK";
+	});
 	redisMock.del.mockImplementation(async (...keys: string[]) => {
 		let deleted = 0;
 		for (const key of keys) {
@@ -371,6 +410,24 @@ beforeEach(() => {
 			}
 		}
 		return deleted;
+	});
+	redisMock.scan.mockImplementation(async (cursor: string, options: { match?: string }) => {
+		if (cursor !== "0") return ["0", []];
+		const match = options?.match ?? "*";
+		const prefix = match.endsWith("*") ? match.slice(0, -1) : match;
+		const keys = Object.keys(redisStore).filter((key) => key.startsWith(prefix));
+		return ["0", keys];
+	});
+	redisMock.mget.mockImplementation(async (keys: string[] | string) => {
+		const keyList = Array.isArray(keys) ? keys : [keys];
+		return keyList.map((key) => {
+			if (!(key in redisStore)) return null;
+			const value = redisStore[key];
+			if (value && typeof value === "object") {
+				return JSON.parse(JSON.stringify(value));
+			}
+			return value;
+		});
 	});
 	redisMock.sadd.mockResolvedValue(1);
 	redisMock.srem.mockResolvedValue(1);
@@ -1346,6 +1403,11 @@ describe("OAuth and MCP integration", () => {
 			expect((((archivePayload.entry as Record<string, unknown>).metadata as Record<string, unknown>).archived)).toBe(true);
 			expect((archivePayload.side_effects as Record<string, unknown>).vector).toBe("deleted");
 			expect(vectorMock.delete).toHaveBeenCalled();
+			const archivedIndex = JSON.parse(redisStore["index:current"] as string) as Record<string, unknown>;
+			expect(archivedIndex.total_topic_count).toBe(1);
+			expect(archivedIndex.total_project_count).toBe(1);
+			expect(archivedIndex.archived_count).toBe(1);
+			expect((archivedIndex.topics as Array<Record<string, unknown>>).map((topic) => topic.id)).not.toContain("ke_quant");
 
 			const restoreResponse = await dispatch(
 			new IncomingRequest(`${baseUrl}/mcp`, {
@@ -1383,6 +1445,11 @@ describe("OAuth and MCP integration", () => {
 			expect((((restorePayload.entry as Record<string, unknown>).metadata as Record<string, unknown>).archived)).toBe(false);
 			expect((restorePayload.side_effects as Record<string, unknown>).vector).toBe("recreated");
 			expect(vectorMock.upsert).toHaveBeenCalled();
+			const restoredIndex = JSON.parse(redisStore["index:current"] as string) as Record<string, unknown>;
+			expect(restoredIndex.total_topic_count).toBe(2);
+			expect(restoredIndex.total_project_count).toBe(1);
+			expect(restoredIndex.archived_count).toBe(0);
+			expect((restoredIndex.topics as Array<Record<string, unknown>>).map((topic) => topic.id)).toContain("ke_quant");
 			expect(redisMock.lpush).toHaveBeenCalledWith(
 				"mutation_log",
 				expect.stringContaining("\"tool\":\"restore_entry\""),
