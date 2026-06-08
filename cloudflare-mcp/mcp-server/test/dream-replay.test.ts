@@ -911,6 +911,202 @@ describe("Dream replay logic", () => {
 		);
 	});
 
+	it("blocks Phase 9 gated apply when the pre-outcome baseline already fails", async () => {
+		const proposal = await runDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{
+				trigger: "local_test",
+				actorId: "test-operator",
+				archiveLimit: 0,
+				promotionLimit: 0,
+			},
+		);
+		const duplicateOperation = (proposal.operations as Array<Record<string, unknown>>)
+			.find((operation) => operation.type === "duplicate_merge");
+		await gradeDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{ proposalId: String(proposal.run_id), actorId: "test-operator" },
+		);
+
+		const result = await applyDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{
+				proposalId: String(proposal.run_id),
+				mutationId: "phase9-pre-fails",
+				actorId: "test-operator",
+				reason: "phase9 pre failure test",
+				operationIds: [String(duplicateOperation!.operation_id)],
+				phase9OutcomeGate: true,
+				phase9Probes: [
+					{
+						id: "bad_pre_baseline",
+						query: "country equity rotation signals",
+						expected_top_entry_id: "ke_missing",
+					},
+				],
+			},
+		);
+
+		expect(result.ok).toBe(false);
+		expect(result.error).toBe("phase9_pre_outcome_baseline_failed");
+		expect(getStoredObject("knowledge:ke_dup_secondary").metadata).toEqual(
+			expect.objectContaining({ archived: false }),
+		);
+		expect(mockState.vectorDeletes).toEqual([]);
+		expect(mockState.store.get(`dream:run:${String(proposal.run_id)}:phase9:phase9-pre-fails`)).toBeTruthy();
+	});
+
+	it("passes Phase 9 gated apply and writes the validation ledger when probes stay green", async () => {
+		const proposal = await runDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{
+				trigger: "local_test",
+				actorId: "test-operator",
+				archiveLimit: 0,
+				promotionLimit: 0,
+			},
+		);
+		const duplicateOperation = (proposal.operations as Array<Record<string, unknown>>)
+			.find((operation) => operation.type === "duplicate_merge");
+		await gradeDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{ proposalId: String(proposal.run_id), actorId: "test-operator" },
+		);
+
+		const result = await applyDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+				OPENAI_API_KEY: "test-openai-key",
+			} as Env,
+			{
+				proposalId: String(proposal.run_id),
+				mutationId: "phase9-gate-passes",
+				actorId: "test-operator",
+				reason: "phase9 pass test",
+				operationIds: [String(duplicateOperation!.operation_id)],
+				phase9OutcomeGate: true,
+				phase9WriteValidationLedger: true,
+				phase9Probes: [
+					{
+						id: "primary_recall_survives_merge",
+						query: "cross border GDELT sentiment country ETF rotation",
+						expected_entry_ids: ["ke_dup_primary"],
+						top_k: 10,
+					},
+				],
+			},
+		);
+
+		expect(result.ok).toBe(true);
+		expect((result.phase9_outcome_gate as Record<string, unknown>).status).toBe("passed");
+		const ledger = JSON.parse(String(mockState.store.get("validation:last"))) as Record<string, unknown>;
+		expect(ledger).toMatchObject({
+			gate: "dream_outcome_quality",
+			status: "pass",
+		});
+		const gateStatus = JSON.parse(String(mockState.store.get("validation:gate_status"))) as Record<string, any>;
+		expect(gateStatus.gates.dream_outcome_quality.passed).toBe(true);
+	});
+
+	it("auto-rolls back Phase 9 gated apply when post-outcome probes regress", async () => {
+		const proposal = await runDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{
+				trigger: "local_test",
+				actorId: "test-operator",
+				archiveLimit: 0,
+				promotionLimit: 0,
+			},
+		);
+		const duplicateOperation = (proposal.operations as Array<Record<string, unknown>>)
+			.find((operation) => operation.type === "duplicate_merge");
+		await gradeDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{ proposalId: String(proposal.run_id), actorId: "test-operator" },
+		);
+
+		const result = await applyDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+				OPENAI_API_KEY: "test-openai-key",
+			} as Env,
+			{
+				proposalId: String(proposal.run_id),
+				mutationId: "phase9-regresses",
+				actorId: "test-operator",
+				reason: "phase9 regression rollback test",
+				operationIds: [String(duplicateOperation!.operation_id)],
+				phase9OutcomeGate: true,
+				phase9AutoRollback: true,
+				phase9Probes: [
+					{
+						id: "secondary_recall_regresses",
+						query: "rank country ETFs",
+						expected_entry_ids: ["ke_dup_secondary"],
+						top_k: 10,
+					},
+				],
+			},
+		);
+
+		expect(result.ok).toBe(false);
+		expect(result.error).toBe("phase9_outcome_regression_rolled_back");
+		expect(result.rolled_back).toBe(true);
+		const phase9 = result.phase9_outcome_gate as Record<string, any>;
+		expect(phase9.status).toBe("regression_rolled_back");
+		expect(phase9.gate_report.rollback_required).toBe(true);
+		expect(phase9.rollback_result.ok).toBe(true);
+		expect(getStoredObject("knowledge:ke_dup_primary").metadata).toEqual(
+			expect.objectContaining({ mention_count: 2 }),
+		);
+		expect(getStoredObject("knowledge:ke_dup_secondary").metadata).toEqual(
+			expect.objectContaining({ archived: false }),
+		);
+		expect(mockState.store.get(`dream:run:${String(proposal.run_id)}:phase9:phase9-regresses`)).toBeTruthy();
+		expect(mockState.store.get(`dream:run:${String(proposal.run_id)}:rollback:${phase9.rollback_recommendation.rollback_mutation_id}`)).toBeTruthy();
+	});
+
 	it("compacts oversized stored Dream audits below the Redis payload budget", () => {
 		const largeBlock = "x".repeat(1_200);
 		const largeItems = Array.from({ length: 24 }, (_, index) => ({

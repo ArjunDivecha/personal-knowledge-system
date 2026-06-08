@@ -108,6 +108,17 @@ from .phase8 import (
     retrieve_phase8,
     run_phase8_retrieval_fixture,
 )
+from .phase9 import (
+    PHASE9_SCHEMA_VERSION,
+    PHASE9_VALIDATION_GATE,
+    Phase9OutcomeGateReport,
+    Phase9OutcomeRegression,
+    Phase9RollbackRecommendation,
+    build_phase9_rollback_recommendation,
+    build_phase9_validation_gate_details,
+    evaluate_phase9_outcome_gate,
+    run_phase9_outcome_gate_fixture,
+)
 
 __all__ = [
     # Entry types
@@ -202,4 +213,14 @@ __all__ = [
     "evaluate_phase8_retrieval_probes",
     "retrieve_phase8",
     "run_phase8_retrieval_fixture",
+    # Phase 9 quality-gated Dream
+    "PHASE9_SCHEMA_VERSION",
+    "PHASE9_VALIDATION_GATE",
+    "Phase9OutcomeGateReport",
+    "Phase9OutcomeRegression",
+    "Phase9RollbackRecommendation",
+    "build_phase9_rollback_recommendation",
+    "build_phase9_validation_gate_details",
+    "evaluate_phase9_outcome_gate",
+    "run_phase9_outcome_gate_fixture",
 ]

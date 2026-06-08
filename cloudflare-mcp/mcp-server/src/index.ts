@@ -118,6 +118,11 @@ const SCHEDULED_DREAM_OPERATION_LIMITS: Record<string, number> = {
 };
 const DEFAULT_TWEET_TIMEOUT_MS = 4000;
 const DEFAULT_TWEET_CACHE_TTL_SECONDS = 300;
+
+function isEnabledEnvFlag(value: unknown): boolean {
+	return typeof value === "string" && ["1", "true", "on", "yes"].includes(value.toLowerCase());
+}
+
 const AUTHORIZATION_SERVER_METADATA_PATHS = new Set([
 	"/.well-known/oauth-authorization-server",
 	"/.well-known/openid-configuration",
@@ -1301,6 +1306,12 @@ async function runScheduledGovernedDream(
 				operationIds: decision.selectedOperationIds,
 				requireGradePass: true,
 				gradeId: typeof grade.grade_id === "string" ? grade.grade_id : null,
+				phase9OutcomeGate: isEnabledEnvFlag(env.DREAM_PHASE9_OUTCOME_GATE_ENABLED),
+				phase9AutoRollback: isEnabledEnvFlag(env.DREAM_PHASE9_AUTO_ROLLBACK_ENABLED),
+				phase9ProbeSetKey: typeof env.DREAM_PHASE9_PROBE_SET_KEY === "string" && env.DREAM_PHASE9_PROBE_SET_KEY.length > 0
+					? env.DREAM_PHASE9_PROBE_SET_KEY
+					: null,
+				phase9WriteValidationLedger: isEnabledEnvFlag(env.DREAM_PHASE9_WRITE_VALIDATION_LEDGER),
 			});
 			verification = verifyScheduledGovernedApply(applyResult, decision.selectedOperationIds);
 		}
@@ -1966,9 +1977,13 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 					require_grade_pass: z.boolean().optional().describe("Require stored deterministic grade pass before mutating; defaults to true"),
 					grade_id: z.string().min(1).max(200).optional().describe("Optional specific grade id to require"),
 					operation_ids: z.array(z.string().min(1).max(300)).max(100).optional().describe("Optional subset of proposal operation IDs to apply"),
+					phase9_outcome_gate: z.boolean().optional().describe("Run Phase 9 pre/post outcome probes around apply; defaults to false"),
+					phase9_auto_rollback: z.boolean().optional().describe("Automatically rollback when Phase 9 detects a post-apply regression; defaults to false"),
+					phase9_probe_set_key: z.string().min(1).max(300).optional().describe("Redis key containing the bounded Phase 9 outcome probe set"),
+					phase9_write_validation_ledger: z.boolean().optional().describe("Write dream_outcome_quality to the validation ledger; defaults to false"),
 				},
 				MUTATING_TOOL_ANNOTATIONS,
-				async ({ proposal_id, mutation_id, reason, require_grade_pass, grade_id, operation_ids }) => {
+				async ({ proposal_id, mutation_id, reason, require_grade_pass, grade_id, operation_ids, phase9_outcome_gate, phase9_auto_rollback, phase9_probe_set_key, phase9_write_validation_ledger }) => {
 					try {
 						const actorId = await this.requireWriteAccess("apply_dream_proposal");
 						const result = await applyDreamProposal(this.env, {
@@ -1979,6 +1994,10 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 							operationIds: operation_ids,
 							requireGradePass: require_grade_pass,
 							gradeId: grade_id,
+							phase9OutcomeGate: phase9_outcome_gate,
+							phase9AutoRollback: phase9_auto_rollback,
+							phase9ProbeSetKey: phase9_probe_set_key,
+							phase9WriteValidationLedger: phase9_write_validation_ledger,
 						});
 						return {
 							content: [{ type: "text", text: JSON.stringify(result) }],
@@ -3143,6 +3162,10 @@ const defaultHandler = {
 					operation_ids: z.array(z.string().min(1).max(300)).max(100).optional(),
 					require_grade_pass: z.boolean().optional(),
 					grade_id: z.string().min(1).max(200).optional(),
+					phase9_outcome_gate: z.boolean().optional(),
+					phase9_auto_rollback: z.boolean().optional(),
+					phase9_probe_set_key: z.string().min(1).max(300).optional(),
+					phase9_write_validation_ledger: z.boolean().optional(),
 				}).parse(body);
 
 				const result = await applyDreamProposal(env, {
@@ -3153,6 +3176,10 @@ const defaultHandler = {
 					operationIds: parsed.operation_ids ?? null,
 					requireGradePass: parsed.require_grade_pass,
 					gradeId: parsed.grade_id,
+					phase9OutcomeGate: parsed.phase9_outcome_gate,
+					phase9AutoRollback: parsed.phase9_auto_rollback,
+					phase9ProbeSetKey: parsed.phase9_probe_set_key,
+					phase9WriteValidationLedger: parsed.phase9_write_validation_ledger,
 				});
 				return Response.json(result, { headers: { "Content-Type": "application/json" } });
 			} catch (error) {

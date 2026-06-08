@@ -16,6 +16,10 @@ declare global {
 		DREAM_AUTO_APPLY_MODE?: "off" | "governed" | "full";
 		DREAM_OPUS_MODE?: "off" | "on";
 		RETRIEVAL_POLICY_MODE?: "off" | "on";
+		DREAM_PHASE9_OUTCOME_GATE_ENABLED?: string;
+		DREAM_PHASE9_AUTO_ROLLBACK_ENABLED?: string;
+		DREAM_PHASE9_PROBE_SET_KEY?: string;
+		DREAM_PHASE9_WRITE_VALIDATION_LEDGER?: string;
 		// Optional anomaly-tripwire knobs (have safe defaults).
 		DREAM_HARD_DELETE_DAILY_CAP?: string;
 		// Optional override for Opus judge model used by Mac-side script.

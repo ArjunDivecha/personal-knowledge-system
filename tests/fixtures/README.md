@@ -55,6 +55,10 @@ Phase 8 retrieval fixtures:
 
 - `phase8_retrieval_fixture.json` runs the offline retrieval contract through current-answer recall, evidence/history recall, point-in-time recall, stale-current exclusion, provisional-claim recall, and policy-pointer probes.
 
+Phase 9 outcome-gate fixtures:
+
+- `phase9_outcome_gate_fixture.json` contains compact pre/post Phase 8 eval reports for the deterministic Dream outcome-regression gate.
+
 ## Design Rules
 
 - keep bundles small

@@ -1,0 +1,88 @@
+{
+  "metadata": {
+    "fixture": "phase9_outcome_gate_fixture",
+    "schema_version": 1,
+    "now_utc": "2026-06-07T00:00:00+00:00",
+    "proposal_id": "dream_phase9_fixture",
+    "apply_mutation_id": "apply_phase9_fixture"
+  },
+  "pre_report": {
+    "generated_at": "2026-06-07T00:00:00+00:00",
+    "passed": true,
+    "check_count": 2,
+    "failure_count": 0,
+    "checks": [
+      {
+        "check_id": "current_runtime_prefers_compiled_current",
+        "query": "what is the live MCP runtime path now?",
+        "passed": true,
+        "expected": {
+          "top_candidate_id": "claim_current_runtime"
+        },
+        "actual": {
+          "top_candidate_id": "claim_current_runtime",
+          "candidate_ids": ["claim_current_runtime", "claim_phase8_status"]
+        },
+        "issues": [],
+        "schema_version": 1
+      },
+      {
+        "check_id": "stale_temporal_fact_stays_out_of_current_answer",
+        "query": "what is the Singapore trip plan now?",
+        "passed": true,
+        "expected": {
+          "excluded_candidate_ids": ["claim_expired_trip", "obs_expired_trip"]
+        },
+        "actual": {
+          "candidate_ids": ["block:operator_profile:fixture"]
+        },
+        "issues": [],
+        "schema_version": 1
+      }
+    ],
+    "retrieval_reports": [],
+    "schema_version": 1
+  },
+  "post_report": {
+    "generated_at": "2026-06-07T00:00:00+00:00",
+    "passed": true,
+    "check_count": 2,
+    "failure_count": 0,
+    "checks": [
+      {
+        "check_id": "current_runtime_prefers_compiled_current",
+        "query": "what is the live MCP runtime path now?",
+        "passed": true,
+        "expected": {
+          "top_candidate_id": "claim_current_runtime"
+        },
+        "actual": {
+          "top_candidate_id": "claim_current_runtime",
+          "candidate_ids": ["claim_current_runtime", "claim_phase8_status"]
+        },
+        "issues": [],
+        "schema_version": 1
+      },
+      {
+        "check_id": "stale_temporal_fact_stays_out_of_current_answer",
+        "query": "what is the Singapore trip plan now?",
+        "passed": true,
+        "expected": {
+          "excluded_candidate_ids": ["claim_expired_trip", "obs_expired_trip"]
+        },
+        "actual": {
+          "candidate_ids": ["block:operator_profile:fixture"]
+        },
+        "issues": [],
+        "schema_version": 1
+      }
+    ],
+    "retrieval_reports": [],
+    "schema_version": 1
+  },
+  "expected": {
+    "passed": true,
+    "rollback_required": false,
+    "regression_count": 0
+  }
+}

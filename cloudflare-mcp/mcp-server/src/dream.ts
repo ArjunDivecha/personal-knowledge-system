@@ -19,6 +19,18 @@ import {
 	readPendingVerdicts,
 	settleJudgeItem,
 } from "./judgeQueue";
+import {
+	PHASE9_DEFAULT_PROBE_SET_KEY,
+	PHASE9_VALIDATION_GATE,
+	buildPhase9RollbackRecommendation,
+	buildPhase9ValidationGatePayload,
+	evaluatePhase9OutcomeGate,
+	evaluatePhase9OutcomeProbes,
+	parsePhase9OutcomeProbes,
+	type Phase9OutcomeEvalReport,
+	type Phase9OutcomeGateReport,
+	type Phase9OutcomeProbe,
+} from "./phase9OutcomeGate";
 
 type EntryType = "knowledge" | "project";
 type DreamStatus = "completed" | "skipped_no_backfill" | "skipped_locked" | "failed";
@@ -61,6 +73,11 @@ interface ApplyDreamProposalOptions {
 	operationIds?: string[] | null;
 	requireGradePass?: boolean | null;
 	gradeId?: string | null;
+	phase9OutcomeGate?: boolean | null;
+	phase9AutoRollback?: boolean | null;
+	phase9ProbeSetKey?: string | null;
+	phase9Probes?: unknown[] | null;
+	phase9WriteValidationLedger?: boolean | null;
 }
 
 interface GradeDreamProposalOptions {
@@ -221,6 +238,10 @@ const MUTATION_LOG_KEY = "mutation_log";
 const MUTATION_LOG_LIMIT = 1000;
 const MUTATION_RESULT_PREFIX = "mutation_result:";
 const MUTATION_RESULT_TTL_SECONDS = 72 * 60 * 60;
+const VALIDATION_LAST_KEY = "validation:last";
+const VALIDATION_GATE_STATUS_KEY = "validation:gate_status";
+const VALIDATION_HISTORY_PREFIX = "validation:history:";
+const VALIDATION_HISTORY_LIMIT = 100;
 const THIN_INDEX_TOPIC_LIMIT = 100;
 const THIN_INDEX_PROJECT_LIMIT = 50;
 const DUPLICATE_FINGERPRINT_MIN_LENGTH = 6;
@@ -2256,6 +2277,97 @@ async function storeMutationResult(
 	});
 }
 
+function getPhase9OutcomeAuditKey(proposalId: string, applyMutationId: string): string {
+	return `${DREAM_RUN_PREFIX}${proposalId}:phase9:${applyMutationId}`;
+}
+
+async function loadPhase9OutcomeProbes(
+	redis: Redis,
+	options: ApplyDreamProposalOptions,
+): Promise<Phase9OutcomeProbe[]> {
+	if (options.phase9Probes && options.phase9Probes.length > 0) {
+		return parsePhase9OutcomeProbes(options.phase9Probes);
+	}
+	const probeSetKey = options.phase9ProbeSetKey ?? PHASE9_DEFAULT_PROBE_SET_KEY;
+	const raw = await redis.get(probeSetKey);
+	return parsePhase9OutcomeProbes(raw);
+}
+
+async function evaluateStoredPhase9OutcomeProbes(
+	redis: Redis,
+	probes: Phase9OutcomeProbe[],
+): Promise<Phase9OutcomeEvalReport> {
+	const [knowledgeEntries, projectEntries] = await Promise.all([
+		loadEntriesByType(redis, "knowledge"),
+		loadEntriesByType(redis, "project"),
+	]);
+	return evaluatePhase9OutcomeProbes(
+		probes,
+		[...knowledgeEntries, ...projectEntries].map((entry) => ({
+			id: entry.id,
+			type: entry.type,
+			entry: entry.entry,
+			metadata: entry.metadata,
+			label: entry.label,
+			summary: getNarrativeText(entry),
+		})),
+	);
+}
+
+async function storePhase9OutcomeAudit(
+	redis: Redis,
+	proposalId: string,
+	applyMutationId: string,
+	payload: Record<string, unknown>,
+): Promise<void> {
+	await redis.set(
+		getPhase9OutcomeAuditKey(proposalId, applyMutationId),
+		JSON.stringify(payload),
+	);
+}
+
+async function writePhase9ValidationGate(
+	redis: Redis,
+	report: Phase9OutcomeGateReport,
+): Promise<Record<string, unknown>> {
+	const payload = buildPhase9ValidationGatePayload(report);
+	const generatedAt = new Date().toISOString();
+	const ledgerRecord = {
+		schema_version: 1,
+		generated_at: generatedAt,
+		gate: PHASE9_VALIDATION_GATE,
+		passed: payload.passed,
+		status: payload.passed ? "pass" : "fail",
+		issues: payload.issues,
+		report_path: getPhase9OutcomeAuditKey(
+			report.proposal_id ?? "unknown_proposal",
+			report.apply_mutation_id ?? "unknown_apply",
+		),
+		details: payload.details,
+	};
+	const existingStatus = parseStoredObject(await redis.get(VALIDATION_GATE_STATUS_KEY)) ?? {};
+	const existingGates = parseStoredObject(existingStatus.gates) ?? {};
+	const gates = {
+		...existingGates,
+		[PHASE9_VALIDATION_GATE]: ledgerRecord,
+	};
+	const overallPassed = Object.values(gates).every((gate) =>
+		parseStoredObject(gate)?.passed === true,
+	);
+	const gateStatus = {
+		schema_version: 1,
+		updated_at: generatedAt,
+		overall_status: overallPassed ? "green" : "red",
+		overall_passed: overallPassed,
+		gates,
+	};
+	await redis.set(VALIDATION_LAST_KEY, JSON.stringify(ledgerRecord));
+	await redis.set(VALIDATION_GATE_STATUS_KEY, JSON.stringify(gateStatus));
+	await redis.lpush(`${VALIDATION_HISTORY_PREFIX}${generatedAt.slice(0, 10)}`, JSON.stringify(ledgerRecord));
+	await redis.ltrim(`${VALIDATION_HISTORY_PREFIX}${generatedAt.slice(0, 10)}`, 0, VALIDATION_HISTORY_LIMIT - 1);
+	return ledgerRecord;
+}
+
 function getExpectedRevision(entry: LoadedEntry): number {
 	return toOptionalInteger(entry.metadata.revision) ?? 0;
 }
@@ -3050,6 +3162,47 @@ export async function applyDreamProposal(
 		}
 	}
 
+	const phase9Enabled = options.phase9OutcomeGate === true;
+	const phase9AutoRollback = options.phase9AutoRollback === true;
+	const phase9WriteValidationLedger = options.phase9WriteValidationLedger === true;
+	const phase9Probes = phase9Enabled
+		? await loadPhase9OutcomeProbes(redis, options)
+		: [];
+	let phase9PreReport: Phase9OutcomeEvalReport | null = null;
+	if (phase9Enabled) {
+		if (phase9Probes.length === 0) {
+			const result = {
+				ok: false,
+				error: "phase9_outcome_probes_not_configured",
+				proposal_id: options.proposalId,
+				mutation_id: options.mutationId,
+				probe_set_key: options.phase9ProbeSetKey ?? PHASE9_DEFAULT_PROBE_SET_KEY,
+				next_action: "Configure bounded Phase 9 outcome probes or disable phase9_outcome_gate for this apply.",
+			};
+			await storeMutationResult(redis, options.mutationId, result);
+			return result;
+		}
+		phase9PreReport = await evaluateStoredPhase9OutcomeProbes(redis, phase9Probes);
+		if (!phase9PreReport.passed) {
+			const result = {
+				ok: false,
+				error: "phase9_pre_outcome_baseline_failed",
+				proposal_id: options.proposalId,
+				mutation_id: options.mutationId,
+				phase9_outcome_gate: {
+					schema_version: 1,
+					status: "pre_baseline_failed",
+					pre_report: phase9PreReport,
+					probe_count: phase9Probes.length,
+				},
+				next_action: "Fix the configured outcome probes or current retrieval state before applying Dream mutations.",
+			};
+			await storePhase9OutcomeAudit(redis, options.proposalId, options.mutationId, result);
+			await storeMutationResult(redis, options.mutationId, result);
+			return result;
+		}
+	}
+
 	const timestamp = new Date().toISOString();
 	const applyRunId = `apply_${options.proposalId}_${timestamp.replace(/[:.]/g, "-")}`;
 	const beforeRevisions = Object.fromEntries(
@@ -3101,7 +3254,7 @@ export async function applyDreamProposal(
 				: null,
 		]),
 	);
-	const result = {
+	let result: Record<string, unknown> = {
 		ok: true,
 		proposal_id: options.proposalId,
 		apply_run_id: applyRunId,
@@ -3127,7 +3280,7 @@ export async function applyDreamProposal(
 			mutation_id: options.mutationId,
 			actor_id: options.actorId,
 			reason: options.reason,
-			operation_ids: result.operation_ids,
+			operation_ids: operations.map((operation) => operation.operation_id),
 			ids_affected: touchedIds,
 		},
 	]));
@@ -3144,6 +3297,72 @@ export async function applyDreamProposal(
 		reason: options.reason,
 		proposal_id: options.proposalId,
 	});
+
+	if (phase9Enabled && phase9PreReport) {
+		const phase9PostReport = await evaluateStoredPhase9OutcomeProbes(redis, phase9Probes);
+		const phase9GateReport = evaluatePhase9OutcomeGate(phase9PreReport, phase9PostReport, {
+			generatedAt: new Date().toISOString(),
+			proposalId: options.proposalId,
+			applyMutationId: options.mutationId,
+		});
+		const phase9RollbackRecommendation = buildPhase9RollbackRecommendation(phase9GateReport, {
+			operationIds: operations
+				.map((operation) => operation.operation_id)
+				.filter((operationId): operationId is string => typeof operationId === "string"),
+		});
+		let phase9ValidationLedgerRecord: Record<string, unknown> | null = null;
+		if (phase9WriteValidationLedger) {
+			phase9ValidationLedgerRecord = await writePhase9ValidationGate(redis, phase9GateReport);
+		}
+
+		let phase9RollbackResult: Record<string, unknown> | null = null;
+		if (
+			phase9GateReport.rollback_required &&
+			phase9AutoRollback &&
+			phase9RollbackRecommendation.ready &&
+			phase9RollbackRecommendation.rollback_mutation_id
+		) {
+			phase9RollbackResult = await rollbackDreamApply(env, {
+				proposalId: options.proposalId,
+				applyMutationId: options.mutationId,
+				rollbackMutationId: phase9RollbackRecommendation.rollback_mutation_id,
+				actorId: options.actorId,
+				reason: String(phase9RollbackRecommendation.reason ?? "phase9 outcome regression").slice(0, 500),
+				operationIds: phase9RollbackRecommendation.operation_ids,
+			});
+		}
+
+		const phase9Payload = {
+			schema_version: 1,
+			status: phase9GateReport.passed
+				? "passed"
+				: phase9RollbackResult?.ok === true
+					? "regression_rolled_back"
+					: "regression_detected",
+			pre_report: phase9PreReport,
+			post_report: phase9PostReport,
+			gate_report: phase9GateReport,
+			rollback_recommendation: phase9RollbackRecommendation,
+			rollback_result: phase9RollbackResult,
+			validation_ledger_record: phase9ValidationLedgerRecord,
+		};
+		result = {
+			...result,
+			ok: phase9GateReport.passed,
+			...(phase9GateReport.passed
+				? {}
+				: {
+					error: phase9RollbackResult?.ok === true
+						? "phase9_outcome_regression_rolled_back"
+						: phase9RollbackResult
+							? "phase9_outcome_regression_rollback_failed"
+							: "phase9_outcome_regression",
+					rolled_back: phase9RollbackResult?.ok === true,
+				}),
+			phase9_outcome_gate: phase9Payload,
+		};
+		await storePhase9OutcomeAudit(redis, options.proposalId, options.mutationId, result);
+	}
 	await storeMutationResult(redis, options.mutationId, result);
 	return result;
 }
