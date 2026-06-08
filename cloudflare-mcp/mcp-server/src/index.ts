@@ -229,6 +229,7 @@ function createRedisClient(env: Env): Redis {
 	return new Redis({
 		url: env.UPSTASH_REDIS_REST_URL,
 		token: env.UPSTASH_REDIS_REST_TOKEN,
+		enableAutoPipelining: false,
 	});
 }
 
@@ -1674,7 +1675,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 			READ_ONLY_TOOL_ANNOTATIONS,
 			async () => {
 				const redis = this.getRedis(this.env);
-				const rawIndex = await redis.get("index:current") as {
+				const rawIndex = parseStoredObject(await redis.get("index:current")) as {
 					topics?: Array<{ id: string; domain: string; current_view_summary?: string; state?: string; confidence?: string; last_updated?: string; context_type?: string; injection_tier?: number; salience_score?: number; mention_count?: number; archived?: boolean; top_repo?: string }>;
 					projects?: Array<{ id: string; name: string; goal_summary?: string; status?: string; current_phase?: string; last_touched?: string; context_type?: string; injection_tier?: number; salience_score?: number; mention_count?: number; archived?: boolean }>;
 					generated_at?: string;
@@ -3501,5 +3502,6 @@ function createRedisForTripwires(env: Env): Redis | null {
 	return new Redis({
 		url: env.UPSTASH_REDIS_REST_URL,
 		token: env.UPSTASH_REDIS_REST_TOKEN,
+		enableAutoPipelining: false,
 	});
 }

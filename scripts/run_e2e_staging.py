@@ -918,7 +918,17 @@ def main() -> int:
                     }
                 ]
             report["steps"].extend(lifecycle_steps)
-            report["steps"].extend(call_openai_read_only_compatibility(args.base_url))
+            try:
+                report["steps"].extend(call_openai_read_only_compatibility(args.base_url))
+            except Exception as error:  # noqa: BLE001
+                report["steps"].append(
+                    {
+                        "name": "openai_mcp_read_only_compatibility",
+                        "ok": False,
+                        "status_code": None,
+                        "body": {"error": str(error)},
+                    }
+                )
         elif not args.skip_dream:
             dry_run_step = call_dream_run(
                 args.base_url,
@@ -953,12 +963,22 @@ def main() -> int:
                     }
                 )
 
-        report["steps"].extend(
-            call_mcp_sequence(
-                args.base_url,
-                archived_entry_id=archived_entry_id if not args.skip_write_path else None,
+        try:
+            report["steps"].extend(
+                call_mcp_sequence(
+                    args.base_url,
+                    archived_entry_id=archived_entry_id if not args.skip_write_path else None,
+                )
             )
-        )
+        except Exception as error:  # noqa: BLE001
+            report["steps"].append(
+                {
+                    "name": "mcp_sequence",
+                    "ok": False,
+                    "status_code": None,
+                    "body": {"error": str(error)},
+                }
+            )
         if not args.skip_write_path and archived_entry_id:
             report["steps"].append({"name": "health_after_restore", **call_health(args.base_url)})
         time.sleep(1)

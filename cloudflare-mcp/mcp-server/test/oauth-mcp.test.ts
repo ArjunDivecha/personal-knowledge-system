@@ -186,7 +186,7 @@ async function authorizeClientWithScope(
 beforeEach(() => {
 	vi.clearAllMocks();
 	redisStore = {
-		"index:current": {
+		"index:current": JSON.stringify({
 			generated_at: "2026-03-28T05:00:00.000Z",
 			total_topic_count: 573,
 			total_project_count: 36,
@@ -233,7 +233,7 @@ beforeEach(() => {
 					archived: false,
 				},
 			],
-		},
+		}),
 		"dream:last_run": {
 			run_id: "dr_2026-03-28T03-00-00-000Z",
 			run_at: "2026-03-28T03:00:00.000Z",
