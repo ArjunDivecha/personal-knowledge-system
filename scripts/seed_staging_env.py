@@ -14,6 +14,8 @@ from upstash_vector import Index
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DISTILLATION_ROOT = REPO_ROOT / "distillation"
+DEFAULT_PHASE9_PROBES_PATH = REPO_ROOT / "tests" / "fixtures" / "phase9_staging_outcome_probes.json"
+PHASE9_PROBE_SET_KEY = "dream:outcome_probes"
 
 if str(DISTILLATION_ROOT) not in sys.path:
     sys.path.insert(0, str(DISTILLATION_ROOT))
@@ -53,6 +55,31 @@ def load_bundle(path: Path) -> tuple[list[KnowledgeEntry], list[ProjectEntry], d
         for item in payload.get("project_entries", [])
     ]
     return knowledge_entries, project_entries, metadata
+
+
+def load_phase9_probes(path: Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    payload = json.loads(path.read_text())
+    probes = payload.get("probes")
+    if not isinstance(probes, list):
+        raise RuntimeError(f"Phase 9 probes file must contain a probes array: {path}")
+    for index, probe in enumerate(probes):
+        if not isinstance(probe, dict):
+            raise RuntimeError(f"Phase 9 probe at index {index} is not an object")
+        if not isinstance(probe.get("id"), str) or not probe["id"]:
+            raise RuntimeError(f"Phase 9 probe at index {index} is missing id")
+        if not isinstance(probe.get("query"), str) or not probe["query"]:
+            raise RuntimeError(f"Phase 9 probe {probe.get('id')} is missing query")
+    metadata = dict(payload.get("metadata") or {})
+    return {
+        "metadata": {
+            **metadata,
+            "seeded_from": str(path),
+            "seeded_at": utc_now_iso(),
+        },
+        "probes": probes,
+    }
 
 
 def get_required_env(key: str, *fallback_keys: str, allow_empty: bool = False) -> str:
@@ -125,6 +152,21 @@ def write_entries_to_redis(redis: Redis, knowledge_entries: list[KnowledgeEntry]
         sync_secondary_indexes(redis, entry)
 
 
+def write_phase9_probes_to_redis(
+    redis: Redis,
+    payload: dict[str, Any] | None,
+    *,
+    key: str = PHASE9_PROBE_SET_KEY,
+) -> int:
+    if payload is None:
+        return 0
+    probes = payload.get("probes")
+    if not isinstance(probes, list):
+        raise RuntimeError("Phase 9 probe payload is missing probes array")
+    redis.set(key, json.dumps(payload))
+    return len(probes)
+
+
 def build_vector_rows(
     openai_client: openai.OpenAI,
     entries: list[KnowledgeEntry | ProjectEntry],
@@ -189,9 +231,14 @@ def main() -> int:
     parser.add_argument("--reset", action="store_true")
     parser.add_argument("--skip-vectors", action="store_true")
     parser.add_argument("--mark-backfill-complete", action="store_true")
+    parser.add_argument("--phase9-probes", type=Path, default=DEFAULT_PHASE9_PROBES_PATH)
+    parser.add_argument("--phase9-probe-key", default=PHASE9_PROBE_SET_KEY)
+    parser.add_argument("--skip-phase9-probes", action="store_true")
     args = parser.parse_args()
 
     knowledge_entries, project_entries, bundle_metadata = load_bundle(args.bundle)
+    phase9_payload = None if args.skip_phase9_probes else load_phase9_probes(args.phase9_probes)
+    phase9_probe_count = len(phase9_payload.get("probes", [])) if phase9_payload else 0
     all_entries: list[KnowledgeEntry | ProjectEntry] = [*knowledge_entries, *project_entries]
     thin_index = generate_thin_index(knowledge_entries, project_entries)
     should_mark_complete = args.mark_backfill_complete or bool(bundle_metadata.get("mark_backfill_complete", False))
@@ -206,6 +253,9 @@ def main() -> int:
         "project_entries": len(project_entries),
         "thin_index_summary": thin_index.get_summary(),
         "mark_backfill_complete": should_mark_complete,
+        "phase9_probe_key": None if args.skip_phase9_probes else args.phase9_probe_key,
+        "phase9_probe_path": None if args.skip_phase9_probes else str(args.phase9_probes),
+        "phase9_probe_count": phase9_probe_count,
         "deleted": None,
         "embedding_tokens": 0,
     }
@@ -225,6 +275,11 @@ def main() -> int:
 
     write_entries_to_redis(redis, knowledge_entries, project_entries)
     redis.set("index:current", json.dumps(thin_index.to_dict()))
+    report["phase9_probe_count"] = write_phase9_probes_to_redis(
+        redis,
+        phase9_payload,
+        key=args.phase9_probe_key,
+    )
 
     if should_mark_complete:
         redis.set(MIGRATION_FLAG_KEY, utc_now_iso())

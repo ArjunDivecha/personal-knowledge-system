@@ -18,6 +18,8 @@ from _memory_migration import append_report, utc_now_iso
 from _validation_ledger import ValidationGateRecord, write_validation_gate
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+PHASE9_PROBE_SET_KEY = "dream:outcome_probes"
+DEFAULT_PHASE9_PROBES_PATH = REPO_ROOT / "tests" / "fixtures" / "phase9_staging_outcome_probes.json"
 
 
 def get_env_value(*keys: str) -> str | None:
@@ -253,6 +255,18 @@ def select_archive_operation(proposal: dict[str, Any]) -> dict[str, Any]:
     raise RuntimeError("Dream proposal did not include an archive_entry operation for rollback drill")
 
 
+def build_phase9_apply_arguments(arguments: dict[str, Any], *, enabled: bool = True) -> dict[str, Any]:
+    if not enabled:
+        return dict(arguments)
+    return {
+        **arguments,
+        "phase9_outcome_gate": True,
+        "phase9_auto_rollback": False,
+        "phase9_probe_set_key": PHASE9_PROBE_SET_KEY,
+        "phase9_write_validation_ledger": True,
+    }
+
+
 def call_openai_read_only_compatibility(base_url: str) -> list[dict[str, Any]]:
     session, access_token = oauth_client_flow(base_url, scope="mcp:read")
     steps: list[dict[str, Any]] = []
@@ -322,7 +336,7 @@ def call_openai_read_only_compatibility(base_url: str) -> list[dict[str, Any]]:
     return steps
 
 
-def call_dream_governance_lifecycle(base_url: str) -> list[dict[str, Any]]:
+def call_dream_governance_lifecycle(base_url: str, *, phase9_gate: bool = True) -> list[dict[str, Any]]:
     operator_token = get_env_value("STAGING_DREAM_OPERATOR_TOKEN", "DREAM_OPERATOR_TOKEN")
     if not operator_token:
         return [
@@ -439,21 +453,32 @@ def call_dream_governance_lifecycle(base_url: str) -> list[dict[str, Any]]:
         session_id,
         rpc_id=4,
         name="apply_dream_proposal",
-        arguments={
+        arguments=build_phase9_apply_arguments({
             "proposal_id": proposal_id,
             "mutation_id": apply_mutation_id,
             "reason": "Staging R5 rollback drill apply",
             "require_grade_pass": True,
             "grade_id": str(grade.get("grade_id")),
             "operation_ids": [operation_id],
-        },
+        }, enabled=phase9_gate),
+    )
+    phase9_payload = apply_payload.get("phase9_outcome_gate") if phase9_gate else None
+    phase9_gate_ok = (
+        not phase9_gate
+        or (
+            isinstance(phase9_payload, dict)
+            and phase9_payload.get("status") == "passed"
+            and isinstance(phase9_payload.get("gate_report"), dict)
+            and phase9_payload["gate_report"].get("passed") is True
+        )
     )
     apply_step = {
         "name": "dream_lifecycle_apply",
         "status_code": apply_response.status_code,
         "ok": apply_response.ok
         and apply_payload.get("ok") is True
-        and apply_payload.get("applied_count") == 1,
+        and apply_payload.get("applied_count") == 1
+        and phase9_gate_ok,
         "body": {
             "proposal_id": apply_payload.get("proposal_id"),
             "mutation_id": apply_payload.get("mutation_id"),
@@ -461,6 +486,7 @@ def call_dream_governance_lifecycle(base_url: str) -> list[dict[str, Any]]:
             "operation_ids": apply_payload.get("operation_ids"),
             "before_revisions": apply_payload.get("before_revisions"),
             "after_revisions": apply_payload.get("after_revisions"),
+            "phase9_outcome_gate": phase9_payload,
         },
     }
     steps.append(apply_step)
@@ -836,6 +862,7 @@ def main() -> int:
         type=Path,
         default=REPO_ROOT / "tests" / "fixtures" / "sample_memory_fixture.json",
     )
+    parser.add_argument("--phase9-probes", type=Path, default=DEFAULT_PHASE9_PROBES_PATH)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--skip-seed", action="store_true")
     parser.add_argument("--skip-dream", action="store_true")
@@ -845,6 +872,7 @@ def main() -> int:
         action="store_true",
         help="Run the older Dream dry-run/live-archive smoke instead of the PRD R5 governance lifecycle.",
     )
+    parser.add_argument("--skip-phase9-gate", action="store_true")
     args = parser.parse_args()
 
     report: dict[str, Any] = {
@@ -861,6 +889,8 @@ def main() -> int:
             str(REPO_ROOT / "scripts" / "seed_staging_env.py"),
             "--bundle",
             str(args.bundle),
+            "--phase9-probes",
+            str(args.phase9_probes),
         ]
         if args.dry_run:
             cmd.append("--dry-run")
@@ -874,7 +904,10 @@ def main() -> int:
         archived_entry_id: str | None = None
         if not args.skip_dream and not args.legacy_smoke:
             try:
-                lifecycle_steps = call_dream_governance_lifecycle(args.base_url)
+                lifecycle_steps = call_dream_governance_lifecycle(
+                    args.base_url,
+                    phase9_gate=not args.skip_phase9_gate,
+                )
             except Exception as error:  # noqa: BLE001
                 lifecycle_steps = [
                     {

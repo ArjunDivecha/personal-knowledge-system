@@ -2,6 +2,8 @@ REPO_ROOT := $(shell pwd)
 PYTHON := $(REPO_ROOT)/distillation/venv/bin/python
 WORKER_DIR := $(REPO_ROOT)/cloudflare-mcp/mcp-server
 FIXTURE_BUNDLE := $(REPO_ROOT)/tests/fixtures/sample_memory_fixture.json
+PHASE9_PROBES := $(REPO_ROOT)/tests/fixtures/phase9_staging_outcome_probes.json
+STAGING_WORKER_BASE_URL ?= $${STAGING_WORKER_BASE_URL}
 CHECK_OVERNIGHT_DREAM_ARGS ?=
 ENSURE_OVERNIGHT_DREAM_ARGS ?=
 
@@ -41,13 +43,13 @@ test-python-checker:
 	"$(PYTHON)" -m unittest discover -s "$(REPO_ROOT)/tests/python" -p 'test_*.py'
 
 seed-staging-dry-run:
-	"$(PYTHON)" "$(REPO_ROOT)/scripts/seed_staging_env.py" --bundle "$(FIXTURE_BUNDLE)" --dry-run
+	"$(PYTHON)" "$(REPO_ROOT)/scripts/seed_staging_env.py" --bundle "$(FIXTURE_BUNDLE)" --phase9-probes "$(PHASE9_PROBES)" --dry-run
 
 staging-smoke-dry-run:
-	"$(PYTHON)" "$(REPO_ROOT)/scripts/run_e2e_staging.py" --base-url "$$STAGING_WORKER_BASE_URL" --bundle "$(FIXTURE_BUNDLE)" --dry-run
+	"$(PYTHON)" "$(REPO_ROOT)/scripts/run_e2e_staging.py" --base-url "$(STAGING_WORKER_BASE_URL)" --bundle "$(FIXTURE_BUNDLE)" --phase9-probes "$(PHASE9_PROBES)" --dry-run
 
 staging-smoke:
-	"$(PYTHON)" "$(REPO_ROOT)/scripts/run_e2e_staging.py" --base-url "$$STAGING_WORKER_BASE_URL" --bundle "$(FIXTURE_BUNDLE)"
+	"$(PYTHON)" "$(REPO_ROOT)/scripts/run_e2e_staging.py" --base-url "$(STAGING_WORKER_BASE_URL)" --bundle "$(FIXTURE_BUNDLE)" --phase9-probes "$(PHASE9_PROBES)"
 
 deploy-staging:
 	cd "$(WORKER_DIR)" && npm run deploy:staging

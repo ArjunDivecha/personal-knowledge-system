@@ -58,6 +58,7 @@ Phase 8 retrieval fixtures:
 Phase 9 outcome-gate fixtures:
 
 - `phase9_outcome_gate_fixture.json` contains compact pre/post Phase 8 eval reports for the deterministic Dream outcome-regression gate.
+- `phase9_staging_outcome_probes.json` contains bounded staging probes seeded into `dream:outcome_probes` so staging Dream apply can exercise the Phase 9 gate.
 
 ## Design Rules
 

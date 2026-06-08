@@ -1,0 +1,25 @@
+{
+  "metadata": {
+    "fixture": "phase9_staging_outcome_probes",
+    "schema_version": 1,
+    "target_bundle": "sample_memory_fixture.json",
+    "probe_set_key": "dream:outcome_probes",
+    "description": "Bounded Phase 9 probes for the staging Dream governance lifecycle."
+  },
+  "probes": [
+    {
+      "id": "staging_identity_recall_survives_dream_apply",
+      "query": "quantitative investing portfolio construction background",
+      "expected_intent": "current_answer",
+      "expected_entry_ids": ["ke_fixture_identity_001"],
+      "top_k": 5
+    },
+    {
+      "id": "staging_project_recall_survives_dream_apply",
+      "query": "staging validation project seed health checks",
+      "expected_intent": "current_answer",
+      "expected_entry_ids": ["pe_fixture_project_001"],
+      "top_k": 5
+    }
+  ]
+}
