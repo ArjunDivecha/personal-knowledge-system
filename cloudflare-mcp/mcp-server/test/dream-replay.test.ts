@@ -597,6 +597,10 @@ describe("Dream replay logic", () => {
 	});
 
 	it("applies selected proposal operations after revision preflight", async () => {
+		const primaryBefore = getStoredObject("knowledge:ke_dup_primary");
+		(primaryBefore.metadata as Record<string, unknown>).injection_tier = null;
+		mockState.store.set("knowledge:ke_dup_primary", primaryBefore);
+
 		const proposal = await runDreamProposal(
 			{
 				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
@@ -647,6 +651,15 @@ describe("Dream replay logic", () => {
 		const canonical = getStoredObject("knowledge:ke_dup_primary");
 		const canonicalMetadata = canonical.metadata as Record<string, unknown>;
 		expect(canonicalMetadata.mention_count).toBe(3);
+		expect(canonicalMetadata.injection_tier).toBe(2);
+		expect(mockState.vectorUpdates).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					id: "ke_dup_primary",
+					metadata: expect.objectContaining({ injection_tier: 2 }),
+				}),
+			]),
+		);
 		const archivedDuplicate = getStoredObject("knowledge:ke_dup_secondary");
 		expect((archivedDuplicate.metadata as Record<string, unknown>).archived).toBe(true);
 		expect(mockState.vectorDeletes).toContain("ke_dup_secondary");

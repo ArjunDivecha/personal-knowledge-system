@@ -92,6 +92,7 @@ STATE_REDIS_KEY = "ingestion:agent_sessions:state"
 _state_redis_client: Optional[Redis] = None
 _redis_write_failed = False
 DEFAULT_DISTILL_FAILURE_RETRY_LIMIT = 2
+DEFAULT_REDIS_SAVE_ATTEMPTS = 3
 
 # Filtering thresholds
 MIN_USER_CHARS = 300    # Skip trivial sessions (just cd/ls)
@@ -134,6 +135,13 @@ def _distill_failure_retry_limit() -> int:
     return _int_env(
         "PKS_AGENT_SESSION_DISTILL_RETRY_LIMIT",
         DEFAULT_DISTILL_FAILURE_RETRY_LIMIT,
+    )
+
+
+def _redis_save_attempts() -> int:
+    return _int_env(
+        "PKS_AGENT_SESSION_REDIS_SAVE_ATTEMPTS",
+        DEFAULT_REDIS_SAVE_ATTEMPTS,
     )
 
 
@@ -255,19 +263,34 @@ def load_state() -> tuple[dict, str]:
 
 def save_state(state: dict):
     """Persist processing state atomically to disk and best-effort to Redis."""
-    global _redis_write_failed
+    global _redis_write_failed, _state_redis_client
     normalized = _normalize_state(state)
     tmp = STATE_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(normalized, indent=2))
     tmp.rename(STATE_FILE)
 
-    redis_client = _get_state_redis_client()
-    if redis_client is not None:
+    attempts = _redis_save_attempts()
+    for attempt in range(1, attempts + 1):
+        redis_client = _get_state_redis_client()
+        if redis_client is None:
+            return
         try:
             redis_client.set(STATE_REDIS_KEY, json.dumps(normalized))
+            _redis_write_failed = False
+            return
         except Exception as exc:
-            _redis_write_failed = True
-            log.warning(f"Could not save agent session state to Redis: {exc}")
+            _state_redis_client = None
+            if attempt >= attempts:
+                _redis_write_failed = True
+                log.warning(
+                    f"Could not save agent session state to Redis after {attempts} attempt(s): {exc}"
+                )
+            else:
+                log.warning(
+                    f"Could not save agent session state to Redis "
+                    f"(attempt {attempt}/{attempts}); retrying with a fresh client: {exc}"
+                )
+                time.sleep(min(2.0, 0.25 * attempt))
 
 
 def write_run_status(

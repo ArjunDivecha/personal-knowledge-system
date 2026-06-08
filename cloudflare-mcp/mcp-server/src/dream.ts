@@ -446,6 +446,7 @@ function normalizeEntry(raw: unknown, entryType: EntryType): Record<string, unkn
 		// Stored so quarantine + demote rules can fire deterministically.
 		quarantine_streak_nights: toOptionalInteger(metadata.quarantine_streak_nights) ?? 0,
 	};
+	normalizedMetadata.injection_tier = resolveStoredInjectionTier(normalizedMetadata);
 
 	return {
 		...entry,
@@ -493,7 +494,7 @@ function setVectorMetadataBase(entry: LoadedEntry): Record<string, unknown> {
 				? entry.metadata.classification_status
 				: "pending",
 		context_type: entry.metadata.context_type,
-		injection_tier: entry.metadata.injection_tier,
+		injection_tier: entry.injectionTier,
 		salience_score: entry.metadata.salience_score,
 		mention_count: entry.metadata.mention_count,
 		last_consolidated: entry.metadata.last_consolidated,
@@ -1955,6 +1956,8 @@ async function persistEntry(
 	entry: LoadedEntry,
 	options?: { embedding?: number[]; skipVector?: boolean },
 ): Promise<void> {
+	entry.injectionTier = resolveStoredInjectionTier(entry.metadata);
+	entry.metadata.injection_tier = entry.injectionTier;
 	entry.metadata.salience_score = computeSalience(entry.entry);
 	entry.entry.metadata = entry.metadata;
 	await redis.set(getEntryKey(entry.type, entry.id), JSON.stringify(entry.entry));
