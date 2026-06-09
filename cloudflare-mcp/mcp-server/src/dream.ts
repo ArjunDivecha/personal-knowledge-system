@@ -73,6 +73,10 @@ interface ApplyDreamProposalOptions {
 	operationIds?: string[] | null;
 	requireGradePass?: boolean | null;
 	gradeId?: string | null;
+	// 2.5 — Hard cap on the total number of distinct entry IDs touched across all
+	// operations.  Prevents a single duplicate_merge op with many archive_ids from
+	// silently archiving far more entries than the per-op archive cap implies.
+	maxEntriesTouched?: number | null;
 	phase9OutcomeGate?: boolean | null;
 	phase9AutoRollback?: boolean | null;
 	phase9ProbeSetKey?: string | null;
@@ -997,6 +1001,11 @@ export async function buildReplayPlansWithSemantic(
 		capped = result.capped;
 		queriesRun = result.queriesRun;
 		semanticDisabled = result.disabled;
+		// 2.9 — Log degraded dedup loudly so the nightly monitor can catch it.
+		// Silent fail-open produced nondeterministic proposals and masked vector DB outages.
+		if (semanticDisabled) {
+			console.warn("[dream] DEDUP_DEGRADED: semantic neighbour probe failed — falling back to lexical-only dedup; proposals may miss semantic near-duplicates");
+		}
 	}
 
 	const pairCosine = new Map<string, number>();
@@ -1420,8 +1429,8 @@ export function isArchiveCandidate(entry: LoadedEntry): boolean {
 	// regardless of context_type — EXCEPT protected identity/explicit-save
 	// types, which are never auto-archived. Broadened from the old
 	// task_query/passing_reference-only rule so prune can keep pace with intake.
-	const protectedTypes: string[] =
-		(MEMORY_POLICY.dream_thresholds as Record<string, unknown>).archive_protected_context_types as string[] ?? [];
+	const thresholds = MEMORY_POLICY.dream_thresholds as Record<string, unknown>;
+	const protectedTypes: string[] = thresholds.archive_protected_context_types as string[] ?? [];
 	if (protectedTypes.includes(entry.contextType)) return false;
 	// Never archive an entry that is contested/flagged for operator review —
 	// archiving it would silently resolve a contradiction the operator hasn't
@@ -1429,6 +1438,24 @@ export function isArchiveCandidate(entry: LoadedEntry): boolean {
 	// the live cycle, entries marked contested earlier this run (the cycle
 	// reloads the snapshot after marking, so their state reads "contested").
 	if (typeof entry.entry.state === "string" && entry.entry.state === "contested") return false;
+	// Phase fix 2.8: minimum-age guard. Fresh low-salience entries get a grace
+	// period (default 14 days) before they can be archived, so an entry that
+	// hasn't had time to accumulate access signals isn't pruned on night one.
+	// Use first_seen → created_at → updatedAt as the birth timestamp; if none
+	// is available we assume the entry is old enough (conservative).
+	const minAgeDays: number = (typeof thresholds.archive_candidate_min_age_days === "number"
+		? thresholds.archive_candidate_min_age_days
+		: 14);
+	const metadata = entry.metadata;
+	const birthIso =
+		(typeof metadata.first_seen === "string" ? metadata.first_seen : null) ??
+		(typeof metadata.created_at === "string" ? metadata.created_at : null) ??
+		entry.updatedAt;
+	if (birthIso !== null) {
+		const ageMs = Date.now() - new Date(birthIso).getTime();
+		const ageDays = ageMs / (1000 * 60 * 60 * 24);
+		if (ageDays < minAgeDays) return false;
+	}
 	return (
 		entry.accessCount === 0 &&
 		entry.sourceConversationCount <= 1 &&
@@ -1697,10 +1724,12 @@ async function writeRunRecord(
 		...(setAsLatest ? [DREAM_LAST_RUN_KEY] : []),
 	];
 
+	// 2.9 — Use the policy-driven max-bytes target (was force-compacted to maxBytes:1
+	// which stripped all actionable content from the stored run record).
 	const storedRunRecord = compactDreamRunRecordForStorage(runRecord, {
-		maxBytes: 1,
-		sampleLimit: 1,
-		fallbackSampleLimit: 1,
+		maxBytes: DREAM_STORAGE_MAX_BYTES,
+		sampleLimit: 100,
+		fallbackSampleLimit: 5,
 	});
 	const serialized = JSON.stringify(storedRunRecord);
 	const maxRequestBytes = Math.max(...keys.map((key) => estimateRedisSetRequestBytes(key, serialized)));
@@ -2008,6 +2037,25 @@ async function appendMutationLog(
 ): Promise<void> {
 	await redis.lpush(MUTATION_LOG_KEY, JSON.stringify(event));
 	await redis.ltrim(MUTATION_LOG_KEY, 0, MUTATION_LOG_LIMIT - 1);
+}
+
+// 2.9 — Append (not overwrite) a Dream lifecycle event to the proposal's :events list.
+// The prior pattern (`redis.set(key, JSON.stringify([event]))`) destroyed the full event
+// history when apply → rollback or apply → apply cycles touched the same proposal.
+async function appendDreamEvent(
+	redis: Redis,
+	proposalId: string,
+	event: Record<string, unknown>,
+): Promise<void> {
+	const key = `${DREAM_RUN_PREFIX}${proposalId}:events`;
+	const raw = await redis.get(key);
+	const existing = Array.isArray(raw)
+		? raw
+		: typeof raw === "string"
+		? (() => { try { const p = JSON.parse(raw); return Array.isArray(p) ? p : []; } catch { return []; } })()
+		: [];
+	existing.push(event);
+	await redis.set(key, JSON.stringify(existing));
 }
 
 function appendEvolutionNote(
@@ -2501,6 +2549,15 @@ function buildDreamProposalOperations(
 			},
 		});
 	}
+
+	// 2.9 — Sort deterministically by operation_id so identical corpora produce identical
+	// proposals regardless of Redis SCAN order; the per-type cap then selects the same
+	// operations on every run, making the proposal reproducible.
+	operations.sort((a, b) => {
+		const idA = typeof a.operation_id === "string" ? a.operation_id : "";
+		const idB = typeof b.operation_id === "string" ? b.operation_id : "";
+		return idA < idB ? -1 : idA > idB ? 1 : 0;
+	});
 
 	return operations;
 }
@@ -3152,6 +3209,25 @@ export async function applyDreamProposal(
 	}
 
 	const touchedIds = [...new Set(operations.flatMap(getOperationTouchedIds))];
+
+	// 2.5 — Enforce a global entries-touched budget across all operations so that
+	// a single duplicate_merge op with many archive_ids cannot archive an unbounded
+	// number of entries while technically "within the per-op archive cap."
+	const maxEntriesTouched = typeof options.maxEntriesTouched === "number" ? options.maxEntriesTouched : null;
+	if (maxEntriesTouched !== null && touchedIds.length > maxEntriesTouched) {
+		const result = {
+			ok: false,
+			error: "entries_touched_budget_exceeded",
+			proposal_id: options.proposalId,
+			mutation_id: options.mutationId,
+			entries_touched: touchedIds.length,
+			max_entries_touched: maxEntriesTouched,
+			next_action: "Reduce the number of operations or raise maxEntriesTouched before applying.",
+		};
+		await storeMutationResult(redis, options.mutationId, result);
+		return result;
+	}
+
 	const entriesById = await loadTouchedEntries(redis, touchedIds);
 	for (const operation of operations) {
 		const validationError = validateOperationRevisions(operation, entriesById);
@@ -3218,6 +3294,25 @@ export async function applyDreamProposal(
 			JSON.parse(JSON.stringify(entriesById.get(entryId)!.entry)),
 		]),
 	);
+	// 2.2 — Crash-safe rollback handle: persist before-snapshots BEFORE the op loop.
+	// If the worker dies mid-apply, Redis retains this record so rollbackDreamApply
+	// can restore entries even without a completed audit.  The key is overwritten with
+	// the finalized record (ok:true / status:"failed") once the loop and index rebuild
+	// complete.
+	await redis.set(
+		getApplyAuditKey(options.proposalId, options.mutationId),
+		JSON.stringify({
+			status: "in_progress",
+			proposal_id: options.proposalId,
+			apply_run_id: applyRunId,
+			mutation_id: options.mutationId,
+			started_at: timestamp,
+			before_revisions: beforeRevisions,
+			before_snapshots: beforeSnapshots,
+			operation_ids: operations.map((operation) => operation.operation_id),
+		}),
+	);
+
 	const operationResults: Array<Record<string, unknown>> = [];
 
 	for (const operation of operations) {
@@ -3236,11 +3331,14 @@ export async function applyDreamProposal(
 	if (operationResults.some((result) => result.ok === false)) {
 		const failedResult = {
 			ok: false,
+			status: "failed",
 			error: "operation_failed",
 			proposal_id: options.proposalId,
 			mutation_id: options.mutationId,
+			before_snapshots: beforeSnapshots,
 			results: operationResults,
 		};
+		await redis.set(getApplyAuditKey(options.proposalId, options.mutationId), JSON.stringify(failedResult));
 		await storeMutationResult(redis, options.mutationId, failedResult);
 		return failedResult;
 	}
@@ -3260,6 +3358,7 @@ export async function applyDreamProposal(
 	);
 	let result: Record<string, unknown> = {
 		ok: true,
+		status: "completed",
 		proposal_id: options.proposalId,
 		apply_run_id: applyRunId,
 		mutation_id: options.mutationId,
@@ -3276,18 +3375,18 @@ export async function applyDreamProposal(
 		},
 	};
 
-	await redis.set(`${DREAM_RUN_PREFIX}${options.proposalId}:apply:${options.mutationId}`, JSON.stringify(result));
-	await redis.set(`${DREAM_RUN_PREFIX}${options.proposalId}:events`, JSON.stringify([
-		{
-			ts: timestamp,
-			event: "proposal_applied",
-			mutation_id: options.mutationId,
-			actor_id: options.actorId,
-			reason: options.reason,
-			operation_ids: operations.map((operation) => operation.operation_id),
-			ids_affected: touchedIds,
-		},
-	]));
+	// Finalize the crash-safe audit record (was written as "in_progress" before the op loop).
+	await redis.set(getApplyAuditKey(options.proposalId, options.mutationId), JSON.stringify(result));
+	// 2.9 — Append (not overwrite) so rollback events are not destroyed by a later apply.
+	await appendDreamEvent(redis, options.proposalId, {
+		ts: timestamp,
+		event: "proposal_applied",
+		mutation_id: options.mutationId,
+		actor_id: options.actorId,
+		reason: options.reason,
+		operation_ids: operations.map((operation) => operation.operation_id),
+		ids_affected: touchedIds,
+	});
 	await appendMutationLog(redis, {
 		ts: timestamp,
 		mutation_id: options.mutationId,
@@ -3417,17 +3516,6 @@ async function validateRollbackCurrentRevisions(
 				},
 			};
 		}
-		const expectedCurrentRevision = getApplyAfterRevision(applyRecord, entryId);
-		if (expectedCurrentRevision === null) {
-			return {
-				entriesById,
-				error: {
-					ok: false,
-					error: "rollback_revision_missing",
-					id: entryId,
-				},
-			};
-		}
 		if (!getApplyBeforeSnapshot(applyRecord, entryId)) {
 			return {
 				entriesById,
@@ -3437,6 +3525,13 @@ async function validateRollbackCurrentRevisions(
 					id: entryId,
 				},
 			};
+		}
+		const expectedCurrentRevision = getApplyAfterRevision(applyRecord, entryId);
+		if (expectedCurrentRevision === null) {
+			// 2.3 — For in_progress or failed apply records, after_revisions is absent.
+			// Skip the revision check; restoration from the before-snapshot is still safe
+			// because the snapshot-restore write is idempotent if the entry is already there.
+			continue;
 		}
 		const actualRevision = getExpectedRevision(entry);
 		if (actualRevision !== expectedCurrentRevision) {
@@ -3597,17 +3692,34 @@ export async function rollbackDreamApply(
 	const redis = createRedisClient(env);
 	const vector = createVectorClient(env);
 	const storedMutation = parseStoredObject(await redis.get(getMutationResultKey(options.rollbackMutationId)));
-	if (storedMutation) {
+	// 2.3 — Only honour a stored mutation result if it is finalized (not in_progress).
+	// An in_progress record means the worker crashed after writing the marker but before
+	// completing; allow the retry to proceed rather than freezing it.
+	if (storedMutation && storedMutation.status !== "in_progress") {
 		return storedMutation;
 	}
 
+	// 2.3 — Write an in_progress marker before touching any entries so that a
+	// crash+retry re-runs the rollback instead of returning a frozen partial result.
+	await storeMutationResult(redis, options.rollbackMutationId, {
+		status: "in_progress",
+		proposal_id: options.proposalId,
+		apply_mutation_id: options.applyMutationId,
+		mutation_id: options.rollbackMutationId,
+	});
+
 	const applyRecord = parseStoredObject(await redis.get(getApplyAuditKey(options.proposalId, options.applyMutationId)));
-	if (!applyRecord || applyRecord.ok !== true) {
+	// Accept completed records (ok:true) AND in_progress records written before the op
+	// loop — the latter enables rollback even when the worker crashed mid-apply.
+	const applyRecordUsable = applyRecord &&
+		(applyRecord.ok === true || applyRecord.status === "in_progress" || applyRecord.status === "failed");
+	if (!applyRecordUsable) {
 		const result = {
 			ok: false,
 			error: "apply_record_not_found",
 			proposal_id: options.proposalId,
 			apply_mutation_id: options.applyMutationId,
+			apply_record_status: applyRecord ? String(applyRecord.status ?? "unknown") : "missing",
 			mutation_id: options.rollbackMutationId,
 		};
 		await storeMutationResult(redis, options.rollbackMutationId, result);
@@ -3754,18 +3866,17 @@ export async function rollbackDreamApply(
 	};
 
 	await redis.set(getRollbackAuditKey(options.proposalId, options.rollbackMutationId), JSON.stringify(result));
-	await redis.set(`${DREAM_RUN_PREFIX}${options.proposalId}:events`, JSON.stringify([
-		{
-			ts: timestamp,
-			event: "proposal_rollback",
-			mutation_id: options.rollbackMutationId,
-			apply_mutation_id: options.applyMutationId,
-			actor_id: options.actorId,
-			reason: options.reason,
-			operation_ids: result.operation_ids,
-			ids_affected: touchedIds,
-		},
-	]));
+	// 2.9 — Append (not overwrite) so the apply event written earlier is preserved.
+	await appendDreamEvent(redis, options.proposalId, {
+		ts: timestamp,
+		event: "proposal_rollback",
+		mutation_id: options.rollbackMutationId,
+		apply_mutation_id: options.applyMutationId,
+		actor_id: options.actorId,
+		reason: options.reason,
+		operation_ids: result.operation_ids,
+		ids_affected: touchedIds,
+	});
 	await appendMutationLog(redis, {
 		ts: timestamp,
 		mutation_id: options.rollbackMutationId,
@@ -3920,6 +4031,8 @@ function mergeCanonicalEntry(
 	}
 
 	canonicalMetadata.last_consolidated = timestamp;
+	// Bump revision so conflict detection and rollback validation see this write.
+	canonicalMetadata.revision = (toOptionalInteger(canonicalMetadata.revision) ?? 0) + 1;
 	appendConsolidationNote(
 		canonicalMetadata,
 		formatConsolidationNote({
@@ -4001,6 +4114,8 @@ async function markEntryContested(
 		ensureRelatedKnowledgeLink(entry.entry, relatedId, "contradicts");
 	}
 	metadata.last_consolidated = timestamp;
+	// Bump revision so conflict detection and rollback validation see this write.
+	metadata.revision = (toOptionalInteger(metadata.revision) ?? 0) + 1;
 	appendConsolidationNote(
 		metadata,
 		formatConsolidationNote({
@@ -4337,6 +4452,8 @@ async function promoteEntry(
 	entry.metadata.context_type = "recurring_pattern";
 	entry.metadata.injection_tier = 2;
 	entry.metadata.last_consolidated = timestamp;
+	// Bump revision so conflict detection and rollback validation see this write.
+	entry.metadata.revision = (toOptionalInteger(entry.metadata.revision) ?? 0) + 1;
 	appendConsolidationNote(
 		entry.metadata,
 		formatConsolidationNote({
@@ -4409,6 +4526,8 @@ export async function archiveEntry(
 	latestMetadata.archived_run_id = runId;
 	latestMetadata.archive_snapshot_key = archiveSnapshotKey;
 	latestMetadata.last_consolidated = timestamp;
+	// Bump revision so conflict detection and rollback validation see this write.
+	latestMetadata.revision = (toOptionalInteger(latestMetadata.revision) ?? 0) + 1;
 	appendConsolidationNote(
 		latestMetadata,
 		formatConsolidationNote({
@@ -5687,6 +5806,93 @@ export async function updateEntry(
 	await storeMutationResult(redis, params.mutationId, result);
 
 	return result;
+}
+
+// 2.10 — Scheduled retier + Layer-2 cycle.  Called from the governed scheduled
+// path BEFORE the proposal so forgetting (synaptic weakening, percentile re-tier,
+// judge verdict consumption) runs every nightly window, not just on operator-triggered
+// runDreamCycle calls.  Operates under the caller's lock; does NOT acquire its own.
+export async function runScheduledRetierCycle(
+	env: Env,
+	runId: string,
+	timestamp: string,
+	dryRun = false,
+): Promise<{
+	layer2: Awaited<ReturnType<typeof applyLayer2QuarantineAndDemote>>;
+	retier: Awaited<ReturnType<typeof applyPercentileRetier>>;
+	verdicts_applied: number;
+	verdicts_skipped: number;
+	skipped_reason?: string;
+}> {
+	const emptyLayer2: Awaited<ReturnType<typeof applyLayer2QuarantineAndDemote>> = {
+		quarantined: [], demoted: [], streak_reset: 0, streak_increment: 0, processed: 0, cap_hit: false,
+	};
+	const emptyRetier: Awaited<ReturnType<typeof applyPercentileRetier>> = {
+		evaluated: 0, changed: 0, failed: 0, cap_hit: false, tier_counts: { 1: 0, 2: 0, 3: 0 },
+	};
+
+	const migrationBackfillComplete = await (createRedisClient(env)).get("migration:backfill_complete");
+	if (!migrationBackfillComplete) {
+		return { layer2: emptyLayer2, retier: emptyRetier, verdicts_applied: 0, verdicts_skipped: 0, skipped_reason: "migration_backfill_incomplete" };
+	}
+
+	const redis = createRedisClient(env);
+	const vector = createVectorClient(env);
+
+	// Judge verdict consumption — apply any verdicts that have been queued since the last run.
+	let verdictsApplied = 0;
+	let verdictsSkipped = 0;
+	if (!dryRun) {
+		try {
+			const pendingVerdicts: PendingVerdict[] = await readPendingVerdicts(redis);
+			for (const { item, verdict } of pendingVerdicts) {
+				try {
+					if (verdict.verdict === "apply" && item.op_type === "duplicate_merge_borderline") {
+						if (!item.target_entry_ids || item.target_entry_ids.length < 2) {
+							verdictsSkipped += 1;
+							continue;
+						}
+						const loadedMap = await loadTouchedEntries(redis, item.target_entry_ids);
+						const canonicalId = item.target_entry_ids[0];
+						const duplicateIds = item.target_entry_ids.slice(1);
+						const canonical = loadedMap.get(canonicalId);
+						const duplicates = duplicateIds.map((id) => loadedMap.get(id)).filter((e): e is LoadedEntry => e !== undefined);
+						if (!canonical || duplicates.length === 0) {
+							verdictsSkipped += 1;
+							continue;
+						}
+						const payloadObj = item.payload as Record<string, unknown> | undefined;
+						const fingerprint = typeof payloadObj?.fingerprint === "string" ? payloadObj.fingerprint : `judge:${canonicalId}`;
+						await applyDuplicateMergePlan(redis, vector, { fingerprint, canonical, duplicates }, runId, timestamp);
+						verdictsApplied += 1;
+					} else {
+						verdictsSkipped += 1;
+					}
+				} catch (e) {
+					console.error("[scheduled-retier] verdict application failed", e);
+					verdictsSkipped += 1;
+				}
+			}
+		} catch (e) {
+			console.error("[scheduled-retier] verdict read failed", e);
+		}
+	}
+
+	// Load the full entry corpus for Layer-2 and re-tier.
+	const [knowledgeEntries, projectEntries] = await Promise.all([
+		loadEntriesByType(redis, "knowledge"),
+		loadEntriesByType(redis, "project"),
+	]);
+	const allEntries = [...knowledgeEntries, ...projectEntries];
+
+	let layer2 = emptyLayer2;
+	let retier = emptyRetier;
+	if (!dryRun) {
+		layer2 = await applyLayer2QuarantineAndDemote(redis, vector, allEntries, timestamp);
+		retier = await applyPercentileRetier(redis, vector, allEntries);
+	}
+
+	return { layer2, retier, verdicts_applied: verdictsApplied, verdicts_skipped: verdictsSkipped };
 }
 
 export async function runDreamCycle(

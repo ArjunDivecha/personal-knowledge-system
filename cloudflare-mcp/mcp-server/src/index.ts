@@ -25,6 +25,7 @@ import {
 	rollbackDreamApply,
 	runDreamCycle,
 	runDreamProposal,
+	runScheduledRetierCycle,
 	updateEntry,
 } from "./dream";
 import { formatConsolidationNote } from "./consolidation";
@@ -68,6 +69,14 @@ const SCHEDULED_DREAM_ARCHIVE_LIMIT =
 	typeof (MEMORY_POLICY.dream_thresholds as Record<string, unknown>).scheduled_archive_limit === "number"
 		? ((MEMORY_POLICY.dream_thresholds as Record<string, unknown>).scheduled_archive_limit as number)
 		: 10;
+// 2.5 — Global entries-touched cap: enforced in applyDreamProposal independent of op count,
+// so duplicate_merge archive_ids cannot silently exceed the per-op archive limit.  Defaults
+// to 4× the archive limit if not policy-driven (conservatively caps a 10-merge night at 40
+// entries × 4 archive_ids each = 160 < 200 typical threshold).
+const SCHEDULED_DREAM_MAX_ENTRIES_TOUCHED =
+	typeof (MEMORY_POLICY.dream_thresholds as Record<string, unknown>).max_entries_touched_per_apply === "number"
+		? ((MEMORY_POLICY.dream_thresholds as Record<string, unknown>).max_entries_touched_per_apply as number)
+		: SCHEDULED_DREAM_ARCHIVE_LIMIT * 4;
 const SCHEDULED_DREAM_PROMOTION_LIMIT = 10;
 const SCHEDULED_DREAM_DUPLICATE_MERGE_LIMIT = 10;
 const SCHEDULED_DREAM_MARK_CONTESTED_LIMIT = 10;
@@ -102,7 +111,20 @@ const VALIDATION_LAST_KEY = "validation:last";
 const VALIDATION_GATE_STATUS_KEY = "validation:gate_status";
 const DREAM_LOCK_KEY = "dream:lock";
 const DREAM_LOCK_TTL_SECONDS = 30 * 60;
-const DREAM_LOCK_STALE_AFTER_SECONDS = 5 * 60;
+// 2.7 — Stale window raised to TTL − 60 s so a legitimately-running Dream job
+// (which can take 15–20 min under semantic dedup load) is never racily preempted.
+const DREAM_LOCK_STALE_AFTER_SECONDS = DREAM_LOCK_TTL_SECONDS - 60;
+// 2.7 — Lua script for atomic CAS lock reclaim.  Checks that the current lock
+// value is exactly what we observed as stale before replacing it; prevents the
+// DEL→SET-NX double-acquire race where two workers both see a stale lock, both
+// DEL it, and both SET-NX successfully.
+const DREAM_LOCK_CAS_SCRIPT = `
+local current = redis.call('GET', KEYS[1])
+if current == ARGV[1] then
+  return redis.call('SET', KEYS[1], ARGV[2], 'EX', tonumber(ARGV[3]))
+end
+return nil
+`;
 const DREAM_LAST_RUN_KEY = "dream:last_run";
 const DREAM_LAST_ATTEMPT_KEY = "dream:last_attempt";
 const DREAM_RUN_PREFIX = "dream:run:";
@@ -954,12 +976,16 @@ function getScheduledGovernedBoundaryKey(controller: ScheduledController): strin
 }
 
 function isScheduledGovernedRecord(run: Record<string, unknown> | null): run is Record<string, unknown> {
+	// 2.4 — Only completed runs count as a satisfied boundary; failed/held/skipped runs
+	// must not block same-day repair attempts.
 	return Boolean(
 		run &&
 			run.trigger === "scheduled" &&
 			run.dry_run === false &&
 			run.auto_apply_mode === "governed" &&
-			typeof run.run_id === "string",
+			typeof run.run_id === "string" &&
+			typeof run.status === "string" &&
+			(run.status === "completed" || run.status === "completed_with_holds"),
 	);
 }
 
@@ -1054,22 +1080,29 @@ async function acquireScheduledGovernedDreamLock(
 		return { acquired: true, existingLock: null };
 	}
 
-	const existingLock = parseStoredObject(await redis.get(DREAM_LOCK_KEY));
+	const existingLockRaw = await redis.get(DREAM_LOCK_KEY);
+	const existingLock = parseStoredObject(existingLockRaw);
 	const runAt = typeof existingLock?.run_at === "string" ? Date.parse(existingLock.run_at) : Number.NaN;
 	const stale = !Number.isFinite(runAt) || Date.now() - runAt >= DREAM_LOCK_STALE_AFTER_SECONDS * 1000;
 	if (!stale) {
 		return { acquired: false, existingLock };
 	}
 
-	await (redis as unknown as { del: (key: string) => Promise<unknown> }).del(DREAM_LOCK_KEY);
-	const retryAttempt = await redis.set(DREAM_LOCK_KEY, lockPayload, {
-		nx: true,
-		ex: DREAM_LOCK_TTL_SECONDS,
-	});
-	return {
-		acquired: Boolean(retryAttempt),
-		existingLock: retryAttempt ? null : parseStoredObject(await redis.get(DREAM_LOCK_KEY)) ?? existingLock,
-	};
+	// 2.7 — Atomic CAS: replace the stale lock only if its value is still what we
+	// observed.  Prevents the DEL→SET-NX double-acquire race where two concurrent
+	// workers both delete the stale key and both succeed on SET NX.
+	const staleValue = typeof existingLockRaw === "string" ? existingLockRaw : JSON.stringify(existingLockRaw);
+	const casResult = await redis.eval(
+		DREAM_LOCK_CAS_SCRIPT,
+		[DREAM_LOCK_KEY],
+		[staleValue, lockPayload, String(DREAM_LOCK_TTL_SECONDS)],
+	);
+	if (casResult) {
+		return { acquired: true, existingLock: null };
+	}
+	// CAS failed — another worker already replaced the stale lock.  Report what's there now.
+	const newLock = parseStoredObject(await redis.get(DREAM_LOCK_KEY));
+	return { acquired: false, existingLock: newLock ?? existingLock };
 }
 
 async function releaseScheduledGovernedDreamLock(redis: Redis, runId: string): Promise<void> {
@@ -1118,6 +1151,11 @@ function buildScheduledGovernedDecision(
 	const riskScore = typeof proposal.risk_score === "string" ? proposal.risk_score : "unknown";
 	if (!SCHEDULED_DREAM_ALLOWED_RISKS.has(riskScore)) {
 		return holdAllScheduledGovernedOperations(operations, `risk_score_not_auto_applicable:${riskScore}`);
+	}
+	// 2.6 — Enforce the judge gate: requires_judge was set by the proposal builder but
+	// never read here, so proposals needing human review were auto-applied anyway.
+	if (proposal.requires_judge === true) {
+		return holdAllScheduledGovernedOperations(operations, "requires_judge_approval");
 	}
 	if (!grade || grade.passed !== true || grade.status !== "passed") {
 		return holdAllScheduledGovernedOperations(operations, `grade_not_passed:${String(grade?.status ?? "missing")}`);
@@ -1254,6 +1292,20 @@ async function runScheduledGovernedDream(
 			return existingBoundaryRun;
 		}
 
+		// 2.10 — Run Layer-2 quarantine + demote, percentile re-tier, and judge verdict
+		// consumption BEFORE the proposal so forgetting executes every nightly window,
+		// not only on operator-triggered runDreamCycle calls.
+		let retierSummary: Awaited<ReturnType<typeof runScheduledRetierCycle>> | null = null;
+		try {
+			retierSummary = await runScheduledRetierCycle(env, runId, startedAt, false);
+			if (retierSummary.skipped_reason) {
+				console.warn("[scheduled-governed] retier cycle skipped:", retierSummary.skipped_reason);
+			}
+		} catch (retierError) {
+			// Log but don't abort — the proposal + apply path is the primary deliverable.
+			console.error("[scheduled-governed] retier cycle threw, continuing with proposal", retierError);
+		}
+
 		const proposal = await runDreamProposal(env, {
 			trigger: "manual",
 			actorId: "scheduled:dream-governance",
@@ -1307,6 +1359,7 @@ async function runScheduledGovernedDream(
 				operationIds: decision.selectedOperationIds,
 				requireGradePass: true,
 				gradeId: typeof grade.grade_id === "string" ? grade.grade_id : null,
+				maxEntriesTouched: SCHEDULED_DREAM_MAX_ENTRIES_TOUCHED,
 				phase9OutcomeGate: isEnabledEnvFlag(env.DREAM_PHASE9_OUTCOME_GATE_ENABLED),
 				phase9AutoRollback: isEnabledEnvFlag(env.DREAM_PHASE9_AUTO_ROLLBACK_ENABLED),
 				phase9ProbeSetKey: typeof env.DREAM_PHASE9_PROBE_SET_KEY === "string" && env.DREAM_PHASE9_PROBE_SET_KEY.length > 0
@@ -1366,6 +1419,18 @@ async function runScheduledGovernedDream(
 					operation_ids: toStringArray(applyResult.operation_ids),
 				}
 				: null,
+			// 2.10 — Include the retier/Layer-2/judge-verdicts summary so nightly
+			// forgetting is observable in the run record.
+			retier_cycle: retierSummary
+				? {
+					layer2_quarantined: retierSummary.layer2.quarantined.length,
+					layer2_demoted: retierSummary.layer2.demoted.length,
+					retier_changed: retierSummary.retier.changed,
+					verdicts_applied: retierSummary.verdicts_applied,
+					verdicts_skipped: retierSummary.verdicts_skipped,
+					skipped_reason: retierSummary.skipped_reason ?? null,
+				}
+				: null,
 			verification,
 			next_action: status === "completed" || status === "completed_with_holds"
 				? "Scheduled governed Dream auto-apply completed within caps; held operations will be reconsidered by future runs or judge policy."
@@ -1392,11 +1457,14 @@ async function runScheduledGovernedDream(
 				held_operation_count: 0,
 				applied_count: 0,
 			},
-			next_action: "Scheduled governed Dream threw before completion; auto-apply kill flag was set.",
+			// 2.4 — Accurate next_action (no kill-flag is set; the lock is released in finally).
+			next_action: "Scheduled governed Dream threw before completion; inspect the error and re-run manually or wait for the next scheduled trigger.",
 		};
 		try {
 			await storeScheduledGovernedRunRecord(redis, failedRecord, true);
-			await storeScheduledGovernedBoundaryBestEffort(redis, controller, runId);
+			// 2.4 — Do NOT store the boundary key for failed runs; only completed runs
+			// satisfy the boundary so that the repair path can run a fresh attempt the
+			// same day without being blocked by a failed record.
 		} catch (storeError) {
 			console.error("[scheduled-governed] could not store failed run record", storeError);
 		}

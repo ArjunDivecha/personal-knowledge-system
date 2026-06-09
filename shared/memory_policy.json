@@ -99,10 +99,12 @@
     "promote_candidate_min_mentions": 3,
     "decay_candidate_salience": 0.1,
     "archive_candidate_salience": 0.05,
+    "archive_candidate_min_age_days": 14,
     "scheduled_archive_limit": 50,
+    "max_entries_touched_per_apply": 200,
     "layer2_quarantine_salience": 0.15,
     "archive_protected_context_types": ["professional_identity", "stated_preference", "explicit_save"],
-    "_phase4_note": "R4.1 scheduled_archive_limit ramped 10->50 (tripwire guards spikes; raise toward 100 as M5 confirms prune>=intake). R4.2 isArchiveCandidate broadened to any zero-access single-source low-salience entry EXCEPT archive_protected_context_types. R4.3 layer2_quarantine_salience now policy-driven."
+    "_phase4_note": "R4.1 scheduled_archive_limit ramped 10->50 (tripwire guards spikes; raise toward 100 as M5 confirms prune>=intake). R4.2 isArchiveCandidate broadened to any zero-access single-source low-salience entry EXCEPT archive_protected_context_types. R4.3 layer2_quarantine_salience now policy-driven. Phase fix 2.8: archive_candidate_min_age_days=14 prevents fresh low-salience entries from being archived on night one. Phase fix 2.5: max_entries_touched_per_apply caps total distinct entry IDs across all ops so duplicate_merge archive_ids cannot bypass the per-op archive cap."
   },
   "dedup": {
     "COSINE_DUP_THRESHOLD": 0.95,
