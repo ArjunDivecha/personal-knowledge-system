@@ -212,7 +212,14 @@ class StorageClient:
         meta["last_seen"] = meta.get("last_seen") or updated_at
         meta["auto_inferred"] = meta.get("auto_inferred")
         meta["source_weights"] = dict(meta.get("source_weights")) if isinstance(meta.get("source_weights"), dict) else {}
-        meta["injection_tier"] = DEFAULT_INJECTION_TIER_BY_CONTEXT_TYPE.get(context_type) if context_type else None
+        # Preserve an already-set injection_tier — Dream may have changed it from the
+        # context-type default. Only fall back to the default for entries that have
+        # never had a tier explicitly assigned.
+        _raw_tier = meta.get("injection_tier")
+        meta["injection_tier"] = (
+            _raw_tier if _raw_tier is not None
+            else (DEFAULT_INJECTION_TIER_BY_CONTEXT_TYPE.get(context_type) if context_type else None)
+        )
         meta["salience_score"] = meta.get("salience_score")
         meta["last_consolidated"] = meta.get("last_consolidated")
         meta["consolidation_notes"] = list(meta.get("consolidation_notes") or [])
@@ -354,6 +361,16 @@ class StorageClient:
                 + list(incoming_meta.get("consolidation_notes") or [])
             ),
         }
+        # Dream lifecycle flags are sticky from the existing entry. Fresh ingest
+        # data always has archived=False (from _normalize_knowledge_metadata:219);
+        # without this guard a re-ingested source silently un-archives an entry
+        # Dream pruned, defeating forgetting in a loop. Tier, salience_score, and
+        # last_consolidated are Dream-computed and must survive re-ingestion too.
+        for _sticky in ("injection_quarantine", "injection_tier", "salience_score", "last_consolidated"):
+            if existing_meta.get(_sticky) is not None:
+                merged["metadata"][_sticky] = existing_meta[_sticky]
+        if existing_meta.get("archived"):
+            merged["metadata"]["archived"] = True
         return merged
     
     # -------------------------------------------------------------------------

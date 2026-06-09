@@ -123,9 +123,24 @@ class BuildVerificationTests(unittest.TestCase):
         self.assertEqual(report["log"]["marker_failed_stages"], ["GitHub ingestion(rc=1)"])
 
     def test_dream_judge_nonzero_is_tolerated_warn(self) -> None:
+        # The exit code is now read from marker["stages"]["Dream judge"], not from
+        # a log string (the old string "Dream judge exited with non-zero status" was
+        # removed in the fault-isolation refactor; the wrapper now logs a different
+        # message and records the exit code in the marker's stages dict).
         before = _snapshot("before", 100, 100, 10, 5, 50)
-        after = _snapshot("after", 112, 112, 12, 6, 53, marker={"completed_at": "x"})
-        log = CLEAN_LOG + "\n[00:05:00] Dream judge exited with non-zero status (see log)\n"
+        after = _snapshot(
+            "after", 112, 112, 12, 6, 53,
+            marker={
+                "completed_at": "x",
+                "ok": True,
+                "stages": {"Twitter ingestion": 0, "GitHub ingestion": 0,
+                           "Agent sessions ingestion": 0, "Dream judge": 1},
+                "failed_stages": [],
+            },
+        )
+        # The log line is still present but no longer drives the WARN verdict;
+        # the marker stages dict is authoritative.
+        log = CLEAN_LOG + "\n--- Dream judge FAILED (exit 1); continuing with remaining stages ---\n"
         report = monitor.build_verification(before, after, log)
         self.assertEqual(report["pipelines"]["dream_judge"]["status"], "WARN")
         # A tolerated dream-judge warning alone should not FAIL the overall run.

@@ -355,9 +355,14 @@ def build_verification(before: dict, after: dict, log_text: str) -> dict:
     }
 
     # --- Log scan ---
+    # Case-insensitive so "Request error:" and "error:" in library output are caught too.
     error_lines = [
         ln for ln in log_text.splitlines()
-        if re.search(r"\b(FATAL|Traceback|ERROR|Refusing to run|call cap exceeded|run budget would be exceeded)\b", ln)
+        if re.search(
+            r"\b(FATAL|Traceback|ERROR|Refusing to run|call cap exceeded|run budget would be exceeded|request error)\b",
+            ln,
+            re.IGNORECASE,
+        )
     ]
     started = "Nightly ingestion started" in log_text
     completed = "Nightly ingestion complete" in log_text
@@ -442,10 +447,18 @@ def build_verification(before: dict, after: dict, log_text: str) -> dict:
 
     dj_ran = (pipeline_markers["dream_judge"][0] in log_text, pipeline_markers["dream_judge"][1] in log_text)
     dj = verdict("dream_judge", dj_ran, [], None)
-    # Dream judge is non-fatal by design; a non-zero exit is logged but tolerated.
-    if "Dream judge exited with non-zero status" in log_text:
-        dj["status"] = "WARN"
-        dj["reasons"].append("dream judge exited non-zero (tolerated by nightly wrapper)")
+    # Dream judge is non-fatal by design; a non-zero exit is tolerated (WARN, not FAIL).
+    # Read the exit code from marker["stages"] — the old string the log emitted
+    # ("Dream judge exited with non-zero status") was removed in the fault-isolation
+    # refactor; the marker is the authoritative source of per-stage exit codes.
+    marker_stages = (marker or {}).get("stages", {}) if isinstance(marker, dict) else {}
+    dream_judge_rc = marker_stages.get("Dream judge")
+    if dream_judge_rc is not None and dream_judge_rc != 0:
+        if dj["status"] != "FAIL":
+            dj["status"] = "WARN"
+        dj["reasons"].append(
+            f"dream judge exited non-zero (rc={dream_judge_rc}, tolerated by nightly wrapper)"
+        )
     report["pipelines"]["dream_judge"] = dj
 
     # --- Success-marker self-report (the wrapper records its own verdict) ---

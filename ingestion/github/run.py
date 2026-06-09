@@ -222,6 +222,11 @@ def run_github_ingestion(
     
     all_entries = []
     failed_repos: list[str] = []
+    # Deferred mark lists: entries are populated during extraction and flushed
+    # to Redis only AFTER the batch save. This prevents a source being marked
+    # processed without its entries being durably stored.
+    repos_to_mark: list[tuple[str, dict]] = []
+    artifacts_to_mark: list[tuple[str, dict]] = []
     stats = {
         "repos_processed": 0,
         "readme_entries": 0,
@@ -361,12 +366,13 @@ def run_github_ingestion(
                     processed_artifacts += 1
 
                     if storage:
-                        storage.mark_source_processed("github_agent_context", artifact_source_id, {
+                        # Defer: mark AFTER durable save (collected in artifacts_to_mark)
+                        artifacts_to_mark.append((artifact_source_id, {
                             "repo": repo_full_name,
                             "path": artifact["path"],
                             "sha": artifact.get("sha"),
                             "entries_count": len(entries),
-                        })
+                        }))
 
                 stats["agent_context_files"] += processed_artifacts
                 stats["agent_context_entries"] += agent_entries
@@ -380,9 +386,9 @@ def run_github_ingestion(
             all_entries.extend(repo_entries)
             stats["repos_processed"] += 1
             
-            # Mark as processed
+            # Defer: mark AFTER durable save (collected in repos_to_mark)
             if storage and baseline_attempted:
-                storage.mark_source_processed("github", repo_name, {
+                repos_to_mark.append((repo_name, {
                     "entries_count": baseline_entry_count,
                     "has_readme": readme is not None,
                     "repo_full_name": repo_full_name,
@@ -390,7 +396,7 @@ def run_github_ingestion(
                     "pushed_at": repo.get("pushed_at"),
                     "updated_at": repo.get("updated_at"),
                     "baseline_signature": build_repo_baseline_signature(repo),
-                })
+                }))
             
             # Checkpoint every 5 repos
             if i % 5 == 0:
@@ -441,18 +447,29 @@ def run_github_ingestion(
     
     elif all_entries:
         print(f"Saving {len(all_entries)} entries...")
-        
+
         # Batch save
         batch_size = 20
         for i in range(0, len(all_entries), batch_size):
             batch = all_entries[i:i + batch_size]
             storage.save_knowledge_entries_batch(batch)
             print(f"  Saved {min(i + batch_size, len(all_entries))}/{len(all_entries)}")
-        
+
         # Update thin index
         print("Updating thin index...")
         storage.update_thin_index(all_entries)
         print("  ✓ Thin index updated")
+
+        # Mark repos and artifacts AFTER durable save — guarantees no source is
+        # marked without its entries being persisted. If save threw above, we
+        # never reach this block and sources remain eligible for retry.
+        print(f"Marking {len(repos_to_mark)} repos processed ...")
+        for repo_name_mark, repo_meta in repos_to_mark:
+            storage.mark_source_processed("github", repo_name_mark, repo_meta)
+        print(f"Marking {len(artifacts_to_mark)} agent-context artifacts processed ...")
+        for artifact_id, artifact_meta in artifacts_to_mark:
+            storage.mark_source_processed("github_agent_context", artifact_id, artifact_meta)
+        print("  ✓ Dedup markers updated")
     
     else:
         print("No entries to save")

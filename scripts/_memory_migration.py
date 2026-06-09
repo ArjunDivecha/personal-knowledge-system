@@ -128,10 +128,15 @@ def normalize_knowledge_entry_for_phase2(entry: KnowledgeEntry) -> KnowledgeEntr
     last_seen = meta_dict.get("last_seen") or meta_dict.get("updated_at") or first_seen
 
     context_type = meta_dict.get("context_type")
+    stored_tier = meta_dict.get("injection_tier")
     injection_tier = (
-        INJECTION_TIER_BY_CONTEXT_TYPE.get(context_type)
-        if context_type in VALID_CONTEXT_TYPES
-        else None
+        stored_tier
+        if stored_tier in (1, 2, 3)
+        else (
+            INJECTION_TIER_BY_CONTEXT_TYPE.get(context_type)
+            if context_type in VALID_CONTEXT_TYPES
+            else None
+        )
     )
 
     entry.metadata = KnowledgeMetadata(
@@ -170,10 +175,15 @@ def normalize_project_entry_for_phase2(entry: ProjectEntry) -> ProjectEntry:
     last_seen = meta_dict.get("last_seen") or meta_dict.get("last_touched") or meta_dict.get("updated_at") or first_seen
 
     context_type = meta_dict.get("context_type")
+    stored_tier = meta_dict.get("injection_tier")
     injection_tier = (
-        INJECTION_TIER_BY_CONTEXT_TYPE.get(context_type)
-        if context_type in VALID_CONTEXT_TYPES
-        else None
+        stored_tier
+        if stored_tier in (1, 2, 3)
+        else (
+            INJECTION_TIER_BY_CONTEXT_TYPE.get(context_type)
+            if context_type in VALID_CONTEXT_TYPES
+            else None
+        )
     )
 
     entry.metadata = ProjectMetadata(

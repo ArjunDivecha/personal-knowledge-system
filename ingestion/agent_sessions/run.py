@@ -475,9 +475,10 @@ def save_entries(
         dry_run: If True, log but don't save
 
     Returns:
-        Number of entries saved
+        Tuple of (saved, failed) counts
     """
     saved = 0
+    failed = 0
     source = turns[0].get("source", "agent") if turns else "agent"
     session_id = turns[0].get("session_id", "unknown") if turns else "unknown"
     project = turns[0].get("project", "") if turns else ""
@@ -533,6 +534,7 @@ def save_entries(
             log.info(f"  Saved: [{entry_id}] {e['domain']}")
         except Exception as ex:
             log.warning(f"  Storage error for {e['domain']}: {ex}")
+            failed += 1
 
     # Update thin index with newly saved entries (skip in dry run)
     if saved > 0 and not dry_run:
@@ -551,7 +553,7 @@ def save_entries(
         except Exception as ex:
             log.warning(f"Thin index update error: {ex}")
 
-    return saved
+    return saved, failed
 
 
 # ── File Discovery ────────────────────────────────────────────────────────────
@@ -670,8 +672,31 @@ def process_file(
 
     saved = 0
     if entries:
-        saved = save_entries(entries, turns, storage, github_info, dry_run)
+        saved, storage_failures = save_entries(entries, turns, storage, github_info, dry_run)
         log.info(f"  -> {saved}/{len(entries)} entries saved")
+        if storage_failures > 0 and not dry_run:
+            # Treat storage failure like DistillationFailure: don't advance the
+            # checkpoint. The window will be retried on the next run. Entries
+            # that saved successfully are idempotent (duplicate-check at save
+            # time) so re-processing them is safe.
+            advanced = record_distillation_failure(
+                state,
+                state_key,
+                file_state,
+                offset=offset,
+                new_offset=new_offset,
+                current_mtime=current_mtime,
+                exc=DistillationFailure(
+                    f"storage errors: {storage_failures}/{len(entries)} entries failed to save"
+                ),
+            )
+            action = (
+                "advanced checkpoint after exhausting retries; window skipped"
+                if advanced
+                else "leaving checkpoint window eligible for retry"
+            )
+            log.warning("  Storage failures; %s", action)
+            return saved
 
     if not dry_run:
         state["files"][state_key] = {"offset": new_offset, "mtime": current_mtime}

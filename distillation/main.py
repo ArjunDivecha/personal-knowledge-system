@@ -329,32 +329,44 @@ def run_pipeline(verbose: bool = False, limit: int = None):
             
             console.print(f"  Created: {report.entries_created}, Updated: {report.entries_updated}")
             console.print(f"  Evolved: {report.entries_evolved}, Contested: {report.entries_contested}\n")
-            
-            # Mark conversations as processed
-            for fc in kept:
-                redis.mark_conversation_processed(fc.conversation.id)
+
+            # NOTE: conversations are NOT marked here — they are marked AFTER
+            # update_index succeeds (below). This prevents permanently losing a
+            # conversation when an index/embedding failure occurs after merge.
         else:
             console.print("[dim]  No new conversations to process[/dim]\n")
-        
+
         # Stage 5: Compress (optional, runs on eligible old entries)
         console.print("[bold]Step 7: Checking for compression...[/bold]")
         compression_results = compress_eligible_entries(redis)
-        
+
         compressed = [r for r in compression_results if r.action == "compressed"]
         report.entries_compressed = len(compressed)
-        
+
         console.print(f"  Compressed: {len(compressed)} entries\n")
-        
+
         # Stage 6: Update index
         console.print("[bold]Step 8: Updating index...[/bold]")
         index_result = update_index(redis, vector)
-        
+
         report.embedding_tokens = index_result.embedding_tokens
         report.thin_index_token_count = index_result.thin_index_token_count
-        
+
         console.print(f"  Entries indexed: {index_result.entries_indexed}")
         console.print(f"  Vectors upserted: {index_result.vectors_upserted}")
         console.print(f"  Thin index tokens: {index_result.thin_index_token_count}\n")
+
+        # Mark conversations as processed only AFTER index succeeds. If
+        # update_index fails the conversations remain unmarked and will be
+        # retried on the next run — no permanent data loss.
+        if index_result.success and kept:
+            for fc in kept:
+                redis.mark_conversation_processed(fc.conversation.id)
+            console.print(f"  ✓ {len(kept)} conversation(s) marked processed\n")
+        elif kept:
+            console.print(
+                f"  ⚠ Index failed — {len(kept)} conversation(s) left unmarked for retry\n"
+            )
         
         # Final counts
         final_knowledge = redis.get_all_knowledge_entries()

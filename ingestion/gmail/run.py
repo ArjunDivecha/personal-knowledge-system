@@ -170,14 +170,18 @@ def run_gmail_ingestion(
         "errors": 0,
         "by_year": defaultdict(int),
     }
-    
+
     for i in range(0, len(emails_to_process), batch_size):
         batch = emails_to_process[i:i + batch_size]
         batch_num = i // batch_size + 1
         total_batches = (len(emails_to_process) + batch_size - 1) // batch_size
-        
+
         print(f"\nBatch {batch_num}/{total_batches} ({len(batch)} emails)")
-        
+
+        batch_entries = []
+        # (email_id, mark_metadata) pairs — marked AFTER durable save, not before.
+        batch_sources_to_mark = []
+
         for j, email_data in enumerate(batch):
             try:
                 # Extract knowledge from email
@@ -187,66 +191,68 @@ def run_gmail_ingestion(
                     email_date=email_data["date"],
                     recipients=email_data["to"],
                 )
-                
+
                 if entries:
-                    all_entries.extend(entries)
+                    batch_entries.extend(entries)
                     stats["entries_extracted"] += len(entries)
-                    
+
                     year = email_data["date_obj"].year
                     stats["by_year"][year] += len(entries)
-                    
+
                     print(f"  [{j+1}/{len(batch)}] {email_data['date'][:10]} - {len(entries)} entries")
-                
+
                 stats["emails_processed"] += 1
-                
-                # Mark as processed
-                if storage:
-                    storage.mark_source_processed("gmail", email_data["id"], {
-                        "date": email_data["date"],
-                        "subject": email_data["subject"][:100],
-                        "entries_count": len(entries),
-                    })
-                
+                # Collect mark metadata; actual mark happens after durable save below.
+                batch_sources_to_mark.append((email_data["id"], {
+                    "date": email_data["date"],
+                    "subject": email_data["subject"][:100],
+                    "entries_count": len(entries),
+                }))
+
             except Exception as e:
                 print(f"  ✗ Error: {e}")
                 stats["errors"] += 1
-        
+
+        # Save this batch's entries first, THEN mark emails as processed.
+        # This ordering guarantees a source is never marked without its entries
+        # being durably stored: if save throws, the emails remain unmarked and
+        # will be retried on the next run.
+        if storage and batch_entries and not dry_run:
+            save_batch_size = 20
+            for k in range(0, len(batch_entries), save_batch_size):
+                sub = batch_entries[k:k + save_batch_size]
+                storage.save_knowledge_entries_batch(sub)
+            storage.update_thin_index(batch_entries)
+            for email_id, mark_meta in batch_sources_to_mark:
+                storage.mark_source_processed("gmail", email_id, mark_meta)
+
+        all_entries.extend(batch_entries)
+
         # Checkpoint after each batch
         save_checkpoint("entries", all_entries)
         save_checkpoint("stats", dict(stats))
-    
+
     print()
-    
+
     # -------------------------------------------------------------------------
-    # STEP 4: Save to storage
+    # STEP 4: Summary / dry-run output (save already happened per-batch above)
     # -------------------------------------------------------------------------
     print("[4/4] SAVING TO STORAGE")
     print("-" * 40)
-    
+
     if dry_run:
         print("DRY RUN - Not saving to storage")
         print(f"Would save {len(all_entries)} entries")
-        
+
         # Save to file for inspection
         output_path = CHECKPOINT_DIR / "gmail_dry_run.json"
         with open(output_path, "w") as f:
             json.dump(all_entries, f, indent=2)
         print(f"Saved to {output_path}")
-    
+
     elif all_entries:
-        print(f"Saving {len(all_entries)} entries...")
-        
-        # Batch save
-        save_batch_size = 20
-        for i in range(0, len(all_entries), save_batch_size):
-            batch = all_entries[i:i + save_batch_size]
-            storage.save_knowledge_entries_batch(batch)
-            print(f"  Saved {min(i + save_batch_size, len(all_entries))}/{len(all_entries)}")
-        
-        # Update thin index
-        print("Updating thin index...")
-        storage.update_thin_index(all_entries)
-        print("  ✓ Thin index updated")
+        print(f"  ✓ {len(all_entries)} entries saved and marked incrementally (per-batch)")
+
     
     else:
         print("No entries to save")

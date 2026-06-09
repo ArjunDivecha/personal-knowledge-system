@@ -312,5 +312,88 @@ class AgentSessionCheckpointTests(unittest.TestCase):
             self.assertEqual(state["files"]["/tmp/session.jsonl"]["offset"], 200)
 
 
+class StorageFailureCheckpointTests(unittest.TestCase):
+    """
+    Tests for 1.4: a storage failure in save_entries must NOT advance the
+    checkpoint — the window must remain eligible for retry on the next run.
+    Entries that were successfully saved are idempotent (duplicate-check at
+    save time), so re-processing is safe.
+    """
+
+    _TURNS = [
+        {"role": "user", "content": "x" * 400, "timestamp": "", "session_id": "sid",
+         "source": "codex_cli", "project": "proj", "cwd": ""},
+        {"role": "assistant", "content": "Noted.", "timestamp": "", "session_id": "sid",
+         "source": "codex_cli", "project": "proj", "cwd": ""},
+    ]
+
+    def test_storage_failure_holds_checkpoint(self) -> None:
+        """When save_entries returns (0, N>0), checkpoint must NOT advance."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "rollout-test.jsonl"
+            path.write_text("{}\n")
+
+            state = agent_run._default_state()
+            save_calls: list[dict] = []
+
+            entries = [{"domain": "test topic", "current_view": "some insight"}]
+
+            with patch.dict("os.environ", {"PKS_AGENT_SESSION_DISTILL_RETRY_LIMIT": "2"}, clear=False):
+                with patch.object(agent_run, "parse_codex", return_value=(self._TURNS, 99, {"cwd": "", "project": "proj"})):
+                    with patch.object(agent_run, "distill", return_value=entries):
+                        # save_entries returns (0 saved, 1 failed)
+                        with patch.object(agent_run, "save_entries", return_value=(0, 1)):
+                            with patch.object(agent_run, "save_state", side_effect=lambda s: save_calls.append(dict(s))):
+                                agent_run.process_file(
+                                    path=path,
+                                    source_type="codex_cli",
+                                    state=state,
+                                    storage=object(),
+                                    linker=_DummyLinker(),
+                                    dry_run=False,
+                                )
+
+            # Checkpoint must NOT have advanced to new_offset=99
+            file_state = state["files"].get(str(path), {})
+            self.assertEqual(file_state.get("offset", 0), 0,
+                             "checkpoint should stay at 0 after storage failure")
+            # The failure should have been recorded
+            self.assertEqual(file_state.get("distill_failures"), 1)
+
+    def test_storage_failure_advances_after_retry_limit_exhausted(self) -> None:
+        """After the retry limit is exhausted, the window is skipped (checkpoint advances)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "rollout-test.jsonl"
+            path.write_text("{}\n")
+
+            state = agent_run._default_state()
+            # Pre-seed one failure. Use mtime=0 so process_file sees the file as
+            # changed (mtime=0 < actual mtime); using the real mtime would cause
+            # the file to be skipped entirely.
+            state["files"][str(path)] = {"offset": 0, "mtime": 0, "distill_failures": 1}
+            save_calls: list[dict] = []
+
+            entries = [{"domain": "test topic", "current_view": "some insight"}]
+
+            with patch.dict("os.environ", {"PKS_AGENT_SESSION_DISTILL_RETRY_LIMIT": "2"}, clear=False):
+                with patch.object(agent_run, "parse_codex", return_value=(self._TURNS, 99, {"cwd": "", "project": "proj"})):
+                    with patch.object(agent_run, "distill", return_value=entries):
+                        with patch.object(agent_run, "save_entries", return_value=(0, 1)):
+                            with patch.object(agent_run, "save_state", side_effect=lambda s: save_calls.append(dict(s))):
+                                agent_run.process_file(
+                                    path=path,
+                                    source_type="codex_cli",
+                                    state=state,
+                                    storage=object(),
+                                    linker=_DummyLinker(),
+                                    dry_run=False,
+                                )
+
+            file_state = state["files"].get(str(path), {})
+            # After retry exhaustion the checkpoint advances to skip the window
+            self.assertEqual(file_state.get("offset"), 99)
+            self.assertTrue(file_state.get("distill_failure_exhausted"))
+
+
 if __name__ == "__main__":
     unittest.main()
