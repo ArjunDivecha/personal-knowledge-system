@@ -4271,11 +4271,25 @@ export async function applyLayer2QuarantineAndDemote(
 	let processed = 0;
 	let capHit = false;
 
+	// 3.2 — Entries whose context_type is in archive_protected_context_types are
+	// exempt from Layer-2 quarantine/demote entirely.  They may still appear in
+	// the loop (they are active entries) but we skip them here so a quiet stretch
+	// can never auto-weaken an explicit save or professional identity record.
+	const thresholds = MEMORY_POLICY.dream_thresholds as Record<string, unknown>;
+	const layer2ExemptTypes = new Set<string>(
+		Array.isArray(thresholds.archive_protected_context_types)
+			? (thresholds.archive_protected_context_types as unknown[]).map(String)
+			: [],
+	);
+
 	for (const entry of entries) {
 		if (processed >= LAYER2_PER_RUN_CAP) {
 			capHit = true;
 			break;
 		}
+		// 3.2 — Skip protected context types (explicit_save, professional_identity, etc.)
+		if (layer2ExemptTypes.has(String(entry.contextType))) continue;
+
 		const tier = resolveStoredInjectionTier(entry.metadata);
 		if (tier === 3) continue; // already at floor; archive path handles further decay
 
