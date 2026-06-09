@@ -1,0 +1,46 @@
+{
+  "label": "before",
+  "captured_at": "2026-06-09T16:37:52Z",
+  "connection_ok": true,
+  "connection_message": "Connected: Redis OK, Vector OK (4705 vectors)",
+  "storage": {
+    "knowledge_entries": 10801,
+    "project_entries": 54,
+    "total_vectors": 4705,
+    "vector_dimensions": 3072
+  },
+  "processed_sources": {
+    "twitter": 2661,
+    "github": 56
+  },
+  "checkpoints": {
+    "twitter_state": {
+      "last_seen_id": "2057693412636369197",
+      "run_count": 73,
+      "last_run_at": "2026-06-09T06:00:19.847583+00:00"
+    },
+    "agent_sessions_state": {
+      "file_count": 13294,
+      "total_saved": 1399,
+      "total_skipped": 0,
+      "last_run": "2026-06-08T06:37:40.706116+00:00"
+    },
+    "agent_sessions_last_run": {
+      "completed_at": "2026-06-08T06:37:40.969264+00:00",
+      "state_source": "redis",
+      "redis_write_failed": true,
+      "total_saved": 11,
+      "files_yielded_entries": 3,
+      "elapsed_seconds": 155.322
+    },
+    "nightly_success_marker": {
+      "completed_at": "2026-06-08T06:37:41Z",
+      "log": "/Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system/ingestion/logs/nightly/2026-06-07.log",
+      "sdk_model": "sonnet",
+      "api_fallback": "0",
+      "dream_api_fallback": "0",
+      "agent_session_status_file": "/Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system/ingestion/checkpoints/agent_sessions_last_run.json",
+      "agent_session_redis_write_failed": true
+    }
+  }
+}

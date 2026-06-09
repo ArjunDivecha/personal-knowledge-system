@@ -221,8 +221,16 @@ export function deriveSearchTier(
 ): 1 | 2 | 3 {
 	const metadata = (entry.metadata as JsonRecord | undefined) ?? {};
 	const storedTier = resolveStoredInjectionTier(metadata);
-	if (storedTier === 2 && similarity < MEMORY_POLICY.tier_rules.tier_2_similarity_min) {
+	const tier2SimMin = MEMORY_POLICY.tier_rules.tier_2_similarity_min;
+	// 3.1 — Tier-2 guard (existing): low-similarity Tier-2 entries are demoted to Tier-3.
+	if (storedTier === 2 && similarity < tier2SimMin) {
 		return 3;
+	}
+	// 3.1 — Tier-1 guard (new, symmetrical): low-similarity Tier-1 entries are demoted to
+	// Tier-2 so that score-based sorting can place a highly-relevant Tier-3 entry above a
+	// weakly-matched Tier-1 entry.  Uses the same similarity threshold as the Tier-2 guard.
+	if (storedTier === 1 && similarity < tier2SimMin) {
+		return 2;
 	}
 	return storedTier;
 }

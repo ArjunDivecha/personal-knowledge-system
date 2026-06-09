@@ -2695,8 +2695,11 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 					}));
 
 					const filteredResults = rankedResults.filter((result): result is NonNullable<typeof result> => result !== null);
+					// 3.1 — Rank by score only; tier is already a multiplier in final_score
+					// (search_tier_multipliers: T1=1.15, T2=1.0, T3=0.85) so a hard tier
+					// sort is redundant and prevents a high-scoring Tier-3 result from
+					// surfacing above a weakly-matched Tier-1 result.
 					filteredResults.sort((a, b) => {
-						if (a.injection_tier !== b.injection_tier) return a.injection_tier - b.injection_tier;
 						if (a.final_score !== b.final_score) return b.final_score - a.final_score;
 						return b.similarity_score - a.similarity_score;
 					});

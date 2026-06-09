@@ -1,0 +1,66 @@
+{
+  "generated_at": "2026-06-09T17:08:09Z",
+  "before_label": "before",
+  "after_label": "after",
+  "deltas": {
+    "knowledge_entries": 167,
+    "project_entries": 0,
+    "total_vectors": 173,
+    "twitter_sources": 0,
+    "github_sources": 0
+  },
+  "pipelines": {
+    "twitter": {
+      "status": "PASS",
+      "reasons": [],
+      "data_signal": 0
+    },
+    "github": {
+      "status": "WARN",
+      "reasons": [
+        "ran cleanly but no new github sources this run (OK if nothing pushed)"
+      ],
+      "data_signal": 0
+    },
+    "agent_sessions": {
+      "status": "PASS",
+      "reasons": [
+        "last_run total_saved=41 redis_write_failed=False"
+      ],
+      "data_signal": 30
+    },
+    "dream_judge": {
+      "status": "PASS",
+      "reasons": [
+        "no before/after count available"
+      ],
+      "data_signal": null
+    }
+  },
+  "log": {
+    "started": true,
+    "completed": true,
+    "error_line_count": 0,
+    "error_lines": [],
+    "browser_storm_hits": [],
+    "marker_ok": true
+  },
+  "marker": {
+    "completed_at": "2026-06-09T17:07:35Z",
+    "log": "/Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system/ingestion/logs/nightly/2026-06-09.log",
+    "sdk_model": "sonnet",
+    "api_fallback": "0",
+    "dream_api_fallback": "0",
+    "agent_session_status_file": "/Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system/ingestion/checkpoints/agent_sessions_last_run.json",
+    "agent_session_redis_write_failed": false,
+    "ok": true,
+    "stages": {
+      "Twitter ingestion": 0,
+      "GitHub ingestion": 0,
+      "Agent sessions ingestion": 0,
+      "Dream judge": 0
+    },
+    "failed_stages": []
+  },
+  "overall": "WARN"
+}
