@@ -43,6 +43,12 @@ from core.extractor import Extractor
 from github.client import GitHubClient
 
 
+# Number of repos that failed extraction in the most recent run. Set by
+# run_github_ingestion so the __main__ entrypoint can exit non-zero (a loud
+# signal to the nightly wrapper) without discarding the repos that succeeded.
+_LAST_RUN_ERROR_COUNT = 0
+
+
 def check_extractor_error(extractor: Extractor, label: str) -> None:
     """Raise if an extractor swallowed a hard LLM/parse error and returned []."""
     last_error = getattr(extractor, "last_error", None)
@@ -215,6 +221,7 @@ def run_github_ingestion(
     print("-" * 40)
     
     all_entries = []
+    failed_repos: list[str] = []
     stats = {
         "repos_processed": 0,
         "readme_entries": 0,
@@ -393,17 +400,29 @@ def run_github_ingestion(
         except Exception as e:
             print(f"  ✗ Error: {e}")
             stats["errors"] += 1
-    
+            failed_repos.append(locals().get("repo_name", f"repo#{i}"))
+
     print()
 
+    # Per-repo failures are ISOLATED, not fatal. A repo that errored was never
+    # marked processed (the dedup marker is written only after successful
+    # extraction at the end of its try block), so it is automatically retried on
+    # the next run. We therefore SAVE the successfully extracted repos instead of
+    # discarding the whole batch: one flaky README must never throw away the
+    # other 55 repos or, via the nightly wrapper, abort the entire night. The
+    # failure is still surfaced loudly here and via a non-zero exit code in
+    # __main__, so it is never silently masked.
+    global _LAST_RUN_ERROR_COUNT
+    _LAST_RUN_ERROR_COUNT = stats["errors"]
     if stats["errors"]:
         save_checkpoint("entries", all_entries)
         save_checkpoint("stats", stats)
-        raise RuntimeError(
-            f"GitHub ingestion failed for {stats['errors']} repos; "
-            "refusing to save partial extraction results."
+        print(
+            f"⚠ {stats['errors']} repo(s) failed extraction and will be retried "
+            f"next run: {', '.join(failed_repos) if failed_repos else 'unknown'}"
         )
-    
+        print("  Saving the successfully extracted repos and continuing.")
+
     # -------------------------------------------------------------------------
     # STEP 3: Save to storage
     # -------------------------------------------------------------------------
@@ -512,3 +531,9 @@ if __name__ == "__main__":
         dry_run=args.dry_run,
         resume=not args.no_resume,
     )
+
+    # Loud, non-fatal-to-the-night signal: if any repo failed extraction, the
+    # good repos were still saved above, but exit non-zero so the nightly
+    # wrapper records this stage as failed (those repos retry next run).
+    if _LAST_RUN_ERROR_COUNT:
+        sys.exit(1)

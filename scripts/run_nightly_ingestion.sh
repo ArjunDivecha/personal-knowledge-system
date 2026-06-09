@@ -60,6 +60,33 @@ mkdir -p "$LOG_DIR"
 
 log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG"; }
 
+# ---------------------------------------------------------------------------
+# Fault isolation: each ingestion pipeline runs as an independent "stage". A
+# stage failure is captured and logged but MUST NOT abort the rest of the night
+# (the historical bug: one repo's bad README aborted GitHub, and `set -e` then
+# skipped agent-sessions + dream). STAGE_STATUS records "name=rc" for every
+# stage; the run summary and success marker report all of them. Failures are
+# surfaced loudly (FAILED line + non-zero overall exit), never silently masked.
+# ---------------------------------------------------------------------------
+STAGE_STATUS=()
+
+run_stage() {
+    local name="$1"; shift
+    log "--- $name starting ---"
+    local rc=0
+    set +e
+    "$@" 2>&1 | tee -a "$LOG"
+    rc=${PIPESTATUS[0]}
+    set -e
+    if [ "$rc" -ne 0 ]; then
+        log "--- $name FAILED (exit $rc); continuing with remaining stages ---"
+    else
+        log "--- $name done ---"
+    fi
+    STAGE_STATUS+=("$name=$rc")
+    return 0
+}
+
 log "=== Nightly ingestion started ==="
 
 # Pre-flight: verify Agent SDK is importable
@@ -105,36 +132,68 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# Twitter
+# Each pipeline is an isolated stage: a failure in one does not stop the others.
+# Twitter / GitHub / Agent sessions are "hard" stages (a failure fails the run
+# overall). Dream judge is "soft" — a stalled judge queue is not fatal to
+# nightly ingestion (see overall-status calc below).
 # --------------------------------------------------------------------------
-log "--- Twitter ingestion starting ---"
-"$VENV/bin/python" "$INGESTION/twitter/run.py" --require-redis-state 2>&1 | tee -a "$LOG"
-log "--- Twitter ingestion done ---"
+run_stage "Twitter ingestion" "$VENV/bin/python" "$INGESTION/twitter/run.py" --require-redis-state
+
+run_stage "GitHub ingestion" "$VENV/bin/python" "$INGESTION/github/run.py"
+
+run_stage "Agent sessions ingestion" "$VENV/bin/python" "$INGESTION/agent_sessions/run.py"
+
+# Dream judge (border-case ops queued by the Cloudflare Worker). Uses the
+# `claude` CLI for subscription billing.
+run_stage "Dream judge" "$VENV/bin/python" "$INGESTION/dream_judge/run.py"
 
 # --------------------------------------------------------------------------
-# GitHub
+# Compute overall status. Hard stages (Twitter/GitHub/Agent sessions) failing
+# fails the run; the soft Dream judge stage does not.
 # --------------------------------------------------------------------------
-log "--- GitHub ingestion starting ---"
-"$VENV/bin/python" "$INGESTION/github/run.py" 2>&1 | tee -a "$LOG"
-log "--- GitHub ingestion done ---"
+HARD_FAILURES=()
+SOFT_FAILURES=()
+for entry in "${STAGE_STATUS[@]}"; do
+    name="${entry%=*}"
+    rc="${entry##*=}"
+    if [ "$rc" -ne 0 ]; then
+        if [ "$name" = "Dream judge" ]; then
+            SOFT_FAILURES+=("$name(rc=$rc)")
+        else
+            HARD_FAILURES+=("$name(rc=$rc)")
+        fi
+    fi
+done
 
-# --------------------------------------------------------------------------
-# Agent Sessions
-# --------------------------------------------------------------------------
-log "--- Agent sessions ingestion starting ---"
-"$VENV/bin/python" "$INGESTION/agent_sessions/run.py" 2>&1 | tee -a "$LOG"
-log "--- Agent sessions ingestion done ---"
+OVERALL_OK="true"
+if [ "${#HARD_FAILURES[@]}" -ne 0 ]; then
+    OVERALL_OK="false"
+    log "NIGHTLY RESULT: FAILED — hard stage failures: ${HARD_FAILURES[*]}"
+elif [ "${#SOFT_FAILURES[@]}" -ne 0 ]; then
+    log "NIGHTLY RESULT: OK with tolerated soft failures: ${SOFT_FAILURES[*]}"
+else
+    log "NIGHTLY RESULT: OK — all stages succeeded"
+fi
 
-# --------------------------------------------------------------------------
-# Dream judge (border-case ops queued by the Cloudflare Worker)
-# Uses `claude` CLI for subscription billing; falls back to Anthropic API
-# with a logged warning if the CLI is unavailable. Always exits 0 unless
-# something catastrophic happens — a stalled judge queue is not fatal to
-# nightly ingestion.
-# --------------------------------------------------------------------------
-log "--- Dream judge starting ---"
-"$VENV/bin/python" "$INGESTION/dream_judge/run.py" 2>&1 | tee -a "$LOG" || log "Dream judge exited with non-zero status (see log)"
-log "--- Dream judge done ---"
+# Build JSON for per-stage exit codes and the failed-stage list.
+STAGES_JSON=$(printf '%s\n' "${STAGE_STATUS[@]}" | "$VENV/bin/python" -c '
+import json, sys
+stages = {}
+for line in sys.stdin.read().splitlines():
+    if not line:
+        continue
+    name, _, rc = line.rpartition("=")
+    try:
+        stages[name] = int(rc)
+    except ValueError:
+        stages[name] = rc
+print(json.dumps(stages))
+')
+FAILED_STAGES_JSON=$(printf '%s\n' "${HARD_FAILURES[@]:-}" "${SOFT_FAILURES[@]:-}" | "$VENV/bin/python" -c '
+import json, sys
+items = [line for line in sys.stdin.read().splitlines() if line.strip()]
+print(json.dumps(items))
+')
 
 # --------------------------------------------------------------------------
 # Log rotation: keep 30 days
@@ -173,8 +232,18 @@ cat > "$SUCCESS_MARKER" <<EOF
   "api_fallback": "$PKS_ALLOW_ANTHROPIC_API_FALLBACK",
   "dream_api_fallback": "$DREAM_ALLOW_ANTHROPIC_API_FALLBACK",
   "agent_session_status_file": "$PKS_AGENT_SESSION_STATUS_FILE",
-  "agent_session_redis_write_failed": $AGENT_SESSION_REDIS_WRITE_FAILED_JSON
+  "agent_session_redis_write_failed": $AGENT_SESSION_REDIS_WRITE_FAILED_JSON,
+  "ok": $OVERALL_OK,
+  "stages": $STAGES_JSON,
+  "failed_stages": $FAILED_STAGES_JSON
 }
 EOF
 
 log "=== Nightly ingestion complete ==="
+
+# Loud overall exit code: non-zero if any hard stage failed, so launchd, the
+# health monitor, and any operator see the failure. The marker above always
+# records exactly which stages failed, even on a non-zero exit.
+if [ "$OVERALL_OK" != "true" ]; then
+    exit 1
+fi

@@ -24,6 +24,7 @@ openai>=1.0.0
 # Data processing
 pydantic>=2.0.0
 python-dotenv>=1.0.0
+json-repair>=0.30.0      # Tolerant parsing/repair of malformed LLM JSON output
 
 # Utilities
 tiktoken>=0.5.0          # Token counting

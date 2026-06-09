@@ -97,7 +97,9 @@ class BuildVerificationTests(unittest.TestCase):
         self.assertEqual(report["overall"], "FAIL")
         self.assertTrue(report["log"]["browser_storm_hits"])
 
-    def test_agent_sessions_redis_write_failure_is_fail(self) -> None:
+    def test_agent_sessions_redis_write_failure_is_warn_not_fail(self) -> None:
+        # Disk checkpoint is authoritative and re-syncs Redis next run, so a
+        # mirror write failure is surfaced as WARN, not a hard FAIL.
         before = _snapshot("before", 100, 100, 10, 5, 50)
         after = _snapshot(
             "after", 112, 112, 12, 6, 53,
@@ -105,8 +107,20 @@ class BuildVerificationTests(unittest.TestCase):
             last_run={"total_saved": 3, "redis_write_failed": True},
         )
         report = monitor.build_verification(before, after, CLEAN_LOG)
-        self.assertEqual(report["pipelines"]["agent_sessions"]["status"], "FAIL")
+        self.assertEqual(report["pipelines"]["agent_sessions"]["status"], "WARN")
+        self.assertEqual(report["overall"], "WARN")
+
+    def test_marker_ok_false_forces_fail(self) -> None:
+        # The wrapper's own self-reported verdict (ok=false) fails the run even if
+        # the log slice and counts look fine.
+        before = _snapshot("before", 100, 100, 10, 5, 50)
+        after = _snapshot(
+            "after", 112, 112, 12, 6, 53,
+            marker={"completed_at": "x", "ok": False, "failed_stages": ["GitHub ingestion(rc=1)"]},
+        )
+        report = monitor.build_verification(before, after, CLEAN_LOG)
         self.assertEqual(report["overall"], "FAIL")
+        self.assertEqual(report["log"]["marker_failed_stages"], ["GitHub ingestion(rc=1)"])
 
     def test_dream_judge_nonzero_is_tolerated_warn(self) -> None:
         before = _snapshot("before", 100, 100, 10, 5, 50)

@@ -78,13 +78,68 @@ class Extractor:
         return f"ke_{hash_value}"
 
     def _extract_json_array(self, text: str) -> list[dict]:
-        """Extract a JSON array from a model response."""
-        start = text.find("[")
-        end = text.rfind("]") + 1
+        """
+        Robustly extract a JSON array of objects from a model response.
+
+        LLM JSON output is frequently slightly malformed — a trailing comma, a
+        missing comma between objects, code fences, or prose wrapped around the
+        array. Historically a single bad character (e.g. "Expecting ',' delimiter")
+        raised, which aborted the whole repo and, via the nightly wrapper, the
+        whole night. This parser is deliberately tolerant of recoverable
+        corruption while still failing loudly on genuinely unparseable output:
+
+          1. strip ```json ... ``` fences and locate the outermost [...] slice,
+          2. try strict json.loads first (the common, clean case),
+          3. fall back to json_repair (logged, not silent) for recoverable
+             corruption,
+          4. raise only if even repair cannot yield a list — callers treat that
+             as a per-item soft failure (skip + retry), never an all-or-nothing
+             abort of the run.
+        """
+        if not text:
+            return []
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```[a-zA-Z0-9_]*\n?", "", cleaned)
+            cleaned = re.sub(r"\n?```\s*$", "", cleaned).strip()
+
+        start = cleaned.find("[")
+        end = cleaned.rfind("]") + 1
         if start == -1 or end == 0:
             return []
-        parsed = json.loads(text[start:end])
-        return parsed if isinstance(parsed, list) else []
+        candidate = cleaned[start:end]
+
+        try:
+            parsed = json.loads(candidate)
+            return parsed if isinstance(parsed, list) else []
+        except json.JSONDecodeError as strict_error:
+            try:
+                from json_repair import repair_json
+
+                repaired = repair_json(candidate, return_objects=True)
+            except Exception as repair_error:  # json_repair missing or hard failure
+                raise ValueError(
+                    f"Unparseable JSON array from model "
+                    f"(strict={strict_error}; repair={repair_error})"
+                ) from strict_error
+
+            if isinstance(repaired, list):
+                print(
+                    f"  ⚠ Repaired malformed model JSON ({strict_error}); "
+                    f"recovered {len(repaired)} item(s).",
+                    flush=True,
+                )
+                return repaired
+            if isinstance(repaired, dict) and repaired:
+                print(
+                    f"  ⚠ Repaired malformed model JSON ({strict_error}); "
+                    "recovered a single object.",
+                    flush=True,
+                )
+                return [repaired]
+            raise ValueError(
+                f"Model JSON repair did not yield a usable array (strict={strict_error})"
+            ) from strict_error
 
     def _parse_frontmatter(self, content: str) -> tuple[dict, str]:
         """Parse a minimal YAML-style frontmatter block from markdown."""
@@ -167,7 +222,7 @@ JSON format:
             if start == -1 or end == 0:
                 return []
 
-            raw_entries = json.loads(text[start:end])
+            raw_entries = self._extract_json_array(text)
             
             # Convert to proper entry format
             entries = []
@@ -309,7 +364,7 @@ JSON format:
             if start == -1 or end == 0:
                 return []
             
-            raw_entries = json.loads(text[start:end])
+            raw_entries = self._extract_json_array(text)
             
             entries = []
             now = datetime.utcnow().isoformat()
@@ -760,7 +815,7 @@ JSON format:
             if start == -1 or end == 0:
                 return []
             
-            raw_entries = json.loads(text[start:end])
+            raw_entries = self._extract_json_array(text)
             
             entries = []
             now = datetime.utcnow().isoformat()
@@ -912,7 +967,7 @@ JSON format:
             if start == -1 or end == 0:
                 return []
             
-            raw_entries = json.loads(text[start:end])
+            raw_entries = self._extract_json_array(text)
             
             entries = []
             now = datetime.utcnow().isoformat()

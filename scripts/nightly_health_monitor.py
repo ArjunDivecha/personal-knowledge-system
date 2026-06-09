@@ -426,8 +426,15 @@ def build_verification(before: dict, after: dict, log_text: str) -> dict:
             f"redis_write_failed={last_run.get('redis_write_failed')}"
         )
         if last_run.get("redis_write_failed") is True:
-            ag["status"] = "FAIL"
-            ag["reasons"].append("agent_sessions redis_write_failed=True")
+            # The local disk checkpoint is authoritative and re-syncs Redis on the
+            # next run, so a mirror write failure is a WARN (surfaced), not a hard
+            # FAIL — unless something else already failed this pipeline.
+            if ag["status"] != "FAIL":
+                ag["status"] = "WARN"
+            ag["reasons"].append(
+                "agent_sessions Redis mirror write failed (disk checkpoint OK; "
+                "re-syncs next run)"
+            )
     if ag["status"] == "PASS" and not (ag["data_signal"] and ag["data_signal"] > 0):
         ag["status"] = "WARN"
         ag["reasons"].append("ran cleanly but no new session files tracked (OK if already up to date)")
@@ -441,10 +448,24 @@ def build_verification(before: dict, after: dict, log_text: str) -> dict:
         dj["reasons"].append("dream judge exited non-zero (tolerated by nightly wrapper)")
     report["pipelines"]["dream_judge"] = dj
 
+    # --- Success-marker self-report (the wrapper records its own verdict) ---
+    marker_ok = None
+    if isinstance(marker, dict) and "ok" in marker:
+        marker_ok = bool(marker.get("ok"))
+        report["log"]["marker_ok"] = marker_ok
+        if marker.get("failed_stages"):
+            report["log"]["marker_failed_stages"] = marker["failed_stages"]
+
     # --- Overall ---
     statuses = [p["status"] for p in report["pipelines"].values()]
     overall = "PASS"
-    if "FAIL" in statuses or not completed or len(error_lines) > 0 or storm_hits:
+    if (
+        "FAIL" in statuses
+        or not completed
+        or len(error_lines) > 0
+        or storm_hits
+        or marker_ok is False
+    ):
         overall = "FAIL"
     elif "WARN" in statuses:
         overall = "WARN"

@@ -597,13 +597,32 @@ A clean incremental run reports `WARN` when a pipeline simply found nothing new;
 `FAIL` means the run did not complete, the log contained errors, or any
 browser/OAuth-storm reference appeared.
 
-`scripts/oauth_storm_watcher.sh` is a watchdog meant to run in the background
-alongside a nightly run. It polls for a listener on port `18043` or any
-`oauth/callback` process and SIGKILLs only the offender's process group (it
-never runs a broad `pkill claude`). Stop it by creating `<log>.stop` or sending
-`SIGTERM`. The verification logic and the no-browser preflight are covered by
-`tests/python/test_nightly_health_monitor.py` and
+`scripts/oauth_storm_watcher.sh` is a **detect-and-alert-only** tripwire meant
+to run in the background alongside a nightly run. It polls for a new (non-baseline)
+listener on port `18043` or an `oauth/callback` process and logs an `ALERT` if it
+sees one. It deliberately does **not** kill anything: port `18043` is also used
+legitimately by the `mcp-remote` knowledge-Worker client and by the no-browser
+preflight's own sandboxed probe, so killing risks taking down legitimate clients
+(or the run itself). The storm is prevented at the source by the no-browser
+preflight; this watcher is just a secondary tripwire. Stop it by creating
+`<log>.stop` or sending `SIGTERM`. The verification logic and the no-browser
+preflight are covered by `tests/python/test_nightly_health_monitor.py` and
 `tests/python/test_check_claude_sdk_auth_noninteractive.py`.
+
+### Nightly Fault Isolation
+
+`scripts/run_nightly_ingestion.sh` runs each pipeline (Twitter, GitHub, Agent
+sessions, Dream judge) as an isolated **stage**: a stage failure is logged and
+recorded but never aborts the remaining stages. (Previously a single repo's
+malformed-JSON README aborted GitHub, and `set -e` then skipped agent-sessions
+and Dream.) The success marker now always records per-stage exit codes plus an
+`ok` flag and a `failed_stages` list, and the wrapper exits non-zero if any
+hard stage (Twitter/GitHub/Agent sessions) fails — Dream judge is a tolerated
+soft stage. Relatedly, GitHub extraction isolates per-repo failures: a repo
+whose extraction fails is left unmarked (retried next run) while the repos that
+succeeded are still saved, and LLM JSON output is parsed tolerantly via
+`json-repair` so a single malformed model response is repaired rather than
+fatal.
 
 ## Validation Strategy
 
@@ -711,6 +730,13 @@ The system is trying to enforce a few simple rules:
 
 ## Version History
 
+- **1.2.2** (June 2026)
+  Nightly reliability: fault-isolated stages (one pipeline failure no longer
+  aborts the night), tolerant `json-repair` parsing of LLM extraction output,
+  per-repo isolation in GitHub ingestion (save good repos, retry failed ones),
+  success marker with per-stage status / `ok` / `failed_stages`, sturdier
+  agent-session Redis mirror retries, and a safer detect-only OAuth storm
+  watcher.
 - **1.2.1** (June 2026)
   No-browser Claude SDK auth preflight (`check_claude_sdk_auth_noninteractive.py`)
   to stop the ingestion OAuth/browser session storm; SDK-primary / API-fallback /

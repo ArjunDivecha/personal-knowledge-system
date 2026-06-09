@@ -146,6 +146,23 @@ class _FailingExtractor(_FakeExtractor):
         return []
 
 
+class _PartiallyFailingExtractor(_FakeExtractor):
+    """Fails README extraction only for the repo named 'bad'; others succeed."""
+
+    def extract_from_readme(
+        self,
+        readme_content: str,
+        repo_name: str,
+        repo_url: str,
+        repo_full_name: Optional[str] = None,
+    ) -> list[dict]:
+        if repo_name == "bad":
+            self.last_error = "Agent SDK query failed: test failure"
+            return []
+        self.last_error = None
+        return super().extract_from_readme(readme_content, repo_name, repo_url, repo_full_name)
+
+
 class GitHubRunTests(unittest.TestCase):
     def setUp(self) -> None:
         self.repo = {
@@ -217,7 +234,9 @@ class GitHubRunTests(unittest.TestCase):
         github_marks = [mark for mark in storage.marked if mark[0] == "github"]
         self.assertEqual(github_marks, [])
 
-    def test_run_github_ingestion_aborts_on_swallowed_extractor_error(self) -> None:
+    def test_run_github_ingestion_isolates_failed_repo_without_aborting(self) -> None:
+        # A single repo whose extraction fails must NOT raise/abort. The repo is
+        # left unmarked (so it retries next run) and the error count is surfaced.
         storage = _FakeStorage()
         github = _FakeGitHubClient([self.repo])
         extractor = _FailingExtractor()
@@ -226,16 +245,50 @@ class GitHubRunTests(unittest.TestCase):
             with patch.object(github_run, "GitHubClient", return_value=github):
                 with patch.object(github_run, "Extractor", return_value=extractor):
                     with patch.object(github_run, "StorageClient", return_value=storage):
-                        with self.assertRaisesRegex(RuntimeError, "refusing to save partial"):
-                            github_run.run_github_ingestion(
-                                skip_commits=True,
-                                skip_code=True,
-                                dry_run=False,
-                                resume=True,
-                            )
+                        result = github_run.run_github_ingestion(
+                            skip_commits=True,
+                            skip_code=True,
+                            dry_run=False,
+                            resume=True,
+                        )
 
+        self.assertEqual(result, [])
         self.assertEqual(storage.saved_batches, [])
-        self.assertEqual(storage.thin_index_updates, [])
+        # Failed repo is not marked processed -> it will be retried next run.
+        self.assertEqual([m for m in storage.marked if m[0] == "github"], [])
+        # Loud signal preserved for the nightly wrapper's per-stage status.
+        self.assertEqual(github_run._LAST_RUN_ERROR_COUNT, 1)
+
+    def test_run_github_ingestion_saves_good_repos_when_one_repo_fails(self) -> None:
+        # The core reliability fix: one repo's extraction failure must not throw
+        # away the repos that succeeded.
+        good = dict(self.repo, name="good", full_name="ArjunDivecha/good")
+        bad = dict(self.repo, name="bad", full_name="ArjunDivecha/bad")
+        storage = _FakeStorage()
+        github = _FakeGitHubClient([good, bad])
+        extractor = _PartiallyFailingExtractor()
+
+        with patch.object(github_run, "validate_github_config", return_value=[]):
+            with patch.object(github_run, "GitHubClient", return_value=github):
+                with patch.object(github_run, "Extractor", return_value=extractor):
+                    with patch.object(github_run, "StorageClient", return_value=storage):
+                        result = github_run.run_github_ingestion(
+                            skip_commits=True,
+                            skip_code=True,
+                            dry_run=False,
+                            resume=True,
+                        )
+
+        # The good repo's entry was saved despite the bad repo failing.
+        self.assertEqual(len(result), 1)
+        self.assertTrue(storage.saved_batches)
+        saved_ids = [e["id"] for batch in storage.saved_batches for e in batch]
+        self.assertIn("ke_demo", saved_ids)
+        # Good repo marked processed; bad repo NOT marked (retries next run).
+        github_marked_ids = [m[1] for m in storage.marked if m[0] == "github"]
+        self.assertIn("good", github_marked_ids)
+        self.assertNotIn("bad", github_marked_ids)
+        self.assertEqual(github_run._LAST_RUN_ERROR_COUNT, 1)
 
 
 if __name__ == "__main__":

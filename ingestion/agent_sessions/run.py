@@ -92,7 +92,7 @@ STATE_REDIS_KEY = "ingestion:agent_sessions:state"
 _state_redis_client: Optional[Redis] = None
 _redis_write_failed = False
 DEFAULT_DISTILL_FAILURE_RETRY_LIMIT = 2
-DEFAULT_REDIS_SAVE_ATTEMPTS = 3
+DEFAULT_REDIS_SAVE_ATTEMPTS = 5
 
 # Filtering thresholds
 MIN_USER_CHARS = 300    # Skip trivial sessions (just cd/ls)
@@ -290,7 +290,7 @@ def save_state(state: dict):
                     f"Could not save agent session state to Redis "
                     f"(attempt {attempt}/{attempts}); retrying with a fresh client: {exc}"
                 )
-                time.sleep(min(2.0, 0.25 * attempt))
+                time.sleep(min(5.0, 0.5 * attempt))
 
 
 def write_run_status(
