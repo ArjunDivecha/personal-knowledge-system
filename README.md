@@ -476,7 +476,7 @@ knowledge-system/
     verify_memory_consistency.py
     check_claude_sdk_auth_noninteractive.py   no-browser SDK auth preflight
     nightly_health_monitor.py                 preflight / snapshot / verify
-    oauth_storm_watcher.sh                    OAuth/browser storm watchdog
+    oauth_storm_watcher.sh                    OAuth storm tripwire (detect-only)
 
   shared/
     Cross-language policy files
