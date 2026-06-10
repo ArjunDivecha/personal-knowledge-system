@@ -1456,8 +1456,20 @@ export function isArchiveCandidate(entry: LoadedEntry): boolean {
 		const ageDays = ageMs / (1000 * 60 * 60 * 24);
 		if (ageDays < minAgeDays) return false;
 	}
+	// 3.3 — Windowed access immunity: an access older than ACCESS_IMMUNITY_WINDOW_DAYS
+	// does not grant archive protection.  entry.accessCount alone is a monotonic
+	// counter — without a recency gate a single touch months ago kept entries alive
+	// forever.  If last_accessed is absent but count > 0 we treat it conservatively
+	// as recent (unknown timestamp = assume still fresh).
+	const effectivelyUnaccessed = (() => {
+		if (entry.accessCount === 0) return true;
+		const lastAccessedStr = typeof entry.metadata.last_accessed === "string" ? entry.metadata.last_accessed : null;
+		if (!lastAccessedStr) return false; // count > 0, no timestamp — treat as recent
+		const daysSinceAccess = (Date.now() - new Date(lastAccessedStr).getTime()) / 86400000;
+		return daysSinceAccess > ACCESS_IMMUNITY_WINDOW_DAYS;
+	})();
 	return (
-		entry.accessCount === 0 &&
+		effectivelyUnaccessed &&
 		entry.sourceConversationCount <= 1 &&
 		entry.salienceScore < MEMORY_POLICY.dream_thresholds.archive_candidate_salience
 	);
@@ -4227,6 +4239,10 @@ export const LAYER2_QUARANTINE_AFTER_NIGHTS = 3;
 export const LAYER2_DEMOTE_AFTER_NIGHTS = 10; // = 3 quarantine + 7 demote
 /** Hard cap on Layer 2 mutations per cycle run (quarantine + demote combined). */
 export const LAYER2_PER_RUN_CAP = 100;
+/** 3.3 — Access immunity window: an access older than this many days does not
+ *  block archiving.  Prevents a single old incidental touch from granting
+ *  permanent archive immunity. */
+export const ACCESS_IMMUNITY_WINDOW_DAYS = 90;
 /**
  * Hard cap on percentile re-tier persists per cycle run (R3.3). After the
  * corpus converges, only a handful of entries change tier each night; this cap

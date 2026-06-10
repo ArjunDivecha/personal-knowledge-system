@@ -59,7 +59,9 @@ import {
 // GitHub accounts to query
 const GITHUB_ACCOUNTS = ['arjun-via', 'ArjunDivecha'];
 const MEMORY_SCHEMA_VERSION = 2;
-const MAX_RECONSOLIDATION_SEARCH_RESULTS = 5;
+// 3.3 — Only the rank-1 search result counts as "use" for access_count purposes.
+// Top-5 triggers were granting every search result permanent archive immunity.
+const MAX_RECONSOLIDATION_SEARCH_RESULTS = 1;
 const MAX_RECONSOLIDATION_ERROR_LOGS = 100;
 const RECONSOLIDATION_PROMOTION_THRESHOLD = 3;
 const MAX_OPERATOR_DREAM_ARCHIVE_LIMIT = 10;
@@ -1662,6 +1664,9 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 		]);
 
 		const latestEntry = normalizeEntry(latestRawEntry, entryType) ?? currentEntry;
+		// 3.3 — If Dream archived this entry while the reconsolidation was queued,
+		// writing back would un-archive it.  Abort and leave the archived state intact.
+		if ((getEntryMetadata(latestEntry) as Record<string, unknown>).archived === true) return;
 		const updatedEntry = applyAccessSignals(
 			latestEntry,
 			effectiveAccessCount,
