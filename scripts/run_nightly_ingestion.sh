@@ -55,6 +55,9 @@ export DREAM_ALLOW_ANTHROPIC_API_FALLBACK="${DREAM_ALLOW_ANTHROPIC_API_FALLBACK:
 # route to API fallback. Never open an interactive OAuth/login browser window.
 export BROWSER="${BROWSER:-/usr/bin/false}"
 export GIT_TERMINAL_PROMPT="${GIT_TERMINAL_PROMPT:-0}"
+# 4.3 — CI=1 enables hardened timeouts and non-interactive modes run-wide.
+# Previously only the preflight check exported this; now it covers all stages.
+export CI="${CI:-1}"
 
 mkdir -p "$LOG_DIR"
 

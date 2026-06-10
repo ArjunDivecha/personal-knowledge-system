@@ -103,12 +103,20 @@ DISTILL_MODEL = "claude-sonnet-4-6"
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
-LOG_FILE.parent.mkdir(exist_ok=True)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler()],
-)
+# 4.8 — Guard the FileHandler so test imports don't write into the live
+# production log.  PYTEST_CURRENT_TEST is set by pytest for every test;
+# under it, use a NullHandler so log output goes only to the test runner's
+# captured stream (pytest captures StreamHandler output automatically).
+import os as _os
+if not _os.environ.get("PYTEST_CURRENT_TEST"):
+    LOG_FILE.parent.mkdir(exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler()],
+    )
+else:
+    logging.basicConfig(level=logging.INFO, handlers=[logging.NullHandler()])
 log = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)

@@ -193,9 +193,28 @@ def main() -> int:
 
         for start in range(0, stale, args.delete_batch):
             batch = stale_ids[start:start + args.delete_batch]
+            # 4.2 — Re-check Redis immediately before each delete: the snapshot can
+            # be stale if new entries were ingested during the /range scan.  Any ID
+            # that now exists in Redis is no longer "stale" and must be skipped.
+            recheck_keys = []
+            for vid in batch:
+                if vid.startswith("pe_"):
+                    recheck_keys.append(f"project:{vid}")
+                else:
+                    recheck_keys.append(f"knowledge:{vid}")
             try:
-                _with_retry(lambda b=batch: index.delete(ids=b), what=f"delete @{start}")
-                deleted += len(batch)
+                live_check = redis.client.mget(*recheck_keys) if recheck_keys else []
+            except Exception:
+                live_check = [None] * len(recheck_keys)
+            safe_batch = [vid for vid, val in zip(batch, live_check) if val is None]
+            skipped_alive = len(batch) - len(safe_batch)
+            if skipped_alive:
+                print(f"  [recheck] {skipped_alive} IDs appeared in Redis since snapshot — skipping", flush=True)
+            if not safe_batch:
+                continue
+            try:
+                _with_retry(lambda b=safe_batch: index.delete(ids=b), what=f"delete @{start}")
+                deleted += len(safe_batch)
             except UpstashError as err:
                 failed_batches += 1
                 print(f"  [skip] delete batch @{start} failed after retries: {err}", flush=True)

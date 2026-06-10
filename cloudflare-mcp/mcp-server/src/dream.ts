@@ -393,12 +393,19 @@ function getMutationResultKey(mutationId: string): string {
 	return `${MUTATION_RESULT_PREFIX}${mutationId}`;
 }
 
+// 4.1 — Entry IDs use 16 hex chars (64 bits) to stay well below birthday-attack
+// territory, and allocation is atomic via SET NX so concurrent generators can't
+// silently race to the same key.  The old 12-char (48-bit) GET-then-rely approach
+// left a TOCTOU window across the four ingestion generators.
 async function generateEntryId(redis: Redis, entryType: EntryType): Promise<string> {
 	const prefix = entryType === "knowledge" ? "ke" : "pe";
-	for (let attempt = 0; attempt < 5; attempt += 1) {
-		const id = `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
-		const existing = await redis.get(getEntryKey(entryType, id));
-		if (!existing) {
+	for (let attempt = 0; attempt < 10; attempt += 1) {
+		const id = `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+		const key = getEntryKey(entryType, id);
+		// SET NX: returns 1 if the key was newly set, 0 if it already existed.
+		// Using a sentinel placeholder; the caller must overwrite with the real entry.
+		const claimed = await redis.setnx(key, "__id_placeholder__");
+		if (claimed) {
 			return id;
 		}
 	}

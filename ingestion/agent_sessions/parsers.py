@@ -71,7 +71,12 @@ def parse_claude_code(path: Path, from_offset: int = 0) -> tuple[list[dict], int
         with open(path, "rb") as f:
             f.seek(from_offset)
             for raw in f:
-                new_offset = f.tell()
+                # 4.5 — Only advance the offset past \n-terminated lines.
+                # An in-flight line without a trailing newline may be
+                # half-written by a live process; resuming mid-line next
+                # run would start the JSON decode at a bad offset.
+                if raw.endswith(b"\n"):
+                    new_offset = f.tell()
                 try:
                     line = raw.decode("utf-8", errors="replace").strip()
                     if not line:
@@ -147,7 +152,12 @@ def parse_codex(path: Path, from_offset: int = 0) -> tuple[list[dict], int, dict
         with open(path, "rb") as f:
             f.seek(from_offset)
             for raw in f:
-                new_offset = f.tell()
+                # 4.5 — Only advance the offset past \n-terminated lines.
+                # An in-flight line without a trailing newline may be
+                # half-written by a live process; resuming mid-line next
+                # run would start the JSON decode at a bad offset.
+                if raw.endswith(b"\n"):
+                    new_offset = f.tell()
                 try:
                     line = raw.decode("utf-8", errors="replace").strip()
                     if not line:

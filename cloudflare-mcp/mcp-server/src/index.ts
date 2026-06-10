@@ -1434,9 +1434,13 @@ async function runScheduledGovernedDream(
 				}
 				: null,
 			verification,
+			// 4.6 — Scheduled governed Dream has no kill switch (the cron always runs
+			// the proposal→grade→apply chain).  Removed the misleading "kill-flag
+			// state" clause from the failed/held message — held ops are held by
+			// policy, not by a flag, and a kill flag doesn't restart a held run.
 			next_action: status === "completed" || status === "completed_with_holds"
 				? "Scheduled governed Dream auto-apply completed within caps; held operations will be reconsidered by future runs or judge policy."
-				: "Scheduled governed Dream held or failed; inspect grade, held operations, and kill-flag state before enabling broader autonomy.",
+				: "Scheduled governed Dream held or failed; inspect the grade and held operations. To release held ops, update the governing policy or wait for the judge queue to clear — no kill flag controls the scheduled Dream path.",
 		};
 		await storeScheduledGovernedRunRecord(redis, runRecord, status !== "held");
 		await storeScheduledGovernedBoundaryBestEffort(redis, controller, runId);
