@@ -99,7 +99,13 @@ def compute_salience(entry: Any, now: datetime | None = None) -> float:
     type_multiplier = float(policy["type_multipliers"].get(context_type, policy["type_multipliers"]["task_query"]))
     signal_multiplier = 1.0
     signal_multipliers = policy.get("signal_flag_multipliers", {})
+    # 4.4 — When context_type is already "explicit_save", skip the same-named
+    # signal_flag multiplier to avoid counting the same attribute twice: once as
+    # the type_multiplier and again as a signal boost. Must stay in lockstep with
+    # computeSalience in salience.ts.
     for flag in _coerce_string_list(metadata.get("signal_flags")):
+        if flag == "explicit_save" and context_type == "explicit_save":
+            continue
         signal_multiplier *= float(signal_multipliers.get(flag, 1.0))
     max_combined_multiplier = float(policy.get("max_combined_salience_multiplier", 3.0))
     combined_multiplier = min(max_combined_multiplier, type_multiplier * signal_multiplier)

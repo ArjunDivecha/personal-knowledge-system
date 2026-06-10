@@ -121,8 +121,15 @@ export function computeSalience(entry: JsonRecord, now: Date = new Date()): numb
 	const typeMultiplier =
 		MEMORY_POLICY.type_multipliers[contextType as keyof typeof MEMORY_POLICY.type_multipliers] ??
 		MEMORY_POLICY.type_multipliers.task_query;
+	// 4.4 — When context_type is already "explicit_save", skip the same-named
+	// signal_flag multiplier to avoid counting the same attribute twice: once as
+	// the type_multiplier and again as a signal boost. The source_type_weight in
+	// computeSearchScore remains the single search-layer amplifier for explicit
+	// saves. One authoritative field per lifecycle question: explicit-save nature
+	// is owned by context_type; signal_flags carry ADDITIONAL modifiers only.
 	const signalMultiplier = toStringArray(metadata.signal_flags).reduce(
 		(multiplier, flag) => {
+			if (flag === "explicit_save" && contextType === "explicit_save") return multiplier;
 			const configured =
 				MEMORY_POLICY.signal_flag_multipliers[
 					flag as keyof typeof MEMORY_POLICY.signal_flag_multipliers
