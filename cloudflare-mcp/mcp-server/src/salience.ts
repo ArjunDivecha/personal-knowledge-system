@@ -101,7 +101,11 @@ export function computeSalience(entry: JsonRecord, now: Date = new Date()): numb
 		MEMORY_POLICY.confidence_map.medium;
 
 	const lastSeenValue = metadata.last_seen ?? metadata.updated_at;
-	const lastSeen = toDate(lastSeenValue) ?? now;
+	// 3.5 — When last_seen is absent use a conservative 90-day-old fallback rather
+	// than now; defaulting to now gave missing-timestamp entries zero decay and
+	// made them appear perpetually fresh.  Must stay in lockstep with salience.py.
+	const MISSING_TIMESTAMP_FALLBACK_DAYS = 90;
+	const lastSeen = toDate(lastSeenValue) ?? new Date(now.getTime() - MISSING_TIMESTAMP_FALLBACK_DAYS * 86400000);
 	const halfLifeRaw =
 		MEMORY_POLICY.half_lives_days[contextType as keyof typeof MEMORY_POLICY.half_lives_days] ??
 		MEMORY_POLICY.half_lives_days.task_query;
@@ -148,7 +152,17 @@ export function computeSalience(entry: JsonRecord, now: Date = new Date()): numb
 	const base = confidence * decay * combinedMultiplier * freqBoost;
 
 	const raw = base * (1 + richnessWeight * richness) + retrievalBoost;
-	return Math.round(Math.min(1.0, raw) * 10000) / 10000;
+	let score = Math.round(Math.min(1.0, raw) * 10000) / 10000;
+
+	// 3.5 — deprecated entries must rank below stale entries. Apply a fixed
+	// post-factor penalty so deprecated < any active/stale score for the same
+	// entry content. Must stay in lockstep with salience.py.
+	const DEPRECATED_PENALTY = 0.15;
+	if (typeof entry.state === "string" && entry.state === "deprecated") {
+		score = Math.round(score * DEPRECATED_PENALTY * 10000) / 10000;
+	}
+
+	return score;
 }
 
 // Phase 2 (PRD R2.3): continuous "evidence richness" term so salience

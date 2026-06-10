@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -80,8 +80,13 @@ def compute_salience(entry: Any, now: datetime | None = None) -> float:
     confidence = float(confidence_map.get(confidence_raw, confidence_map["medium"]))
 
     half_life_raw = policy["half_lives_days"].get(context_type, policy["half_lives_days"]["task_query"])
-    last_seen_dt = _coerce_datetime(last_seen) or datetime.now(timezone.utc)
     now_dt = now.astimezone(timezone.utc) if now else datetime.now(timezone.utc)
+    # 3.5 — When last_seen is absent use a conservative 90-day-old fallback rather
+    # than now; defaulting to now gave missing-timestamp entries zero decay and
+    # made them appear perpetually fresh.  Must stay in lockstep with salience.ts.
+    _MISSING_TIMESTAMP_FALLBACK_DAYS = 90.0
+    _last_seen_dt_raw = _coerce_datetime(last_seen)
+    last_seen_dt = _last_seen_dt_raw or (now_dt - timedelta(days=_MISSING_TIMESTAMP_FALLBACK_DAYS))
 
     if half_life_raw == "infinity":
         decay = 1.0
@@ -113,7 +118,16 @@ def compute_salience(entry: Any, now: datetime | None = None) -> float:
     base = confidence * decay * combined_multiplier * freq_boost
 
     raw = base * (1.0 + richness_weight * richness) + retrieval_boost
-    return round(min(1.0, raw), 4)
+    score = round(min(1.0, raw), 4)
+
+    # 3.5 — deprecated entries must rank below stale entries. Apply a fixed
+    # post-factor penalty so deprecated < any active/stale score for the same
+    # entry content. Must stay in lockstep with salience.ts.
+    _DEPRECATED_PENALTY = 0.15
+    if entry_dict.get("state") == "deprecated":
+        score = round(score * _DEPRECATED_PENALTY, 4)
+
+    return score
 
 
 def _richness_weight(policy: dict[str, Any]) -> float:
