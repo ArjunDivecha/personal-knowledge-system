@@ -502,7 +502,23 @@ class StorageClient:
         return data
     
     def save_thin_index(self, index: dict):
-        """Save the thin index."""
+        """Save the thin index, respecting the Worker's rebuild lock.
+
+        3.6 — The Worker acquires index:rebuild:lock before staging and renaming
+        the new index.  A plain SET from Python during that window would race
+        with the Worker's rename and could lose the Worker's changes.  If the
+        lock is held we skip the write and log a warning; the next nightly run
+        will write cleanly once the Worker has released the lock.
+        """
+        import logging as _logging
+        lock = self.redis.get("index:rebuild:lock")
+        if lock:
+            _logging.getLogger(__name__).warning(
+                "[storage] save_thin_index skipped: index:rebuild:lock is held by Worker "
+                "(run_id=%s); will retry on next nightly cycle",
+                lock.get("run_id") if isinstance(lock, dict) else str(lock)[:64],
+            )
+            return
         self.redis.set("index:current", json.dumps(index))
 
     def _scan_keys(self, pattern: str) -> list[str]:

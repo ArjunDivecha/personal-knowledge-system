@@ -517,10 +517,13 @@ function setVectorMetadataBase(entry: LoadedEntry): Record<string, unknown> {
 			confidence: typeof entry.entry.confidence === "string" ? entry.entry.confidence : "medium",
 		};
 	}
+	// 3.6 — Align project vector metadata to domain/state (same shape as knowledge
+	// entries) so the search layer and verify/repair scripts don't see two schemas.
+	// `name` → `domain`; `status` → `state`.
 	return {
 		...base,
-		name: typeof entry.entry.name === "string" ? entry.entry.name : entry.label,
-		status: typeof entry.entry.status === "string" ? entry.entry.status : "active",
+		domain: typeof entry.entry.name === "string" ? entry.entry.name : entry.label,
+		state: typeof entry.entry.status === "string" ? entry.entry.status : "active",
 	};
 }
 
@@ -1876,6 +1879,13 @@ async function rebuildThinIndexWithHeldLock(
 	redis: Redis,
 	runId: string,
 ): Promise<Record<string, unknown>> {
+	// 3.6 — Carry recent_evolutions forward from the current index (the worker
+	// cannot reconstruct evolution history from loaded entries alone).
+	const priorIndex = parseStoredObject(await redis.get("index:current")) ?? {};
+	const priorEvolutions = Array.isArray(priorIndex.recent_evolutions)
+		? priorIndex.recent_evolutions
+		: [];
+
 	const [knowledgeBatch, projectBatch] = await Promise.all([
 		loadEntryBatchByType(redis, "knowledge"),
 		loadEntryBatchByType(redis, "project"),
@@ -1910,10 +1920,22 @@ async function rebuildThinIndexWithHeldLock(
 		return sortTimestamp(right.updatedAt) - sortTimestamp(left.updatedAt);
 	});
 
+	// 3.6 — Stratify topic slots across tiers so Tier-2/3 topics surface even
+	// when there are ≥100 Tier-1 entries.  Slots ≈ policy percentiles
+	// (tier_1_top_pct=0.15, tier_2_next_pct=0.25, remainder Tier-3).
+	const tier1Slots = Math.max(1, Math.round(THIN_INDEX_TOPIC_LIMIT * 0.15));  // ~15
+	const tier2Slots = Math.max(1, Math.round(THIN_INDEX_TOPIC_LIMIT * 0.25));  // ~25
+	const tier3Slots = THIN_INDEX_TOPIC_LIMIT - tier1Slots - tier2Slots;         // ~60
+	const stratifiedTopics = [
+		...rankedTopics.filter((e) => e.injectionTier === 1).slice(0, tier1Slots),
+		...rankedTopics.filter((e) => e.injectionTier === 2).slice(0, tier2Slots),
+		...rankedTopics.filter((e) => e.injectionTier === 3).slice(0, tier3Slots),
+	];
+
 	const thinIndex = {
 		generated_at: generatedAt,
 		token_count: 0,
-		topics: rankedTopics.slice(0, THIN_INDEX_TOPIC_LIMIT).map((entry) => ({
+		topics: stratifiedTopics.map((entry) => ({
 			id: entry.id,
 			domain:
 				typeof entry.entry.domain === "string" && entry.entry.domain.length > 0
@@ -1959,7 +1981,7 @@ async function rebuildThinIndexWithHeldLock(
 				archived: false,
 			};
 		}),
-		recent_evolutions: [],
+		recent_evolutions: priorEvolutions,
 		contested_count: contestedCount,
 		total_topic_count: rankedTopics.length,
 		total_project_count: rankedProjects.length,
