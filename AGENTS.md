@@ -152,7 +152,13 @@ Notable behavior:
 - Adds recency scoring and source weighting on top of vector similarity.
 - Includes live GitHub helper logic for querying Arjun's GitHub accounts.
 - Uses `text-embedding-3-large` at 3072 dimensions, matching the Python pipelines.
-- Exposes five tools: `get_index`, `get_context`, `get_deep`, `search`, and `github`.
+- Exposes read-only tools (always available): `get_index`, `get_context`, `get_deep`,
+  `search`, `github`, `get_dream_summary`, `get_validation_status`, `read_tweet`,
+  `read_thread`, `health`, `list_dream_runs`, `get_dream_run`, `get_dream_events`.
+- Exposes write tools (require mcp:write scope): `run_dream_proposal`,
+  `grade_dream_proposal`, `apply_dream_proposal`, `rollback_dream_apply`,
+  `restore_archived`, `create_entry`, `set_context_type`, `archive_entry`,
+  `restore_entry`, `consolidate_entries`, `add_insight`, `update_entry`.
 
 ## Environment And Dependencies
 

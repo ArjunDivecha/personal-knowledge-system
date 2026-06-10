@@ -2546,7 +2546,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 		// Tool: search
 		this.server.tool(
 			"search",
-			"Tier-aware semantic search across all knowledge and project entries. Archived entries are excluded by default, and results are reranked by semantic match, salience, recency, and retrieval tier.",
+			"Tier-aware semantic search across all knowledge and project entries. Archived entries are excluded by default. Results are scored by semantic match, salience, recency, source weight, and retrieval-tier multiplier, then ranked by final score.",
 			{
 				query: z.string().describe("Search query"),
 				limit: z.number().optional().describe("Max results (default 5)"),

@@ -41,11 +41,16 @@ All 7 stages from the staging plan, each in its own commit. Defaults are off eve
 - 19 new tests + 1 scheduled-handler tripwire-fallback test.
 
 ### Stage 5a — Worker-Side Judge Queue
-- New module `src/judgeQueue.ts`: queue primitives + 5 op_type variants + `buildJudgeRubric` per type.
+- New module `src/judgeQueue.ts`: queue primitives + 6 op_type variants + `buildJudgeRubric` per type.
+  (Original 5: `duplicate_merge_borderline`, `promote_tier_borderline`, `demote_tier1_borderline`,
+  `high_access_archive`, `hard_delete_borderline`. Phase 3.4 added: `contradiction_resolution`.)
 - `isDuplicateMergeBorderline`: any entry with `access_count > 0` makes the merge borderline.
 - `runDreamCycle` integration:
-  - At cycle start with `DREAM_OPUS_MODE=on`: `readPendingVerdicts` and apply or settle each.
-  - During duplicate-merge phase: bright-line auto-applies (current behavior); borderline enqueues to judge queue (only when Opus mode is on; otherwise still auto-applies).
+  - At cycle start (live runs): `readPendingVerdicts` and apply or settle each.
+  - During duplicate-merge phase: bright-line auto-applies; borderline items **always** enqueue to the
+    judge queue during live cycles. `DREAM_OPUS_MODE` env var no longer gates enqueue — it was removed
+    from the hot path to ensure judged items cannot sit forever when the flag is toggled. The `opus_mode`
+    field in the run record's `judge_queue` block is hardcoded `"on"` and does not reflect any env var.
 - Two new operator HTTP endpoints: `GET /ops/dream/judge_queue` (Mac script polls) and `POST /ops/dream/judge_verdict` (Mac script posts).
 - `judge_queue` block added to run record.
 - 11 new tests.

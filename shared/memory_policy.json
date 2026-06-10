@@ -114,6 +114,7 @@
     "active_recent_access_grace_days": 30
   },
   "quality_gate": {
+    "_note": "threshold_tier1 is a Dream audit absolute-salience floor (used by test_audit_memory_quality). It is NOT the same as tier_percentiles.tier_1_top_pct, which is the corpus-relative percentile cutoff used by assignTierByPercentile / assign_tiers_by_percentile at runtime. These are separate gates: threshold_tier1 checks raw salience after scoring; tier_1_top_pct controls what fraction of the live corpus earns Tier-1.",
     "threshold_tier1": 0.40,
     "threshold_dup": 0.20,
     "threshold_recall": 0.60,

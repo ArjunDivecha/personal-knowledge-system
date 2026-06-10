@@ -3,6 +3,12 @@
 **Version:** 0.4 (nightly maximalist)
 **Status:** Draft
 **Date:** 2026-05-07
+
+> **Implementation note (2026-06-09):** R10 (multi-vector embeddings + LLM-as-judge reranking)
+> described in §9 and the roadmap table is **NOT YET IMPLEMENTED**. The current production search
+> uses deterministic score-based ranking (semantic similarity × salience × recency × source weight
+> × tier multiplier). File paths like `src/retrieval/llm-judge-reranker.ts` do not exist.
+> Everything from v0.1–v0.3 (R1–R9) is committed and live; R10 is planned.
 **Supersedes:** v0.3
 **Constraint:** Dream runs once per night. No compute, time, or cost constraints *within* that run. Read-path (retrieval) is demand-driven and unconstrained.
 

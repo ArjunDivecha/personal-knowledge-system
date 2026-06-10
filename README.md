@@ -304,7 +304,7 @@ The production MCP server exposes:
 - `github`
   Queries linked GitHub repositories live.
 
-Search no longer uses a simple "70% relevance + 30% recency" rule. The current design reranks results using:
+Search no longer uses a simple "70% relevance + 30% recency" rule. The current design scores and ranks results using:
 
 - semantic similarity
 - recency
@@ -320,11 +320,11 @@ The thin index is the compressed map of the memory system.
 
 It is intentionally not a full dump of every entry. It stores:
 
-- a token-budgeted subset of topics and projects
+- a tier-stratified subset of topics and projects (up to 100 total: 15 T1 slots, 25 T2 slots, 60 T3 slots)
 - true total topic/project counts
 - tier counts
 - archive counts
-- recent evolution summaries
+- recent evolution summaries (carried forward from the prior index)
 
 This lets a client get a fast overview of the memory landscape without paying the cost of loading the entire store.
 
