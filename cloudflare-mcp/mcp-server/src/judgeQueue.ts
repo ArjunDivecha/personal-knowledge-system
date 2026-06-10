@@ -39,7 +39,11 @@ export type JudgeOpType =
 	| "promote_tier_borderline"
 	| "demote_tier1_borderline"
 	| "high_access_archive"
-	| "hard_delete_borderline";
+	| "hard_delete_borderline"
+	// 3.4 — contradiction resolution: both entries are contested; judge decides
+	// whether they are truly contradictory (skip = keep both contested, needs
+	// Phase 7C supersession) or complementary/compatible (apply = restore active).
+	| "contradiction_resolution";
 
 export interface JudgeQueueItem {
 	op_id: string;
@@ -200,5 +204,7 @@ export function buildJudgeRubric(opType: JudgeOpType): string {
 			return "This archive candidate has been accessed in the past 90 days, which usually means it matters. Apply only if the access pattern is clearly noise (e.g., automated retrieval, single accidental query). Skip when in doubt.";
 		case "hard_delete_borderline":
 			return "Decide whether to permanently delete this archived entry. Apply only if there is no plausible future relevance: not a recurring project, not an identity element, not a returning interest. Skip when in doubt — hard-delete is the only irreversible step.";
+		case "contradiction_resolution":
+			return "Two knowledge entries were flagged as contradicting each other and both are now marked 'contested'. Read their current_view texts and the listed contradiction reasons. Apply if they are NOT genuinely contradictory (i.e., they are complementary, about different time periods, or the contradiction reasons are spurious) — this restores both entries to active. Skip if the contradiction is real and requires human resolution or a Phase 7C supersession step to reconcile the conflicting views.";
 	}
 }

@@ -3074,6 +3074,28 @@ async function applyDreamProposalOperation(
 			);
 		}
 		await markCorrectionContestHintApplied(redis, operation, applyRunId, timestamp);
+		// 3.4 — Route contested cluster to the judge queue so the judge can decide
+		// whether to restore entries to active (not a real contradiction) or keep
+		// them contested for Phase 7C manual resolution.  Best-effort: failure here
+		// does NOT prevent the contest from being applied.
+		const evidence3_4 = parseStoredObject(operation.evidence);
+		const judegeItemId = `contradiction_resolution_${operationId}`;
+		await enqueueJudgeItem(redis, {
+			op_id: judegeItemId,
+			op_type: "contradiction_resolution",
+			proposal_run_id: applyRunId,
+			enqueued_at: timestamp,
+			target_entry_ids: entryIds,
+			rubric: buildJudgeRubric("contradiction_resolution"),
+			payload: {
+				mark_contested_operation_id: operationId,
+				entry_labels: results.map((r) => ({ id: r.id, label: r.label })),
+				reasons: evidence3_4?.reasons ?? [],
+				evidence: evidence3_4 ?? {},
+			},
+		}).catch((err) => {
+			console.warn("[dream] failed to enqueue contradiction_resolution judge item", err);
+		});
 		return { ok: true, operation_id: operationId, type: operationType, results };
 	}
 
@@ -5894,7 +5916,38 @@ export async function runScheduledRetierCycle(
 						const payloadObj = item.payload as Record<string, unknown> | undefined;
 						const fingerprint = typeof payloadObj?.fingerprint === "string" ? payloadObj.fingerprint : `judge:${canonicalId}`;
 						await applyDuplicateMergePlan(redis, vector, { fingerprint, canonical, duplicates }, runId, timestamp);
+						await settleJudgeItem(redis, item.op_id, "applied", { run_id: runId });
 						verdictsApplied += 1;
+					} else if (item.op_type === "contradiction_resolution") {
+						// 3.4 — Apply = entries are NOT genuinely contradictory; restore to active.
+						// Skip = real contradiction remains; keep contested for Phase 7C resolution.
+						if (verdict.verdict === "apply") {
+							const loadedMap = await loadTouchedEntries(redis, item.target_entry_ids);
+							for (const entryId of item.target_entry_ids) {
+								const entry = loadedMap.get(entryId);
+								if (!entry) continue;
+								if (typeof entry.entry.state === "string" && entry.entry.state === "contested") {
+									entry.entry.state = "active";
+									entry.metadata.last_consolidated = timestamp;
+									entry.metadata.revision = (toOptionalInteger(entry.metadata.revision) ?? 0) + 1;
+									appendConsolidationNote(
+										entry.metadata,
+										formatConsolidationNote({
+											timestamp,
+											source: "dream",
+											action: "resolve_contradiction",
+											detail: `judge ruled contradiction spurious (op ${item.op_id}); restored to active`,
+										}),
+									);
+									await persistEntry(redis, vector, entry);
+								}
+							}
+							await settleJudgeItem(redis, item.op_id, "applied", { run_id: runId });
+							verdictsApplied += 1;
+						} else {
+							await settleJudgeItem(redis, item.op_id, "skipped", { run_id: runId, reason: verdict.reason });
+							verdictsSkipped += 1;
+						}
 					} else {
 						verdictsSkipped += 1;
 					}
