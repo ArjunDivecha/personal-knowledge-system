@@ -95,6 +95,11 @@ class Extractor:
           4. raise only if even repair cannot yield a list — callers treat that
              as a per-item soft failure (skip + retry), never an all-or-nothing
              abort of the run.
+
+        Every return path goes through _normalize_entry_list, which guarantees a
+        flat list of dicts. Repair of concatenated arrays ("Extra data") can yield
+        a list of lists; callers do raw.get(...) and crashed on that shape
+        ('list' object has no attribute 'get' — the News-repo nightly failure).
         """
         if not text:
             return []
@@ -111,7 +116,7 @@ class Extractor:
 
         try:
             parsed = json.loads(candidate)
-            return parsed if isinstance(parsed, list) else []
+            return self._normalize_entry_list(parsed) if isinstance(parsed, list) else []
         except json.JSONDecodeError as strict_error:
             try:
                 from json_repair import repair_json
@@ -129,7 +134,7 @@ class Extractor:
                     f"recovered {len(repaired)} item(s).",
                     flush=True,
                 )
-                return repaired
+                return self._normalize_entry_list(repaired)
             if isinstance(repaired, dict) and repaired:
                 print(
                     f"  ⚠ Repaired malformed model JSON ({strict_error}); "
@@ -140,6 +145,30 @@ class Extractor:
             raise ValueError(
                 f"Model JSON repair did not yield a usable array (strict={strict_error})"
             ) from strict_error
+
+    def _normalize_entry_list(self, items: list) -> list[dict]:
+        """Flatten one level of nested lists and keep only dicts.
+
+        Guarantees the _extract_json_array contract (list of dicts) regardless
+        of what strict parsing or json_repair produced. Dropped items are logged
+        loudly so malformed model output is visible, never silently discarded.
+        """
+        flat: list = []
+        for item in items:
+            if isinstance(item, list):
+                flat.extend(item)
+            else:
+                flat.append(item)
+
+        entries = [item for item in flat if isinstance(item, dict)]
+        dropped = len(flat) - len(entries)
+        if dropped:
+            print(
+                f"  ⚠ Dropped {dropped} non-object item(s) from model JSON "
+                f"(kept {len(entries)} dict entries).",
+                flush=True,
+            )
+        return entries
 
     def _parse_frontmatter(self, content: str) -> tuple[dict, str]:
         """Parse a minimal YAML-style frontmatter block from markdown."""

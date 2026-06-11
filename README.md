@@ -380,6 +380,25 @@ launchd wrapper is `scripts/run_nightly_ingestion.sh`; it sources the repo
 root `.env`, expands launchd's minimal `PATH`, verifies the ingestion venv,
 and fails fast if the Claude CLI cannot be found.
 
+#### Nightly resilience (2026-06-10 re-architecture)
+
+- **Upstash storage preflight**: before any stage runs, the wrapper polls the
+  Redis + Vector REST endpoints every 2 minutes for up to 30 minutes. A
+  transient cloud outage at 23:00 becomes a short delay, not a dead night.
+- **Per-stage retry**: a hard-failed stage is retried once after 5 minutes
+  (`NIGHTLY_STAGE_RETRY_DELAY` to tune). Exit code 2 (partial) is not retried.
+- **PARTIAL/WARN semantics**: `ingestion/github/run.py` exits **2** when some
+  repos failed extraction but all successful entries were saved (failed repos
+  auto-retry next night). The night is recorded as OK-with-warnings
+  (`warn_stages` in `nightly_ingestion_success.json`), not FAILED. Only hard
+  failures (storage down, save failed) fail the night.
+- **02:00 second chance**: `scripts/run_second_chance.sh`
+  (launchd `com.arjun.knowledge-ingestion-2am`) re-runs the whole idempotent
+  ingestion if the 23:00 run failed or never completed.
+- **07:00 NightWatch digest**: `/Users/arjundivecha/Dropbox/AAA Backup/A
+  Working/NightWatch/night_supervisor.py` reads the success marker and sends a
+  consolidated morning iMessage covering this and every other overnight system.
+
 #### Claude Billing Route (SDK primary, API fallback, never skip)
 
 Both the local wrapper and all three ingestion workflows

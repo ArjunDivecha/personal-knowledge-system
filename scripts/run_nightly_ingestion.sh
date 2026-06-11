@@ -73,6 +73,13 @@ log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG"; }
 # ---------------------------------------------------------------------------
 STAGE_STATUS=()
 
+# Retry delay for a failed stage (seconds). One retry per stage: most nightly
+# failures are transient (Upstash blip, API 503, rate limit) and succeed on a
+# second attempt minutes later. rc=2 is PARTIAL/WARN (e.g. GitHub saved 55/56
+# repos) — retrying immediately would not help (failed repos retry tomorrow),
+# so rc=2 is never retried.
+STAGE_RETRY_DELAY="${NIGHTLY_STAGE_RETRY_DELAY:-300}"
+
 run_stage() {
     local name="$1"; shift
     log "--- $name starting ---"
@@ -81,8 +88,18 @@ run_stage() {
     "$@" 2>&1 | tee -a "$LOG"
     rc=${PIPESTATUS[0]}
     set -e
-    if [ "$rc" -ne 0 ]; then
-        log "--- $name FAILED (exit $rc); continuing with remaining stages ---"
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+        log "--- $name FAILED (exit $rc); retrying once in ${STAGE_RETRY_DELAY}s ---"
+        sleep "$STAGE_RETRY_DELAY"
+        set +e
+        "$@" 2>&1 | tee -a "$LOG"
+        rc=${PIPESTATUS[0]}
+        set -e
+    fi
+    if [ "$rc" -eq 2 ]; then
+        log "--- $name PARTIAL (exit 2); recorded as warning, not a failed night ---"
+    elif [ "$rc" -ne 0 ]; then
+        log "--- $name FAILED (exit $rc) after retry; continuing with remaining stages ---"
     else
         log "--- $name done ---"
     fi
@@ -134,6 +151,39 @@ else
     log "API fallback controls: model=${PKS_SDK_MODEL}; per-call budget=${PKS_SDK_MAX_BUDGET_USD}; reserve=${PKS_API_FALLBACK_RESERVE_USD}; run budget=${PKS_API_FALLBACK_RUN_MAX_BUDGET_USD}; call cap=${PKS_API_FALLBACK_MAX_CALLS}; budget file=${PKS_API_FALLBACK_BUDGET_FILE}."
 fi
 
+# Pre-flight: Upstash storage reachability with patient wait. The May 28
+# failure mode: a transient vector-store outage at exactly 23:00 killed all
+# three stages in 4 seconds. Instead of dying instantly, poll Redis + Vector
+# REST endpoints every 2 minutes for up to 30 minutes before starting; a blip
+# becomes a short delay instead of a dead night. If storage is still down
+# after 30 minutes, fail loudly (the 02:00 second-chance run retries).
+STORAGE_WAIT_MAX_MIN="${NIGHTLY_STORAGE_WAIT_MAX_MIN:-30}"
+storage_reachable() {
+    local redis_ok vector_ok
+    redis_ok=$(curl -s -m 15 -o /dev/null -w "%{http_code}" \
+        -H "Authorization: Bearer ${UPSTASH_REDIS_REST_TOKEN:-}" \
+        "${UPSTASH_REDIS_REST_URL:-http://invalid}/ping" || echo 000)
+    vector_ok=$(curl -s -m 15 -o /dev/null -w "%{http_code}" \
+        -H "Authorization: Bearer ${UPSTASH_VECTOR_REST_TOKEN:-}" \
+        "${UPSTASH_VECTOR_REST_URL:-http://invalid}/info" || echo 000)
+    [ "$redis_ok" = "200" ] && [ "$vector_ok" = "200" ]
+}
+STORAGE_OK=0
+for ((attempt = 0; attempt <= STORAGE_WAIT_MAX_MIN / 2; attempt++)); do
+    if storage_reachable; then
+        STORAGE_OK=1
+        [ "$attempt" -gt 0 ] && log "Storage preflight: recovered after $((attempt * 2)) min wait."
+        break
+    fi
+    log "Storage preflight: Upstash Redis/Vector unreachable (attempt $((attempt + 1))); waiting 120s..."
+    sleep 120
+done
+if [ "$STORAGE_OK" -ne 1 ]; then
+    log "FATAL: Upstash storage still unreachable after ${STORAGE_WAIT_MAX_MIN} min. Aborting; the 02:00 second-chance run will retry."
+    exit 1
+fi
+log "Storage preflight: Upstash Redis + Vector reachable."
+
 # --------------------------------------------------------------------------
 # Each pipeline is an isolated stage: a failure in one does not stop the others.
 # Twitter / GitHub / Agent sessions are "hard" stages (a failure fails the run
@@ -156,10 +206,17 @@ run_stage "Dream judge" "$VENV/bin/python" "$INGESTION/dream_judge/run.py"
 # --------------------------------------------------------------------------
 HARD_FAILURES=()
 SOFT_FAILURES=()
+WARN_STAGES=()
 for entry in "${STAGE_STATUS[@]}"; do
     name="${entry%=*}"
     rc="${entry##*=}"
-    if [ "$rc" -ne 0 ]; then
+    if [ "$rc" -eq 2 ]; then
+        # rc=2 = PARTIAL: the stage saved its successful work and the failed
+        # items auto-retry next run (e.g. 1 of 56 repos). A warning, not a
+        # failed night — the old behavior stamped the whole night FAILED for
+        # one flaky repo, which buried real failures in noise.
+        WARN_STAGES+=("$name(partial)")
+    elif [ "$rc" -ne 0 ]; then
         if [ "$name" = "Dream judge" ]; then
             SOFT_FAILURES+=("$name(rc=$rc)")
         else
@@ -172,8 +229,8 @@ OVERALL_OK="true"
 if [ "${#HARD_FAILURES[@]}" -ne 0 ]; then
     OVERALL_OK="false"
     log "NIGHTLY RESULT: FAILED — hard stage failures: ${HARD_FAILURES[*]}"
-elif [ "${#SOFT_FAILURES[@]}" -ne 0 ]; then
-    log "NIGHTLY RESULT: OK with tolerated soft failures: ${SOFT_FAILURES[*]}"
+elif [ "${#WARN_STAGES[@]}" -ne 0 ] || [ "${#SOFT_FAILURES[@]}" -ne 0 ]; then
+    log "NIGHTLY RESULT: OK with warnings: ${WARN_STAGES[*]:-} ${SOFT_FAILURES[*]:-}"
 else
     log "NIGHTLY RESULT: OK — all stages succeeded"
 fi
@@ -193,6 +250,11 @@ for line in sys.stdin.read().splitlines():
 print(json.dumps(stages))
 ')
 FAILED_STAGES_JSON=$(printf '%s\n' "${HARD_FAILURES[@]:-}" "${SOFT_FAILURES[@]:-}" | "$VENV/bin/python" -c '
+import json, sys
+items = [line for line in sys.stdin.read().splitlines() if line.strip()]
+print(json.dumps(items))
+')
+WARN_STAGES_JSON=$(printf '%s\n' "${WARN_STAGES[@]:-}" | "$VENV/bin/python" -c '
 import json, sys
 items = [line for line in sys.stdin.read().splitlines() if line.strip()]
 print(json.dumps(items))
@@ -238,7 +300,8 @@ cat > "$SUCCESS_MARKER" <<EOF
   "agent_session_redis_write_failed": $AGENT_SESSION_REDIS_WRITE_FAILED_JSON,
   "ok": $OVERALL_OK,
   "stages": $STAGES_JSON,
-  "failed_stages": $FAILED_STAGES_JSON
+  "failed_stages": $FAILED_STAGES_JSON,
+  "warn_stages": $WARN_STAGES_JSON
 }
 EOF
 

@@ -550,7 +550,9 @@ if __name__ == "__main__":
     )
 
     # Loud, non-fatal-to-the-night signal: if any repo failed extraction, the
-    # good repos were still saved above, but exit non-zero so the nightly
-    # wrapper records this stage as failed (those repos retry next run).
+    # good repos were still saved above. Exit 2 = PARTIAL/WARN — the nightly
+    # wrapper records a warning (not a failed night) and the failed repos
+    # retry automatically next run. Hard failures (storage down, save failed)
+    # still raise/exit 1 elsewhere and DO fail the night.
     if _LAST_RUN_ERROR_COUNT:
-        sys.exit(1)
+        sys.exit(2)
