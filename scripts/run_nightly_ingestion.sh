@@ -39,7 +39,11 @@ fi
 # switches to API fallback instead of skipping the overnight run.
 export PKS_ALLOW_ANTHROPIC_API_FALLBACK="${PKS_ALLOW_ANTHROPIC_API_FALLBACK:-0}"
 export PKS_SDK_MAX_TURNS="${PKS_SDK_MAX_TURNS:-4}"
-export PKS_SDK_MAX_BUDGET_USD="${PKS_SDK_MAX_BUDGET_USD:-0.25}"
+export PKS_SDK_QUERY_TIMEOUT_SECONDS="${PKS_SDK_QUERY_TIMEOUT_SECONDS:-240}"
+PKS_SDK_MAX_BUDGET_USD_WAS_SET="${PKS_SDK_MAX_BUDGET_USD+x}"
+export PKS_SUBSCRIPTION_SDK_MAX_BUDGET_USD="${PKS_SUBSCRIPTION_SDK_MAX_BUDGET_USD:-0.75}"
+export PKS_API_FALLBACK_SDK_MAX_BUDGET_USD="${PKS_API_FALLBACK_SDK_MAX_BUDGET_USD:-0.25}"
+export PKS_SDK_MAX_BUDGET_USD="${PKS_SDK_MAX_BUDGET_USD:-$PKS_SUBSCRIPTION_SDK_MAX_BUDGET_USD}"
 export PKS_API_FALLBACK_RESERVE_USD="${PKS_API_FALLBACK_RESERVE_USD:-0.25}"
 export PKS_API_FALLBACK_RUN_MAX_BUDGET_USD="${PKS_API_FALLBACK_RUN_MAX_BUDGET_USD:-5.00}"
 export PKS_API_FALLBACK_MAX_CALLS="${PKS_API_FALLBACK_MAX_CALLS:-200}"
@@ -116,7 +120,7 @@ if ! ~/agent-sdk-venv/bin/python3 -c "from claude_agent_sdk import query" 2>/dev
     exit 1
 fi
 log "Agent SDK: OK"
-log "LLM billing policy: Agent SDK primary; API fallback route=${PKS_ALLOW_ANTHROPIC_API_FALLBACK}; model=${PKS_SDK_MODEL}; per-call budget=${PKS_SDK_MAX_BUDGET_USD}; fallback reserve=${PKS_API_FALLBACK_RESERVE_USD}; fallback run budget=${PKS_API_FALLBACK_RUN_MAX_BUDGET_USD}; fallback call cap=${PKS_API_FALLBACK_MAX_CALLS}; fallback budget file=${PKS_API_FALLBACK_BUDGET_FILE}; Dream API fallback=${DREAM_ALLOW_ANTHROPIC_API_FALLBACK}"
+log "LLM billing policy: Agent SDK primary; API fallback route=${PKS_ALLOW_ANTHROPIC_API_FALLBACK}; model=${PKS_SDK_MODEL}; per-call budget=${PKS_SDK_MAX_BUDGET_USD}; query timeout=${PKS_SDK_QUERY_TIMEOUT_SECONDS}s; fallback reserve=${PKS_API_FALLBACK_RESERVE_USD}; fallback run budget=${PKS_API_FALLBACK_RUN_MAX_BUDGET_USD}; fallback call cap=${PKS_API_FALLBACK_MAX_CALLS}; fallback budget file=${PKS_API_FALLBACK_BUDGET_FILE}; Dream API fallback=${DREAM_ALLOW_ANTHROPIC_API_FALLBACK}"
 
 # Pre-flight: verify ingestion venv exists
 if [ ! -f "$VENV/bin/python" ]; then
@@ -147,6 +151,9 @@ else
         exit 1
     fi
     export PKS_ALLOW_ANTHROPIC_API_FALLBACK=1
+    if [ -z "$PKS_SDK_MAX_BUDGET_USD_WAS_SET" ]; then
+        export PKS_SDK_MAX_BUDGET_USD="$PKS_API_FALLBACK_SDK_MAX_BUDGET_USD"
+    fi
     log "WARNING: Claude Agent SDK real inference preflight failed; using Anthropic API fallback for this overnight run."
     log "API fallback controls: model=${PKS_SDK_MODEL}; per-call budget=${PKS_SDK_MAX_BUDGET_USD}; reserve=${PKS_API_FALLBACK_RESERVE_USD}; run budget=${PKS_API_FALLBACK_RUN_MAX_BUDGET_USD}; call cap=${PKS_API_FALLBACK_MAX_CALLS}; budget file=${PKS_API_FALLBACK_BUDGET_FILE}."
 fi

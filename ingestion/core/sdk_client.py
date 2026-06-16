@@ -369,7 +369,7 @@ def sdk_query(prompt: str, max_tokens: int = 4000) -> str:
     # 4.3 — Wall-clock timeout so a stalled Agent SDK call never blocks the
     # nightly pipeline indefinitely.  300 s matches a generous tool-call chain;
     # raise promptly on TimeoutError so the stage is marked FAILED, not hung.
-    SDK_QUERY_TIMEOUT_SECONDS = 300
+    SDK_QUERY_TIMEOUT_SECONDS = _int_env("PKS_SDK_QUERY_TIMEOUT_SECONDS", 300)
     try:
         result = asyncio.run(asyncio.wait_for(_run(), timeout=SDK_QUERY_TIMEOUT_SECONDS))
     except TimeoutError as exc:
