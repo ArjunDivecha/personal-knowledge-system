@@ -1,7 +1,39 @@
 # PKS Nightly Orchestrator Redesign
 
 Date: 2026-06-16
-Status: design ready; implementation not started
+Status: Phase 0-1 in progress (implementation started 2026-06-16)
+
+## Implementation Status
+
+| Phase | Scope | State |
+|---|---|---|
+| 0 | docs + repo guidance only | done |
+| 1 | orchestrator ledger, lock, preflight, report renderer, shadow wrappers; Python tests; NO production mutation | done (32 tests pass) |
+| 2 | async Dream start/status, server-enforced shadow mode, caller-supplied `dream_run_id`, atomic date lock, Worker tests | not started |
+| 3 | run orchestrator manually in shadow, compare with existing nightly artifacts | not started |
+| 4 | install one launchd orchestrator plist (old schedules stay active) | not started |
+| 5 | cut over | not started |
+| 6 | retire old repair scripts | not started |
+
+Phase 1 modules (all shadow-only / non-mutating):
+`orchestrator/{config,ids,states,backends,lock,ledger,preflight,report,dream,stages,engine,cli}.py`,
+entrypoint `scripts/nightly_orchestrator.py`, uninstalled launchd wrapper
+`scripts/run_orchestrator_launchd.sh`, tests `orchestrator/tests/` (32 passing,
+incl. an opt-in live Upstash Lua test proving the production atomic path). The
+Atomicity And Race Contract is implemented in `backends.py` (Lua `EVAL` for
+acquire+fence / heartbeat / check_fence / cas_set) and `lock.py`/`ledger.py`
+(fence-guarded CAS terminal writes).
+
+Phase 1 code lives in the `orchestrator/` package; the production entrypoint is
+`scripts/nightly_orchestrator.py` (CLI: `preflight | run | resume | report`).
+Everything is **shadow-only and non-mutating** in Phase 1: the lock and ledger
+already enforce the Atomicity And Race Contract (atomic acquire+fence via Lua
+`EVAL`, equality-only fence, fence-guarded CAS terminal writes), but no stage
+performs ingestion writes or Dream `applyDreamProposal`. The async Dream Worker
+endpoints (Phase 2) are not built yet; the orchestrator's Dream stages run
+against an injectable shadow Dream client that always reports
+`executed_mode=shadow`, `applied_count=0`. The launchd plist is NOT installed
+(Phase 4); the existing nightly schedules remain the source of truth.
 
 ## Summary
 

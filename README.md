@@ -357,6 +357,13 @@ Dream is Phase 5 work. The live scheduler, audit output, proposal artifacts, det
 
 ### Current Scheduling Model
 
+> **In migration (2026-06-16):** the multi-scheduler model below is being replaced
+> by a single M4-owned production controller — see
+> `docs/pks-nightly-orchestrator-redesign-2026-06-16.md`. The new orchestrator
+> (`orchestrator/` package, entrypoint `scripts/nightly_orchestrator.py`) is being
+> built in phases and is **shadow-only / non-mutating** until cutover. The
+> schedulers listed here remain the production source of truth until Phase 5.
+
 The system currently uses three schedulers for three different jobs:
 
 - GitHub Actions runs Twitter ingestion remotely at `05:40 UTC`
