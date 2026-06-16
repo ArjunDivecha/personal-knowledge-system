@@ -45,6 +45,7 @@ jobs:
           python scripts/ensure_overnight_dream_run.py
 
       - name: Generate sleep report
+        if: always()
         run: |
           python scripts/check_overnight_dream_run.py --allow-on-demand
 

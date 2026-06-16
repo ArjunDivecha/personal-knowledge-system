@@ -39,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-archive-limit", type=int, default=None)
     parser.add_argument("--expected-promotion-limit", type=int, default=DEFAULT_EXPECTED_PROMOTION_LIMIT)
     parser.add_argument("--now-utc")
+    parser.add_argument("--repair-request-timeout-seconds", type=int, default=240)
     parser.add_argument("--post-repair-timeout-seconds", type=int, default=600)
     parser.add_argument("--poll-interval-seconds", type=int, default=20)
     return parser.parse_args()
@@ -59,16 +60,24 @@ def trigger_scheduled_governed_repair(
     base_url: str,
     cron: str,
     scheduled_time_ms: int,
+    timeout_seconds: int,
 ) -> dict[str, Any]:
-    response = requests.post(
-        f"{base_url.rstrip('/')}/ops/dream/run_scheduled_governed",
-        headers=_operator_headers(),
-        json={
-            "cron": cron,
-            "scheduled_time": scheduled_time_ms,
-        },
-        timeout=240,
-    )
+    try:
+        response = requests.post(
+            f"{base_url.rstrip('/')}/ops/dream/run_scheduled_governed",
+            headers=_operator_headers(),
+            json={
+                "cron": cron,
+                "scheduled_time": scheduled_time_ms,
+            },
+            timeout=timeout_seconds,
+        )
+    except requests.exceptions.Timeout:
+        return {
+            "status": "repair_request_timed_out",
+            "possible_in_flight": True,
+            "timeout_seconds": timeout_seconds,
+        }
     response.raise_for_status()
     payload = response.json()
     if not isinstance(payload, dict):
@@ -115,8 +124,11 @@ def main() -> int:
             base_url=args.base_url,
             cron=f"operator-repair {args.cron_minute_utc} {args.cron_hour_utc} * * *",
             scheduled_time_ms=int(expected_boundary.timestamp() * 1000),
+            timeout_seconds=args.repair_request_timeout_seconds,
         )
         print(f"Repair run status: {repair_result.get('status')}")
+        if repair_result.get("possible_in_flight") is True:
+            print("Repair request timed out before a response; polling for completion.")
 
     deadline = time.time() + max(0, args.post_repair_timeout_seconds)
     dream_run_after: dict[str, Any] = {}
