@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-06-17T16:19:38Z",
+  "run_date": "2026-06-16",
+  "status": "phase4_shadow_passed_legacy_failure_repaired",
+  "phase4_shadow_sidecar": {
+    "ledger_path": "ingestion/checkpoints/orchestrator_runs/2026-06-16.json",
+    "report_json": "scripts/reports/pks-nightly-2026-06-16.json",
+    "report_md": "scripts/reports/pks-nightly-2026-06-16.md",
+    "orchestrator_run_id": "pksn_20260616_222500_e8e6b9c6",
+    "dream_run_id": "dga_20260616_e8e6b9c6",
+    "ledger_status": "completed_with_holds",
+    "current_stage": "DONE",
+    "mode": "shadow",
+    "started_at": "2026-06-16T22:25:00-07:00",
+    "completed_at": "2026-06-16T22:25:51-07:00",
+    "scheduled_launchd_followups": [
+      "2026-06-16 23:20 PDT: existing completed ledger; no-op",
+      "2026-06-16 23:50 PDT through 2026-06-17 08:50 PDT: repeated supervise no-ops against completed run_date 2026-06-16"
+    ],
+    "ingestion_deltas": {
+      "INGEST_TWITTER": 0,
+      "INGEST_GITHUB": 0,
+      "INGEST_AGENT_SESSIONS": 0
+    }
+  },
+  "worker_dream_status": {
+    "source": "GET /ops/dream/scheduled_governed/status?run_id=dga_20260616_e8e6b9c6",
+    "state": "terminal",
+    "status": "completed_shadow",
+    "requested_mode": "shadow",
+    "executed_mode": "shadow",
+    "applied_count": 0,
+    "held_count": 12,
+    "operation_count": 72,
+    "selected_operation_count": 60,
+    "held_operation_count": 12,
+    "proposal_id": "dpr_2026-06-17T05-25-14-537Z",
+    "grade_id": "dpg_2026-06-17T05-25-21-509Z",
+    "grade_status": "passed",
+    "risk_score": "medium",
+    "errors": []
+  },
+  "mutation_assessment": {
+    "phase4_sidecar_mutated_active_memory": false,
+    "evidence": [
+      "orchestrator ingestion stages were shadow no-ops with saved=0",
+      "Worker Dream executed_mode=shadow",
+      "Worker Dream applied_count=0"
+    ],
+    "legacy_mutation_observed": true,
+    "legacy_mutation_note": "The legacy 02:00 second-chance run mutated storage as expected for the still-active source-of-truth ingestion path; this is separate from the Phase 4 sidecar."
+  },
+  "legacy_comparison": {
+    "nightly_log": "ingestion/logs/nightly/2026-06-17.log",
+    "second_chance_log": "ingestion/logs/nightly/second_chance_2026-06-17.log",
+    "second_chance_started": "2026-06-17T02:00:05-07:00",
+    "second_chance_completed": "2026-06-17T09:12:07-07:00",
+    "final_verdict": "FAILED",
+    "failed_stages": [
+      "Twitter ingestion(rc=1)"
+    ],
+    "twitter_failure": {
+      "reason": "Remote incremental Twitter runs require Redis-backed state; effective state source was file.",
+      "repair_applied": "ingestion/twitter/run.py --sync-state-only",
+      "verification": "ingestion/twitter/run.py --require-redis-state exited 0 from Redis state with no new tweets to process"
+    },
+    "github_ingestion": {
+      "status": "completed",
+      "repositories_processed": 56,
+      "entries_saved": 2619,
+      "processed_github_markers_after_run": 56,
+      "processed_github_agent_context_markers_after_run": 14
+    },
+    "agent_sessions_ingestion": {
+      "status": "completed",
+      "files_yielded_entries": 23,
+      "entries_saved": 88,
+      "checkpoint_source_after_run": "file",
+      "redis_write_failed": false
+    },
+    "dream_judge": {
+      "status": "completed",
+      "pending_items": 0
+    }
+  },
+  "scheduler_status_after_check": {
+    "com.arjun.pks-nightly-orchestrator.shadow": "loaded, not running, last_exit_code=0",
+    "com.arjun.knowledge-ingestion": "loaded, not running, restored during check after manual bootout the prior evening",
+    "com.arjun.knowledge-ingestion-2am": "loaded, not running, last_exit_code=1 from repaired legacy run"
+  },
+  "storage_snapshot_after_legacy_run": {
+    "knowledge_entries": 2856,
+    "project_entries": 0,
+    "total_vectors": 8849,
+    "processed_counts": {
+      "github": 56,
+      "github_agent_context": 14,
+      "twitter": 0,
+      "gmail": 0
+    }
+  },
+  "verification_commands": [
+    "ingestion/.venv/bin/python scripts/nightly_orchestrator.py report --date 2026-06-16",
+    "ingestion/.venv/bin/python -m py_compile ingestion/github/run.py ingestion/twitter/run.py scripts/nightly_orchestrator.py orchestrator/*.py",
+    "ingestion/.venv/bin/python ingestion/twitter/run.py --sync-state-only",
+    "ingestion/.venv/bin/python ingestion/twitter/run.py --require-redis-state"
+  ],
+  "conclusion": "Phase 4 launchd shadow sidecar passed its first-night acceptance criteria. The legacy source-of-truth ingestion path did not pass overnight because Twitter Redis state was missing; that state was repaired and verified after the run."
+}

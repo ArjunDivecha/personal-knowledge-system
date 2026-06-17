@@ -238,6 +238,19 @@ def run_github_ingestion(
         "agent_context_files": 0,
         "errors": 0,
     }
+    saved_live_entries = 0
+
+    def flush_entries(entries: list[dict], label: str) -> None:
+        """Persist successful extraction work immediately during live runs."""
+        nonlocal saved_live_entries
+        if dry_run or not storage or not entries:
+            return
+        print(f"    ↳ Saving {len(entries)} {label} entries...", flush=True)
+        batch_size = 20
+        for start in range(0, len(entries), batch_size):
+            storage.save_knowledge_entries_batch(entries[start:start + batch_size])
+        storage.update_thin_index(entries)
+        saved_live_entries += len(entries)
     
     for i, repo in enumerate(repos_to_process, 1):
         repo_name = repo["name"]
@@ -255,6 +268,7 @@ def run_github_ingestion(
             readme = None
             baseline_entry_count = 0
             baseline_attempted = False
+            baseline_had_errors = False
             if resume and not should_process_baseline:
                 print(f"  → Repo baseline unchanged ({baseline_reason}), skipping README/commits/code")
             else:
@@ -274,6 +288,8 @@ def run_github_ingestion(
                     )
                     check_extractor_error(extractor, "README")
                     repo_entries.extend(entries)
+                    all_entries.extend(entries)
+                    flush_entries(entries, f"{repo_name} README")
                     baseline_entry_count += len(entries)
                     stats["readme_entries"] += len(entries)
                     print(f"{len(entries)} entries")
@@ -293,6 +309,8 @@ def run_github_ingestion(
                         )
                         check_extractor_error(extractor, "commit")
                         repo_entries.extend(entries)
+                        all_entries.extend(entries)
+                        flush_entries(entries, f"{repo_name} commit")
                         baseline_entry_count += len(entries)
                         stats["commit_entries"] += len(entries)
                         print(f"{len(entries)} entries from {len(commits)} commits")
@@ -312,6 +330,8 @@ def run_github_ingestion(
                         )
                         check_extractor_error(extractor, "code comment")
                         repo_entries.extend(entries)
+                        all_entries.extend(entries)
+                        flush_entries(entries, f"{repo_name} code")
                         baseline_entry_count += len(entries)
                         stats["code_entries"] += len(entries)
                         print(f"{len(entries)} entries from {len(code_files)} files")
@@ -323,18 +343,40 @@ def run_github_ingestion(
                 get_markdown_files = getattr(github, "get_markdown_files", None)
                 md_files = get_markdown_files(repo_name) if callable(get_markdown_files) else []
                 if md_files:
-                    entries = extractor.extract_from_markdown_files(
-                        md_files,
-                        repo_name,
-                        repo_url=repo_url,
-                        repo_full_name=repo_full_name,
+                    print(f"{len(md_files)} files")
+                    markdown_entries = 0
+                    markdown_files_ok = 0
+                    for md_file in md_files:
+                        md_path = md_file.get("path", "unknown")
+                        print(f"    - {md_path}...", end=" ", flush=True)
+                        extractor.last_error = None
+                        entries = extractor.extract_from_markdown_files(
+                            [md_file],
+                            repo_name,
+                            repo_url=repo_url,
+                            repo_full_name=repo_full_name,
+                        )
+                        last_error = getattr(extractor, "last_error", None)
+                        if last_error:
+                            print(f"failed: {last_error}")
+                            extractor.last_error = None
+                            stats["errors"] += 1
+                            failed_repos.append(f"{repo_name}:{md_path}")
+                            baseline_had_errors = True
+                            continue
+                        repo_entries.extend(entries)
+                        all_entries.extend(entries)
+                        flush_entries(entries, f"{repo_name} markdown")
+                        baseline_entry_count += len(entries)
+                        stats["markdown_entries"] += len(entries)
+                        stats["markdown_files"] += 1
+                        markdown_entries += len(entries)
+                        markdown_files_ok += 1
+                        print(f"{len(entries)} entries")
+                    print(
+                        f"  → Markdown docs summary: {markdown_entries} entries "
+                        f"from {markdown_files_ok}/{len(md_files)} files"
                     )
-                    check_extractor_error(extractor, "markdown")
-                    repo_entries.extend(entries)
-                    baseline_entry_count += len(entries)
-                    stats["markdown_entries"] += len(entries)
-                    stats["markdown_files"] += len(md_files)
-                    print(f"{len(entries)} entries from {len(md_files)} files")
                 else:
                     print("none found")
 
@@ -362,6 +404,8 @@ def run_github_ingestion(
                     )
                     check_extractor_error(extractor, "agent context")
                     repo_entries.extend(entries)
+                    all_entries.extend(entries)
+                    flush_entries(entries, f"{repo_name} agent-context")
                     agent_entries += len(entries)
                     processed_artifacts += 1
 
@@ -383,11 +427,10 @@ def run_github_ingestion(
             else:
                 print("none found")
             
-            all_entries.extend(repo_entries)
             stats["repos_processed"] += 1
             
             # Defer: mark AFTER durable save (collected in repos_to_mark)
-            if storage and baseline_attempted:
+            if storage and baseline_attempted and not baseline_had_errors:
                 repos_to_mark.append((repo_name, {
                     "entries_count": baseline_entry_count,
                     "has_readme": readme is not None,
@@ -397,6 +440,8 @@ def run_github_ingestion(
                     "updated_at": repo.get("updated_at"),
                     "baseline_signature": build_repo_baseline_signature(repo),
                 }))
+            elif storage and baseline_attempted:
+                print("  → Repo baseline marker withheld because one or more files failed")
             
             # Checkpoint every 5 repos
             if i % 5 == 0:
@@ -445,7 +490,7 @@ def run_github_ingestion(
             json.dump(all_entries, f, indent=2)
         print(f"Saved to {output_path}")
     
-    elif all_entries:
+    elif all_entries and saved_live_entries == 0:
         print(f"Saving {len(all_entries)} entries...")
 
         # Batch save
@@ -463,6 +508,21 @@ def run_github_ingestion(
         # Mark repos and artifacts AFTER durable save — guarantees no source is
         # marked without its entries being persisted. If save threw above, we
         # never reach this block and sources remain eligible for retry.
+        print(f"Marking {len(repos_to_mark)} repos processed ...")
+        for repo_name_mark, repo_meta in repos_to_mark:
+            storage.mark_source_processed("github", repo_name_mark, repo_meta)
+        print(f"Marking {len(artifacts_to_mark)} agent-context artifacts processed ...")
+        for artifact_id, artifact_meta in artifacts_to_mark:
+            storage.mark_source_processed("github_agent_context", artifact_id, artifact_meta)
+        print("  ✓ Dedup markers updated")
+
+    elif all_entries:
+        print(f"Entries already saved incrementally: {saved_live_entries}/{len(all_entries)}")
+
+        # Mark repos and artifacts AFTER all extracted entries for those sources
+        # have been durably flushed. If the process is interrupted before this
+        # point, entries may be safely upserted but the source remains eligible
+        # for retry.
         print(f"Marking {len(repos_to_mark)} repos processed ...")
         for repo_name_mark, repo_meta in repos_to_mark:
             storage.mark_source_processed("github", repo_name_mark, repo_meta)

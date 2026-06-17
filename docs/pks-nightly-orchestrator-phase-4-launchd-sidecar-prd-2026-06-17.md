@@ -1,7 +1,7 @@
 # PKS Nightly Orchestrator Phase 4 PRD
 
 Date: 2026-06-17
-Status: implemented + installed 2026-06-16 22:12 PT; first scheduled shadow night pending (overnight)
+Status: implemented + installed 2026-06-16 22:12 PT; first shadow night passed, legacy comparison found repaired Twitter-state failure
 Owner: PKS nightly orchestrator
 Phase: 4 - launchd shadow sidecar on anchored M4
 
@@ -33,9 +33,12 @@ Bug surfaced + fixed: `resume()`'s catch-up cutoff compared `now` to *today's*
 `missed`. `supervise()` uses a target-aware cutoff (08:45 the morning after the
 target night); unit-tested.
 
-Pending (rollout steps 9-11, overnight): first scheduled fire at 23:20 PT
-targets `2026-06-16`; capture `phase4-launchd-shadow-2026-06-16.{json,md}` and
-compare with the legacy nightly, then commit.
+First-night evidence captured in
+`scripts/reports/phase4-launchd-shadow-2026-06-16.{json,md}`. The Phase 4
+sidecar passed: terminal `completed_with_holds`, Worker Dream
+`completed_shadow`, `executed_mode=shadow`, and `applied_count=0`. The legacy
+comparison found an independent Twitter ingestion failure caused by missing
+Redis-backed Twitter state; the state was synced and verified after the run.
 
 ## Summary
 
