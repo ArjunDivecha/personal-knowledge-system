@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import date, datetime
+from datetime import date, datetime, time as dtime, timedelta
 from typing import Callable, Optional
 
 from . import config, dream as dreammod, ids, report as reportmod, states
@@ -41,6 +41,28 @@ from .ledger import RunLedger
 from .lock import FencingLock, system_clock
 from .preflight import PreflightDeps, run_preflight
 from .stages import RUN_STAGES, STAGE_EXECUTORS, StageContext
+
+
+# Phase 4 supervisory window (Pacific). The launchd sidecar fires every 30 min
+# from 23:20 to 08:50; this maps each firing to the night it belongs to, or None
+# (skip) outside the window. Pure + injectable so it is unit-testable.
+SUPERVISE_WINDOW_START = dtime(23, 20)   # 23:20:00 .. 23:59:59 -> today
+SUPERVISE_WINDOW_END = dtime(8, 50, 59)  # 00:00:00 .. 08:50:59 -> yesterday
+
+
+def decide_target_date(now: datetime) -> Optional[date]:
+    """Map a Pacific datetime to the run_date it supervises, or None to skip.
+
+    23:20-23:59 -> today (the night that just started);
+    00:00-08:50 -> yesterday (the night in progress);
+    08:51-23:19 -> None (outside the overnight validation window).
+    """
+    t = now.timetz().replace(tzinfo=None) if now.tzinfo else now.time()
+    if t >= SUPERVISE_WINDOW_START:
+        return now.date()
+    if t <= SUPERVISE_WINDOW_END:
+        return now.date() - timedelta(days=1)
+    return None
 
 
 class Orchestrator:
@@ -277,6 +299,41 @@ class Orchestrator:
         print(f"[orchestrator] report: {jpath}\n[orchestrator] report: {mpath}")
         print(f"[orchestrator] verdict: {ledger.doc.get('status')}")
         return 0
+
+    def supervise(self, *, now: Optional[datetime] = None) -> int:
+        """launchd-driven supervisory tick (Phase 4 shadow sidecar).
+
+        Picks the run_date for the current overnight window and delegates to
+        resume(), which already encodes the catch-up policy: terminal -> exit 0;
+        incomplete -> resume (reattaches the same dream_run_id); absent before
+        the 08:45 cutoff -> start the night; absent after the cutoff -> mark
+        missed. Outside the window it is a logged no-op. Never live, never
+        mutating (the launchd env gates both).
+        """
+        now = now or datetime.now(config.PACIFIC)
+        target = decide_target_date(now)
+        if target is None:
+            print(f"[orchestrator] supervise: {now:%Y-%m-%d %H:%M %Z} outside "
+                  f"window [23:20-08:50]; no-op.")
+            return 0
+        rd = target.isoformat()
+        ledger = RunLedger.load(rd)
+        # The catch-up cutoff is 08:45 on the morning AFTER the target night, not
+        # today's 08:45 — an evening start at 23:30 is numerically after 08:45 but
+        # must still START the night. (resume()'s single-day cutoff is wrong for
+        # the evening case, so supervise decides start-vs-missed itself.)
+        cutoff = datetime.combine(target + timedelta(days=1), dtime(8, 45)).replace(
+            tzinfo=config.PACIFIC)
+        if ledger is not None or now < cutoff:
+            # run() no-ops a terminal ledger, resumes an incomplete one (same
+            # dream_run_id), and starts a fresh night when none exists.
+            print(f"[orchestrator] supervise: now {now:%Y-%m-%d %H:%M %Z}; "
+                  f"target run_date {rd}; run/resume.")
+            return self.run(run_date=rd)
+        print(f"[orchestrator] supervise: now {now:%Y-%m-%d %H:%M %Z}; target "
+              f"{rd} has no ledger past the {cutoff:%H:%M} cutoff; marking missed.")
+        self._write_missed(rd)
+        return 1
 
     def preflight(self) -> int:
         result = run_preflight(self.preflight_deps)

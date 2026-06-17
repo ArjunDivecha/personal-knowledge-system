@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+    PKS nightly orchestrator — Phase 4 SHADOW-VALIDATION sidecar.
+    Runs the M4-owned orchestrator nightly in shadow mode against the real async
+    Dream Worker. It does NOT replace the production schedules
+    (com.arjun.knowledge-ingestion / -2am, Cloudflare cron, GitHub sleep report),
+    which remain the user-facing source of truth until Phase 5 cutover.
+
+    The wrapper's `supervise` action is idempotent: each ~30-min firing maps to
+    the correct night and run/resume/skips. RunAtLoad is safe for the same
+    reason (it no-ops outside the 23:20-08:50 window).
+    -->
+    <key>Label</key>
+    <string>com.arjun.pks-nightly-orchestrator.shadow</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/caffeinate</string>
+        <string>-i</string>
+        <string>/Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system/scripts/run_orchestrator_launchd.sh</string>
+        <string>supervise</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Hour</key><integer>23</integer><key>Minute</key><integer>20</integer></dict>
+        <dict><key>Hour</key><integer>23</integer><key>Minute</key><integer>50</integer></dict>
+        <dict><key>Hour</key><integer>0</integer><key>Minute</key><integer>20</integer></dict>
+        <dict><key>Hour</key><integer>0</integer><key>Minute</key><integer>50</integer></dict>
+        <dict><key>Hour</key><integer>1</integer><key>Minute</key><integer>20</integer></dict>
+        <dict><key>Hour</key><integer>1</integer><key>Minute</key><integer>50</integer></dict>
+        <dict><key>Hour</key><integer>2</integer><key>Minute</key><integer>20</integer></dict>
+        <dict><key>Hour</key><integer>2</integer><key>Minute</key><integer>50</integer></dict>
+        <dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>20</integer></dict>
+        <dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>50</integer></dict>
+        <dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>20</integer></dict>
+        <dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>50</integer></dict>
+        <dict><key>Hour</key><integer>5</integer><key>Minute</key><integer>20</integer></dict>
+        <dict><key>Hour</key><integer>5</integer><key>Minute</key><integer>50</integer></dict>
+        <dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>20</integer></dict>
+        <dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>50</integer></dict>
+        <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>20</integer></dict>
+        <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>50</integer></dict>
+        <dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>20</integer></dict>
+        <dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>50</integer></dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system/ingestion/logs/orchestrator/launchd_agent_stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system/ingestion/logs/orchestrator/launchd_agent_stderr.log</string>
+</dict>
+</plist>

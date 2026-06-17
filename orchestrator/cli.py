@@ -41,6 +41,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     rp = sub.add_parser("report", help="Render the report for a date from the ledger.")
     rp.add_argument("--date", default="auto", help="YYYY-MM-DD or auto")
+
+    sub.add_parser("supervise", help="launchd-driven: pick the overnight window's "
+                                     "run date and run/resume/skip (Phase 4 sidecar).")
     return p
 
 
@@ -56,4 +59,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         return orch.resume(run_date=args.date, force_notify=args.force_notify)
     if args.cmd == "report":
         return orch.report(run_date=args.date)
+    if args.cmd == "supervise":
+        return orch.supervise()
     return 2

@@ -1,0 +1,44 @@
+{
+  "phase": 4,
+  "kind": "install_evidence",
+  "installed_at_local": "2026-06-16 22:12 PDT",
+  "launchagent_plist": "/Users/arjundivecha/Library/LaunchAgents/com.arjun.pks-nightly-orchestrator.shadow.plist",
+  "label": "com.arjun.pks-nightly-orchestrator.shadow",
+  "schedule": "RunAtLoad + StartCalendarInterval every ~30 min 23:20-08:50 Pacific",
+  "shadow_env": {
+    "PKS_ORCH_DREAM_CLIENT": "http (real async Dream Worker, not the Phase 1 simulator)",
+    "PKS_ORCH_ALLOW_MUTATION": "0",
+    "PKS_NIGHTLY_SOURCE_OF_TRUTH": "legacy",
+    "live_apply": "disabled (no PKS_ORCH_DREAM_LIVE_ENABLED; no --mode live)"
+  },
+  "static_validation": {
+    "plutil_lint": "OK",
+    "bash_n_wrapper": "OK",
+    "bash_n_installer": "OK",
+    "pytest_orchestrator": "47 passed",
+    "git_diff_check": "clean"
+  },
+  "runtime_validation": {
+    "wrapper_supervise_outside_window": "no-op, exit 0",
+    "wrapper_preflight": "status=completed, auth_route=sdk, exit 0, no browser",
+    "RunAtLoad_fire": "supervise no-op outside window; last exit code 0; no ledger created"
+  },
+  "schedulers_untouched": {
+    "com.arjun.knowledge-ingestion": "LOADED",
+    "com.arjun.knowledge-ingestion-2am": "LOADED",
+    "cloudflare_cron": "10 7 * * * (wrangler.json unchanged)",
+    "github_nightly_sleep_report": "45 8 * * * (nightly-sleep-report.yml unchanged)"
+  },
+  "bug_surfaced_and_fixed": "resume() catch-up cutoff used TODAY 08:45, so an evening 23:20 start was mislabeled missed. supervise() now uses the morning-after-target 08:45 cutoff. Unit test added.",
+  "first_scheduled_night": {
+    "first_fire": "23:20 PT 2026-06-16 -> run_date 2026-06-16",
+    "pending_criteria": [
+      "first real-date run terminal-OK",
+      "uses HttpDreamClient",
+      "completed_shadow / executed_mode shadow / applied_count 0",
+      "report JSON+MD exist",
+      "no unexpected active-memory count change"
+    ],
+    "evidence_file": "scripts/reports/phase4-launchd-shadow-2026-06-16.{json,md} (after tonight)"
+  }
+}

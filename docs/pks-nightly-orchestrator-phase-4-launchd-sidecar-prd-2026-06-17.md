@@ -1,9 +1,41 @@
 # PKS Nightly Orchestrator Phase 4 PRD
 
 Date: 2026-06-17
-Status: planned - implementation not started
+Status: implemented + installed 2026-06-16 22:12 PT; first scheduled shadow night pending (overnight)
 Owner: PKS nightly orchestrator
 Phase: 4 - launchd shadow sidecar on anchored M4
+
+## Implementation Status (2026-06-16 PT)
+
+Rollout steps 1-8 done; the sidecar is installed and live, shadow-only, old
+schedulers untouched. Evidence:
+`scripts/reports/phase4-launchd-shadow-install.{json,md}`.
+
+- `orchestrator/engine.py`: pure `decide_target_date(now)` (23:20-23:59 -> today,
+  00:00-08:50 -> yesterday, else skip) + `Orchestrator.supervise(now)`; CLI
+  `supervise` subcommand. 6 window unit tests; full suite **47 pass**.
+- `scripts/run_orchestrator_launchd.sh` v2: `supervise` action + shadow env
+  (`PKS_ORCH_DREAM_CLIENT=http`, `PKS_ORCH_ALLOW_MUTATION=0`,
+  `PKS_NIGHTLY_SOURCE_OF_TRUTH=legacy`, no-browser guards) re-asserted after
+  sourcing `.env`. Idempotent/supervisory.
+- `scripts/com.arjun.pks-nightly-orchestrator.shadow.plist`: RunAtLoad +
+  StartCalendarInterval every ~30 min 23:20-08:50; `caffeinate -i ... supervise`.
+  Passes `plutil -lint`.
+- `scripts/install_orchestrator_launchd_shadow.sh`: install/status/uninstall;
+  touches only the new label; prints old-job status.
+- Installed under `gui/$UID/com.arjun.pks-nightly-orchestrator.shadow`; RunAtLoad
+  fired at 22:12 PT and no-op'd (outside window), exit 0, no ledger created.
+  `com.arjun.knowledge-ingestion` + `-2am` still LOADED; Cloudflare cron
+  `10 7 * * *` and GitHub `nightly-sleep-report.yml` (`45 8 * * *`) unchanged.
+
+Bug surfaced + fixed: `resume()`'s catch-up cutoff compared `now` to *today's*
+08:45, so an evening 23:20 start (numerically after 08:45) was wrongly marked
+`missed`. `supervise()` uses a target-aware cutoff (08:45 the morning after the
+target night); unit-tested.
+
+Pending (rollout steps 9-11, overnight): first scheduled fire at 23:20 PT
+targets `2026-06-16`; capture `phase4-launchd-shadow-2026-06-16.{json,md}` and
+compare with the legacy nightly, then commit.
 
 ## Summary
 

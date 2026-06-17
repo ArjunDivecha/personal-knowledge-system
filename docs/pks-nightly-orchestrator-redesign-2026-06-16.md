@@ -11,7 +11,7 @@ Status: Phase 0-3 complete; Phase 4 PRD written 2026-06-17
 | 1 | orchestrator ledger, lock, preflight, report renderer, shadow wrappers; Python tests; NO production mutation | done (32 tests pass) |
 | 2 | async Dream start/status, server-enforced shadow mode, caller-supplied `dream_run_id`, atomic date lock, Worker tests | done: code/tests, staging deploy + shadow smoke, and production deploy + shadow smoke all passed. See `docs/pks-nightly-orchestrator-phase-2-dream-worker-prd-2026-06-16.md` |
 | 3 | run orchestrator manually in shadow, compare with existing nightly artifacts | PASSED 2026-06-16 PT — shadow proof on 2099-12-29, completed_with_holds, applied_count=0, zero active-memory mutation; 2 client bugs found+fixed. Evidence `scripts/reports/phase3-shadow-run-2099-12-29.{json,md}`. See `docs/pks-nightly-orchestrator-phase-3-manual-shadow-run-prd-2026-06-17.md` |
-| 4 | install one launchd orchestrator plist (old schedules stay active) | PRD written; implementation not started. See `docs/pks-nightly-orchestrator-phase-4-launchd-sidecar-prd-2026-06-17.md` |
+| 4 | install one launchd orchestrator plist (old schedules stay active) | implemented + installed 2026-06-16 PT (shadow sidecar `com.arjun.pks-nightly-orchestrator.shadow`, old jobs untouched, 47 tests pass); first scheduled shadow night pending overnight. Evidence `scripts/reports/phase4-launchd-shadow-install.{json,md}`. See `docs/pks-nightly-orchestrator-phase-4-launchd-sidecar-prd-2026-06-17.md` |
 | 5 | cut over | not started |
 | 6 | retire old repair scripts | not started |
 
