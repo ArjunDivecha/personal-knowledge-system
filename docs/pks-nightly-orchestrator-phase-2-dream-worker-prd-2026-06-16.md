@@ -1,7 +1,7 @@
 # PKS Nightly Orchestrator Phase 2 PRD
 
 Date: 2026-06-16
-Status: code + tests implemented; production deployed + shadow-smoked; staging smoke blocked by Upstash rate limit
+Status: complete; code/tests, staging deploy + shadow smoke, and production deploy + shadow smoke passed
 Owner: PKS nightly orchestrator
 Phase: 2 - async Dream Worker contract
 
@@ -40,12 +40,18 @@ Done (local, non-deploy steps of the Rollout Plan, items 1-4):
 
 Deploy/smoke update (2026-06-16 PT):
 
-- Staging deploy succeeded with the repo `CLOUDFLARE_API_TOKEN`:
+- Staging Upstash was replaced with a fresh isolated Redis/Vector pair because
+  the previous staging Redis was rate-limited even on `/ping`.
+- Staging Worker secrets were refreshed from the new staging resource bundle,
+  then staging deploy succeeded with the repo `CLOUDFLARE_API_TOKEN`:
   `arjun-knowledge-mcp-staging`, version
-  `e6b2eded-39e5-425f-a024-687abe96192a`.
-- Staging scheduled-Dream smoke reached the endpoint but failed before accept
-  because the staging Upstash Redis returned: `Your database has been
-  temporarily rate-limited`. A 45s backoff retry failed the same way.
+  `82fcac5b-1bb7-4d42-8343-520431716ef4`.
+- Staging Redis returned `PONG`, staging fixture seeding completed, and the
+  far-future scheduled-Dream shadow smoke passed against
+  `https://arjun-knowledge-mcp-staging.arjun-divecha.workers.dev` for
+  `2099-12-30`: terminal `completed_shadow`, `executed_mode=shadow`,
+  `applied_count=0`, duplicate start HTTP 200, same-date different-run HTTP
+  409, and smoke status/date-lock cleanup enabled.
 - Production deploy succeeded through `scripts/deploy_cloudflare_worker.sh`:
   `arjun-knowledge-mcp`, version `05bc9425-f57c-4328-bd30-b814b359d9b0`;
   cron remained `10 7 * * *`; live mode remains disabled (no
@@ -56,13 +62,6 @@ Deploy/smoke update (2026-06-16 PT):
   start HTTP 200, same-date different-run HTTP 409, and smoke status/date-lock
   cleanup enabled.
 - Production `/health` returned `status=ok` after deploy.
-
-Remaining blocker:
-
-- Fix or replace the staging Upstash Redis resource, then rerun the staging
-  scheduled-Dream smoke. Code and production shadow behavior are verified, but
-  the staging smoke acceptance criterion remains blocked by staging
-  infrastructure.
 
 ## Summary
 
