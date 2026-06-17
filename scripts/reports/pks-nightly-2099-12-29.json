@@ -1,0 +1,243 @@
+{
+  "complete": true,
+  "completed_at": "2026-06-16T21:54:35-07:00",
+  "dream": {
+    "applied_count": 0,
+    "dream_run_id": "dga_20991229_3caaf64c",
+    "dream_status": "completed_shadow",
+    "executed_mode": "shadow",
+    "requested_mode": "shadow"
+  },
+  "fencing_token": 2,
+  "held_ops": [
+    "DREAM_VERIFY"
+  ],
+  "ingestion_deltas": [
+    {
+      "before": 0,
+      "explained": true,
+      "explanation": null,
+      "material": false,
+      "saved": 0,
+      "stage": "INGEST_TWITTER"
+    },
+    {
+      "before": 0,
+      "explained": true,
+      "explanation": null,
+      "material": false,
+      "saved": 0,
+      "stage": "INGEST_GITHUB"
+    },
+    {
+      "before": 0,
+      "explained": true,
+      "explanation": null,
+      "material": false,
+      "saved": 0,
+      "stage": "INGEST_AGENT_SESSIONS"
+    }
+  ],
+  "mode": "shadow",
+  "orchestrator_run_id": "pksn_20991229_215107_3caaf64c",
+  "pending_stages": [],
+  "run_date": "2099-12-29",
+  "stages": [
+    {
+      "attempt": 1,
+      "counts": {},
+      "errors": [],
+      "stage": "INIT",
+      "status": "completed",
+      "warnings": []
+    },
+    {
+      "attempt": 1,
+      "counts": {},
+      "errors": [],
+      "stage": "LOCKED",
+      "status": "completed",
+      "warnings": []
+    },
+    {
+      "attempt": 0,
+      "counts": {
+        "auth_route": "sdk"
+      },
+      "errors": [],
+      "stage": "PREFLIGHT",
+      "status": "completed",
+      "warnings": []
+    },
+    {
+      "attempt": 0,
+      "counts": {},
+      "errors": [],
+      "stage": "SNAPSHOT_BEFORE",
+      "status": "completed",
+      "warnings": []
+    },
+    {
+      "attempt": 0,
+      "counts": {
+        "before": 0,
+        "executed_mode": "shadow",
+        "note": "shadow no-op (Phase 1): no ingestion writes",
+        "saved": 0
+      },
+      "errors": [],
+      "stage": "INGEST_TWITTER",
+      "status": "completed",
+      "warnings": []
+    },
+    {
+      "attempt": 0,
+      "counts": {
+        "executed_mode": "shadow"
+      },
+      "errors": [],
+      "stage": "VALIDATE_TWITTER",
+      "status": "completed",
+      "warnings": []
+    },
+    {
+      "attempt": 0,
+      "counts": {
+        "before": 0,
+        "executed_mode": "shadow",
+        "note": "shadow no-op (Phase 1): no ingestion writes",
+        "saved": 0
+      },
+      "errors": [],
+      "stage": "INGEST_GITHUB",
+      "status": "completed",
+      "warnings": []
+    },
+    {
+      "attempt": 0,
+      "counts": {
+        "executed_mode": "shadow"
+      },
+      "errors": [],
+      "stage": "VALIDATE_GITHUB",
+      "status": "completed",
+      "warnings": []
+    },
+    {
+      "attempt": 0,
+      "counts": {
+        "before": 0,
+        "executed_mode": "shadow",
+        "note": "shadow no-op (Phase 1): no ingestion writes",
+        "saved": 0
+      },
+      "errors": [],
+      "stage": "INGEST_AGENT_SESSIONS",
+      "status": "completed",
+      "warnings": []
+    },
+    {
+      "attempt": 0,
+      "counts": {
+        "executed_mode": "shadow"
+      },
+      "errors": [],
+      "stage": "VALIDATE_AGENT_SESSIONS",
+      "status": "completed",
+      "warnings": []
+    },
+    {
+      "attempt": 0,
+      "counts": {
+        "executed_mode": "shadow",
+        "reason": "started",
+        "requested_mode": "shadow",
+        "started": true
+      },
+      "errors": [],
+      "stage": "DREAM_START",
+      "status": "completed",
+      "warnings": []
+    },
+    {
+      "attempt": 0,
+      "counts": {
+        "applied_count": 0,
+        "dream_status": "completed_shadow",
+        "executed_mode": "shadow",
+        "outcome": "terminal"
+      },
+      "errors": [],
+      "stage": "DREAM_WAIT",
+      "status": "completed",
+      "warnings": []
+    },
+    {
+      "attempt": 0,
+      "counts": {
+        "applied_count": 0,
+        "dream_status": "completed_shadow",
+        "executed_mode": "shadow",
+        "holds": 12
+      },
+      "errors": [],
+      "stage": "DREAM_VERIFY",
+      "status": "completed_with_holds",
+      "warnings": [
+        "12 held op(s) awaiting judge."
+      ]
+    },
+    {
+      "attempt": 0,
+      "counts": {
+        "mode": "verify_only"
+      },
+      "errors": [],
+      "stage": "INDEX_VERIFY",
+      "status": "completed",
+      "warnings": []
+    },
+    {
+      "attempt": 0,
+      "counts": {},
+      "errors": [],
+      "stage": "CONSISTENCY_VERIFY",
+      "status": "completed",
+      "warnings": []
+    },
+    {
+      "attempt": 0,
+      "counts": {
+        "json": "/Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system/scripts/reports/pks-nightly-2099-12-29.json",
+        "md": "/Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system/scripts/reports/pks-nightly-2099-12-29.md"
+      },
+      "errors": [],
+      "stage": "REPORT_WRITE",
+      "status": "completed",
+      "warnings": []
+    },
+    {
+      "attempt": 0,
+      "counts": {
+        "reason": "shadow_validation: no user alert",
+        "sent": false
+      },
+      "errors": [],
+      "stage": "NOTIFY",
+      "status": "completed",
+      "warnings": []
+    },
+    {
+      "attempt": 0,
+      "counts": {},
+      "errors": [],
+      "stage": "DONE",
+      "status": "completed",
+      "warnings": []
+    }
+  ],
+  "started_at": "2026-06-16T21:51:08-07:00",
+  "tripwires": [],
+  "updated_at": "2026-06-16T21:54:35-07:00",
+  "verdict": "completed_with_holds"
+}

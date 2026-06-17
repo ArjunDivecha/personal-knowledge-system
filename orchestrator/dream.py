@@ -141,6 +141,12 @@ import urllib.request as _urlrequest
 #: cron label the orchestrator stamps on Worker start requests.
 DEFAULT_ORCH_CRON = "m4-orchestrator"
 
+#: A non-default User-Agent is REQUIRED. The Worker sits behind Cloudflare
+#: bot-management, which bans the urllib default signature ("Python-urllib/x.y")
+#: with edge error 1010 (HTTP 403) BEFORE the Worker runs — so the Bearer token
+#: is never even checked. Any custom UA passes. Surfaced by the Phase 3 prod run.
+DEFAULT_USER_AGENT = "pks-nightly-orchestrator/1.0"
+
 
 class DreamClientError(RuntimeError):
     """A recoverable transport/HTTP error talking to the Dream Worker.
@@ -185,16 +191,24 @@ class HttpDreamClient:
 
     def __init__(self, *, base_url: Optional[str] = None, token: Optional[str] = None,
                  timeout: float = 30.0, cron: str = DEFAULT_ORCH_CRON,
+                 user_agent: str = DEFAULT_USER_AGENT,
                  clock: Callable[[], float] = time.time, transport=None):
         self.base_url = (base_url or config.dream_base_url()).rstrip("/")
         self.token = token if token is not None else _os.environ.get("DREAM_OPERATOR_TOKEN", "")
         self.timeout = timeout
         self.cron = cron
+        self.user_agent = user_agent
         self.clock = clock
         self.transport = transport or _urllib_transport
 
     def _headers(self) -> dict:
-        return {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
+        return {
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            # MUST be non-default — see DEFAULT_USER_AGENT (Cloudflare 1010).
+            "User-Agent": self.user_agent,
+        }
 
     def start(self, *, dream_run_id, orchestrator_run_id, run_date, mode,
               fencing_token) -> dict:

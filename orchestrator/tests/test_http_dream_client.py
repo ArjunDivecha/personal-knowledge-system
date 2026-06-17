@@ -39,6 +39,10 @@ def test_start_sends_operator_bearer_token():
     assert call["method"] == "POST"
     assert call["url"] == "https://mcp.test/ops/dream/scheduled_governed/start"
     assert call["headers"]["Authorization"] == "Bearer optok"
+    # A non-default User-Agent is required (Cloudflare 1010 bans urllib's
+    # default signature before the Worker runs). Surfaced by the Phase 3 run.
+    assert call["headers"]["User-Agent"] == D.DEFAULT_USER_AGENT
+    assert "urllib" not in call["headers"]["User-Agent"].lower()
     # body carries the cron + scheduled_time the Worker requires
     assert call["body"]["run_id"] == "dga_20260616_ab12cd34"
     assert call["body"]["cron"] == D.DEFAULT_ORCH_CRON

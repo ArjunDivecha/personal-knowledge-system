@@ -1,0 +1,108 @@
+{
+  "phase": 3,
+  "run_date": "2099-12-29",
+  "generated_at_utc": "2026-06-17T04:55:13.388Z",
+  "check_a_synthetic_shadow_proof": {
+    "preflight_exit": 0,
+    "run_first_attempt_exit": 1,
+    "run_first_attempt_failure": "DREAM_START failed_recoverable: Cloudflare 1010 (urllib UA banned at edge)",
+    "resume_exit": 0,
+    "ledger_path": "ingestion/checkpoints/orchestrator_runs/2099-12-29.json",
+    "report_json_path": "scripts/reports/pks-nightly-2099-12-29.json",
+    "report_md_path": "scripts/reports/pks-nightly-2099-12-29.md",
+    "orchestrator_status": "completed_with_holds",
+    "redis_ledger_mirror": "pks:orchestrator:run:2099-12-29 (present)",
+    "stage_statuses": {
+      "CONSISTENCY_VERIFY": "completed",
+      "DONE": "completed",
+      "DREAM_START": "completed",
+      "DREAM_VERIFY": "completed_with_holds",
+      "DREAM_WAIT": "completed",
+      "INDEX_VERIFY": "completed",
+      "INGEST_AGENT_SESSIONS": "completed",
+      "INGEST_GITHUB": "completed",
+      "INGEST_TWITTER": "completed",
+      "INIT": "completed",
+      "LOCKED": "completed",
+      "NOTIFY": "completed",
+      "PREFLIGHT": "completed",
+      "REPORT_WRITE": "completed",
+      "SNAPSHOT_BEFORE": "completed",
+      "VALIDATE_AGENT_SESSIONS": "completed",
+      "VALIDATE_GITHUB": "completed",
+      "VALIDATE_TWITTER": "completed"
+    },
+    "dream_run_id": "dga_20991229_3caaf64c",
+    "orchestrator_run_id": "pksn_20991229_215107_3caaf64c",
+    "dream_terminal_status": "completed_shadow",
+    "dream_executed_mode": "shadow",
+    "dream_applied_count": 0,
+    "dream_held_count": 12,
+    "dream_client": "HttpDreamClient (PKS_ORCH_DREAM_CLIENT=http)",
+    "report_complete": true,
+    "report_verdict": "completed_with_holds",
+    "thin_index_before": {
+      "stored_topic_count": 100,
+      "stored_project_count": 26,
+      "total_topic_count": 6061,
+      "total_project_count": 26,
+      "archived_count": 6602,
+      "tier_1_count": 921,
+      "tier_2_count": 4177,
+      "tier_3_count": 989
+    },
+    "thin_index_after": {
+      "stored_topic_count": 100,
+      "stored_project_count": 26,
+      "total_topic_count": 6061,
+      "total_project_count": 26,
+      "archived_count": 6602,
+      "tier_1_count": 921,
+      "tier_2_count": 4177,
+      "tier_3_count": 989
+    },
+    "active_memory_mutation_detected": false
+  },
+  "check_b_comparison": {
+    "latest_old_nightly_dream_check": "scripts/reports/check_overnight_dream_run_2026-06-16T162853+0000.json",
+    "latest_old_nightly_dream_sleep_md": "scripts/reports/dream-sleep-2026-06-16.md",
+    "old_nightly_dream": {
+      "run_id": "dga_2026-06-16T16-25-06-235Z",
+      "status": "completed_with_holds",
+      "auto_apply_mode": "governed",
+      "trigger": "scheduled",
+      "applied_count": 60,
+      "operation_count": 82,
+      "held_operation_count": 22
+    },
+    "phase3_dream": {
+      "run_id": "dga_20991229_3caaf64c",
+      "status": "completed_with_holds",
+      "executed_mode": "shadow",
+      "trigger": "m4-orchestrator (async start)",
+      "applied_count": 0,
+      "held_count": 12
+    },
+    "expected_differences": [
+      "Phase 3 ingestion saved counts are 0 (shadow no-ops); old nightly ingests for real.",
+      "Phase 3 Dream is async Worker-backed and SHADOW: applied_count=0, executed_mode=shadow; old nightly is governed live apply (applied_count=60).",
+      "Phase 3 created a fresh Worker proposal/grade/status artifact, but applied_count stayed 0.",
+      "Dream id format differs: new caller-supplied dga_YYYYMMDD_<8hex> vs old synchronous dga_<ISO timestamp>.",
+      "Held counts differ (12 vs 22): different proposal computed at a different time; the PRD does not require count parity."
+    ],
+    "unexpected_differences": [],
+    "health_status_before": "ok",
+    "health_status_after": "ok"
+  },
+  "bugs_surfaced_and_fixed": [
+    "engine.py: dream/orchestrator ids were built from today's date, not run_date; a far-future date would fail the Worker run_date-vs-id validation. Fixed to date.fromisoformat(run_date). Regression test added.",
+    "dream.py HttpDreamClient: urllib default User-Agent is banned by Cloudflare bot-management (edge error 1010, HTTP 403) before the Worker runs. Added a non-default User-Agent header. Regression test added."
+  ],
+  "lingering_synthetic_keys": [
+    "pks:orchestrator:lock/fence/run:2099-12-29 (orchestrator ledger; harmless, far-future)",
+    "dream:scheduled-governed:date-lock:2099-12-29 (36h TTL)",
+    "dream:scheduled-governed:status:dga_20991229_3caaf64c (14d TTL)",
+    "Worker proposal/grade artifacts for the shadow run (no mutation applied)."
+  ],
+  "schedulers_unchanged": "No launchd/GitHub/Cloudflare scheduler state modified. Old nightly remains production source of truth."
+}

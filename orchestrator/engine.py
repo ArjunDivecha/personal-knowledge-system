@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime
+from datetime import date, datetime
 from typing import Callable, Optional
 
 from . import config, dream as dreammod, ids, report as reportmod, states
@@ -179,8 +179,12 @@ class Orchestrator:
             return self.resume(run_date=rd, force_notify=force_notify)
 
         now = datetime.now()
-        identity = ids.make_identity(datetime.now(config.PACIFIC).date(), now,
-                                     suffix=self.suffix)
+        # The ids must encode the RUN DATE (not today): the Atomicity And Race
+        # Contract is keyed on run_date, and the Worker rejects a start whose
+        # run_date does not match the date embedded in the ids. This matters for
+        # any run on a date other than today (e.g. a far-future Phase 3 proof or
+        # a catch-up for yesterday).
+        identity = ids.make_identity(date.fromisoformat(rd), now, suffix=self.suffix)
         lock = FencingLock(self.backend, rd, identity.orchestrator_run_id,
                            clock=self.clock, owner_host=self.owner_host)
         acq = lock.acquire()

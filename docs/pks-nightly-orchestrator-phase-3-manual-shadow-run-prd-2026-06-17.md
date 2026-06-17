@@ -1,9 +1,39 @@
 # PKS Nightly Orchestrator Phase 3 PRD
 
 Date: 2026-06-17
-Status: planned
+Status: PASSED 2026-06-16 PT — synthetic shadow proof + comparison complete, zero active-memory mutation
 Owner: PKS nightly orchestrator
 Phase: 3 - controlled M4 shadow run with Worker-backed Dream
+
+## Result (2026-06-16 PT)
+
+Synthetic shadow proof on `2099-12-29` against production
+`https://mcp.dancing-ganesh.com`, all acceptance criteria met:
+
+- preflight passed with no browser (auth_route=sdk).
+- Run reached terminal `completed_with_holds` (exit 0); every stage terminal-OK;
+  local ledger + Redis mirror (`pks:orchestrator:run:2099-12-29`) present.
+- `DREAM_START` used `HttpDreamClient`; Worker Dream terminal `completed_shadow`,
+  `executed_mode=shadow`, `applied_count=0`, 12 held ops.
+- Report JSON+MD written, `complete=true`.
+- **Zero active-memory mutation:** thin-index counts identical before/after
+  (stored 100 topics / 26 projects, total 6061, archived 6602, tiers 921/4177/989).
+- Comparison vs latest old nightly (`check_overnight_dream_run_2026-06-16T...json`):
+  old nightly applied 60 ops (governed live); Phase 3 applied 0 (shadow). All
+  differences expected; none unexpected.
+- No launchd/scheduler state changed.
+
+Evidence: `scripts/reports/phase3-shadow-run-2099-12-29.{json,md}` and
+`scripts/reports/pks-nightly-2099-12-29.{json,md}`.
+
+Two bugs surfaced and fixed (both with regression tests; full Python suite 41 pass):
+1. `engine.py` built the dream/orchestrator ids from *today's* date, not the
+   `run_date`; a far-future date failed the Worker's run_date-vs-id validation.
+   Fixed to `date.fromisoformat(run_date)`.
+2. `dream.py` `HttpDreamClient` used urllib's default User-Agent, which Cloudflare
+   bot-management bans at the edge (error 1010 / HTTP 403) before the Worker
+   runs. Added a non-default `User-Agent`. The first run attempt failed on this;
+   `resume` (same dream_run_id) succeeded after the fix.
 
 ## Summary
 
