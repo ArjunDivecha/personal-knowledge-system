@@ -98,6 +98,21 @@ def stage_validate_github(ctx): return _ok("VALIDATE_GITHUB", counts={"executed_
 def stage_validate_agent_sessions(ctx): return _ok("VALIDATE_AGENT_SESSIONS", counts={"executed_mode": "shadow"})
 
 
+def _dream_start_rejection(resp: dict) -> str | None:
+    """Return a Worker start rejection code if no background run exists."""
+    if not resp:
+        return None
+    if resp.get("accepted") is False:
+        return str(resp.get("error") or resp.get("status") or "worker_rejected")
+    status = str(resp.get("status") or "")
+    if status.startswith("rejected_"):
+        return status
+    error = str(resp.get("error") or "")
+    if error.startswith("rejected_") or error == "date_locked":
+        return error
+    return None
+
+
 def stage_dream_start(ctx: StageContext) -> dict:
     res = dreammod.ensure_dream_started(
         ctx.dream_client, dream_run_id=ctx.identity.dream_run_id,
@@ -105,6 +120,21 @@ def stage_dream_start(ctx: StageContext) -> dict:
         run_date=ctx.run_date, mode=ctx.effective_mode,
         fencing_token=ctx.lock.fence or 0)
     resp = res.get("response") or {}
+    rejection = _dream_start_rejection(resp)
+    if rejection:
+        return states.make_stage_record(
+            "DREAM_START", status="failed_terminal",
+            counts={
+                "requested_mode": ctx.effective_mode,
+                "executed_mode": resp.get("executed_mode"),
+                "started": False,
+                "reason": rejection,
+                "accepted": False,
+                "blocked_by": resp.get("blocked_by"),
+            },
+            errors=[f"Dream Worker rejected start: {rejection}"],
+            retryable=False,
+            next_action="Inspect the Worker date lock/status; do not wait on this dream_run_id.")
     return _ok("DREAM_START", counts={
         "requested_mode": ctx.effective_mode,
         "executed_mode": resp.get("executed_mode") or (res.get("status") or {}).get("executed_mode"),

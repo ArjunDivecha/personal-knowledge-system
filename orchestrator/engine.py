@@ -56,7 +56,9 @@ class Orchestrator:
                  dream_timeout: float = config.DREAM_FIRST_WAIT_TIMEOUT_SECONDS,
                  suffix: Optional[str] = None):
         self._backend = backend
-        self.dream_client = dream_client or dreammod.Phase1ShadowDreamClient()
+        # Phase 2: default selection honors PKS_ORCH_DREAM_CLIENT (shadow unless
+        # set to "http"); an explicit dream_client always wins (used by tests).
+        self.dream_client = dream_client or dreammod.default_dream_client()
         self.preflight_deps = preflight_deps
         self.clock = clock
         self.sleep = sleep

@@ -130,3 +130,112 @@ def verify_dream_status(status: Optional[dict], requested_mode: str) -> dict:
         problems.append(f"worker rejected: {term}")
     return {"ok": not problems, "problems": problems,
             "holds": int(status.get("held_count") or 0)}
+
+
+# ── Phase 2: real Worker-backed Dream client ─────────────────────────────────
+import json as _json
+import os as _os
+import urllib.error as _urlerror
+import urllib.request as _urlrequest
+
+#: cron label the orchestrator stamps on Worker start requests.
+DEFAULT_ORCH_CRON = "m4-orchestrator"
+
+
+class DreamClientError(RuntimeError):
+    """A recoverable transport/HTTP error talking to the Dream Worker.
+
+    Raised for non-terminal HTTP failures so the orchestrator marks the Dream
+    stage failed_recoverable (and a later resume reattaches to the same
+    dream_run_id). Known terminal rejection payloads are returned, not raised.
+    """
+
+
+def _urllib_transport(method, url, headers, body, timeout):
+    """Default HTTP transport: (status_code, parsed_json_or_text_dict)."""
+    data = _json.dumps(body).encode("utf-8") if body is not None else None
+    req = _urlrequest.Request(url, data=data, method=method, headers=headers)
+    try:
+        with _urlrequest.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (trusted base url)
+            raw = resp.read().decode("utf-8")
+            return resp.status, (_json.loads(raw) if raw else {})
+    except _urlerror.HTTPError as exc:
+        raw = exc.read().decode("utf-8", "replace")
+        try:
+            payload = _json.loads(raw) if raw else {}
+        except ValueError:
+            payload = {"error": raw}
+        return exc.code, payload
+
+
+class HttpDreamClient:
+    """DreamClient backed by the async Worker endpoints (Phase 2).
+
+    start  -> POST /ops/dream/scheduled_governed/start
+    status -> GET  /ops/dream/scheduled_governed/status?run_id=...
+
+    - Operator Bearer token from DREAM_OPERATOR_TOKEN.
+    - Base URL from DREAM_MCP_BASE_URL (config.dream_base_url()).
+    - Finite, explicit timeouts.
+    - HTTP 404 status -> None.
+    - Non-2xx raises DreamClientError UNLESS the payload is a known terminal
+      rejection (so DREAM_VERIFY can fail it terminally rather than loop).
+    Transport is injectable for tests.
+    """
+
+    def __init__(self, *, base_url: Optional[str] = None, token: Optional[str] = None,
+                 timeout: float = 30.0, cron: str = DEFAULT_ORCH_CRON,
+                 clock: Callable[[], float] = time.time, transport=None):
+        self.base_url = (base_url or config.dream_base_url()).rstrip("/")
+        self.token = token if token is not None else _os.environ.get("DREAM_OPERATOR_TOKEN", "")
+        self.timeout = timeout
+        self.cron = cron
+        self.clock = clock
+        self.transport = transport or _urllib_transport
+
+    def _headers(self) -> dict:
+        return {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
+
+    def start(self, *, dream_run_id, orchestrator_run_id, run_date, mode,
+              fencing_token) -> dict:
+        body = {
+            "run_id": dream_run_id,
+            "orchestrator_run_id": orchestrator_run_id,
+            "run_date": run_date,
+            "mode": mode,
+            "fencing_token": fencing_token,
+            "cron": self.cron,
+            "scheduled_time": int(self.clock() * 1000),
+        }
+        code, payload = self.transport(
+            "POST", f"{self.base_url}/ops/dream/scheduled_governed/start",
+            self._headers(), body, self.timeout)
+        if code in (200, 202):
+            return payload
+        # Terminal-ish rejections (live disabled / date locked) carry a payload
+        # the caller should see rather than retry on.
+        if code in (400, 403, 409) and isinstance(payload, dict):
+            return payload
+        raise DreamClientError(f"Dream start HTTP {code}: {payload}")
+
+    def status(self, dream_run_id: str) -> Optional[dict]:
+        code, payload = self.transport(
+            "GET",
+            f"{self.base_url}/ops/dream/scheduled_governed/status?run_id={dream_run_id}",
+            self._headers(), None, self.timeout)
+        if code == 404:
+            return None
+        if 200 <= code < 300:
+            return payload
+        if isinstance(payload, dict) and str(payload.get("status") or "").startswith("rejected_"):
+            return payload
+        raise DreamClientError(f"Dream status HTTP {code}: {payload}")
+
+
+def default_dream_client() -> DreamClient:
+    """Select the Dream client. Phase 2 keeps the shadow client by default;
+    set PKS_ORCH_DREAM_CLIENT=http to use the Worker-backed HttpDreamClient.
+    """
+    if _os.environ.get("PKS_ORCH_DREAM_CLIENT") == "http":
+        return HttpDreamClient()
+    return Phase1ShadowDreamClient()

@@ -20,6 +20,10 @@ declare global {
 		DREAM_PHASE9_AUTO_ROLLBACK_ENABLED?: string;
 		DREAM_PHASE9_PROBE_SET_KEY?: string;
 		DREAM_PHASE9_WRITE_VALIDATION_LEDGER?: string;
+		// Phase 2 async scheduled-governed Dream: live apply is hard-disabled
+		// unless this is exactly "1". Kept absent in production through Phase 2.
+		// See docs/pks-nightly-orchestrator-phase-2-dream-worker-prd-2026-06-16.md.
+		PKS_ORCH_DREAM_LIVE_ENABLED?: string;
 		// Optional anomaly-tripwire knobs (have safe defaults).
 		DREAM_HARD_DELETE_DAILY_CAP?: string;
 		// Optional override for Opus judge model used by Mac-side script.

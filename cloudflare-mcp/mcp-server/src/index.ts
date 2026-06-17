@@ -67,7 +67,7 @@ const RECONSOLIDATION_PROMOTION_THRESHOLD = 3;
 const MAX_OPERATOR_DREAM_ARCHIVE_LIMIT = 10;
 // Phase 4 (R4.1): nightly archive cap is policy-driven so it can ramp
 // (10 -> 50 -> ...) under the destructive-spike tripwire. Falls back to 10.
-const SCHEDULED_DREAM_ARCHIVE_LIMIT =
+export const SCHEDULED_DREAM_ARCHIVE_LIMIT =
 	typeof (MEMORY_POLICY.dream_thresholds as Record<string, unknown>).scheduled_archive_limit === "number"
 		? ((MEMORY_POLICY.dream_thresholds as Record<string, unknown>).scheduled_archive_limit as number)
 		: 10;
@@ -75,13 +75,13 @@ const SCHEDULED_DREAM_ARCHIVE_LIMIT =
 // so duplicate_merge archive_ids cannot silently exceed the per-op archive limit.  Defaults
 // to 4× the archive limit if not policy-driven (conservatively caps a 10-merge night at 40
 // entries × 4 archive_ids each = 160 < 200 typical threshold).
-const SCHEDULED_DREAM_MAX_ENTRIES_TOUCHED =
+export const SCHEDULED_DREAM_MAX_ENTRIES_TOUCHED =
 	typeof (MEMORY_POLICY.dream_thresholds as Record<string, unknown>).max_entries_touched_per_apply === "number"
 		? ((MEMORY_POLICY.dream_thresholds as Record<string, unknown>).max_entries_touched_per_apply as number)
 		: SCHEDULED_DREAM_ARCHIVE_LIMIT * 4;
-const SCHEDULED_DREAM_PROMOTION_LIMIT = 10;
-const SCHEDULED_DREAM_DUPLICATE_MERGE_LIMIT = 10;
-const SCHEDULED_DREAM_MARK_CONTESTED_LIMIT = 10;
+export const SCHEDULED_DREAM_PROMOTION_LIMIT = 10;
+export const SCHEDULED_DREAM_DUPLICATE_MERGE_LIMIT = 10;
+export const SCHEDULED_DREAM_MARK_CONTESTED_LIMIT = 10;
 const RATE_LIMIT_WINDOW_SECONDS = 60 * 60;
 const WRITE_TOOL_RATE_LIMIT = 24;
 const OPERATOR_WRITE_RATE_LIMIT = 12;
@@ -249,7 +249,7 @@ async function rewriteTokenRequestResource(request: Request): Promise<Request> {
 	});
 }
 
-function createRedisClient(env: Env): Redis {
+export function createRedisClient(env: Env): Redis {
 	return new Redis({
 		url: env.UPSTASH_REDIS_REST_URL,
 		token: env.UPSTASH_REDIS_REST_TOKEN,
@@ -1145,7 +1145,7 @@ function holdAllScheduledGovernedOperations(
 	};
 }
 
-function buildScheduledGovernedDecision(
+export function buildScheduledGovernedDecision(
 	proposal: Record<string, unknown>,
 	grade: Record<string, unknown> | null,
 ): ScheduledGovernedDecision {
@@ -1212,7 +1212,7 @@ function buildScheduledGovernedDecision(
 	};
 }
 
-function verifyScheduledGovernedApply(
+export function verifyScheduledGovernedApply(
 	applyResult: Record<string, unknown> | null,
 	selectedOperationIds: string[],
 ): Record<string, unknown> {
@@ -3167,6 +3167,46 @@ const defaultHandler = {
 				const result = await runScheduledGovernedDream(env, controller);
 
 				return Response.json(result, { headers: { "Content-Type": "application/json" } });
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				return Response.json({ error: msg }, { status: 500 });
+			}
+		}
+
+		// Phase 2: async scheduled-governed Dream start/status (orchestrator-driven).
+		// Routing only — the implementation lives in src/scheduledDreamAsync.ts and is
+		// loaded via dynamic import so the static module graph stays acyclic (that
+		// module statically imports decision helpers from this file).
+		if (url.pathname === "/ops/dream/scheduled_governed/start" && request.method === "POST") {
+			if (!isAuthorizedOperatorRequest(request, env)) {
+				return Response.json({ error: "Unauthorized" }, { status: 401 });
+			}
+			try {
+				const body = await request.json();
+				const { startScheduledGovernedDreamAsync } = await import("./scheduledDreamAsync");
+				const result = await startScheduledGovernedDreamAsync(env, ctx, body);
+				return Response.json(result.body, { status: result.status });
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				return Response.json({ error: msg }, { status: 500 });
+			}
+		}
+
+		if (url.pathname === "/ops/dream/scheduled_governed/status" && request.method === "GET") {
+			if (!isAuthorizedOperatorRequest(request, env)) {
+				return Response.json({ error: "Unauthorized" }, { status: 401 });
+			}
+			try {
+				const runId = url.searchParams.get("run_id");
+				if (!runId) {
+					return Response.json({ error: "run_id required" }, { status: 400 });
+				}
+				const { getScheduledGovernedDreamStatus } = await import("./scheduledDreamAsync");
+				const status = await getScheduledGovernedDreamStatus(env, runId);
+				if (!status) {
+					return Response.json({ error: "not_found", run_id: runId }, { status: 404 });
+				}
+				return Response.json(status, { headers: { "Content-Type": "application/json" } });
 			} catch (error) {
 				const msg = error instanceof Error ? error.message : String(error);
 				return Response.json({ error: msg }, { status: 500 });

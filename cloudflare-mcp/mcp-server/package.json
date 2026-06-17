@@ -15,6 +15,7 @@
 		"test:worker": "vitest run --no-file-parallelism",
 		"test:worker:watch": "vitest --no-file-parallelism",
 		"test:dream-live": "node --experimental-strip-types scripts/test-dream-live.ts",
+		"test:dream-scheduled-smoke": "node --experimental-strip-types scripts/test-scheduled-dream-async-smoke.ts",
 		"type-check": "tsc --noEmit"
 	},
 	"dependencies": {

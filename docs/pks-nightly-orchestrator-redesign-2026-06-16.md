@@ -9,7 +9,7 @@ Status: Phase 0-1 in progress (implementation started 2026-06-16)
 |---|---|---|
 | 0 | docs + repo guidance only | done |
 | 1 | orchestrator ledger, lock, preflight, report renderer, shadow wrappers; Python tests; NO production mutation | done (32 tests pass) |
-| 2 | async Dream start/status, server-enforced shadow mode, caller-supplied `dream_run_id`, atomic date lock, Worker tests | not started |
+| 2 | async Dream start/status, server-enforced shadow mode, caller-supplied `dream_run_id`, atomic date lock, Worker tests | code + tests done; staging deploy done but staging smoke blocked by Upstash rate limit; production deploy + shadow smoke done. See `docs/pks-nightly-orchestrator-phase-2-dream-worker-prd-2026-06-16.md` |
 | 3 | run orchestrator manually in shadow, compare with existing nightly artifacts | not started |
 | 4 | install one launchd orchestrator plist (old schedules stay active) | not started |
 | 5 | cut over | not started |
