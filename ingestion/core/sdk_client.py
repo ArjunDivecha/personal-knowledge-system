@@ -31,7 +31,12 @@ import json
 from pathlib import Path
 
 
-DEFAULT_SDK_MAX_BUDGET_USD = 0.25
+# Per-extraction budget guard (subscription/OAuth billing by default — this is a
+# safety ceiling, not out-of-pocket spend). Raised 0.25 -> 1.00 on 2026-06-18:
+# large-repo README extractions (e.g. ASADO) legitimately need ~$0.37 and were
+# being killed at $0.25 (error_max_budget_usd), failing the whole repo. Still
+# env-overridable via PKS_SDK_MAX_BUDGET_USD.
+DEFAULT_SDK_MAX_BUDGET_USD = 1.00
 DEFAULT_SDK_MAX_TURNS = 4
 DEFAULT_SDK_MODEL = "sonnet"
 DEFAULT_API_FALLBACK_RUN_MAX_BUDGET_USD = 5.0
