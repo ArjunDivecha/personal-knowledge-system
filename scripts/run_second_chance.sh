@@ -40,7 +40,7 @@ LOG_DIR="$REPO/ingestion/logs/nightly"
 LOG="$LOG_DIR/second_chance_$(date +%Y-%m-%d).log"
 
 mkdir -p "$LOG_DIR"
-log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG"; }
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S %Z')] $*" | tee -a "$LOG"; }
 
 log "=== Second-chance check starting ==="
 

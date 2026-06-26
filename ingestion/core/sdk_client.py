@@ -39,6 +39,7 @@ from pathlib import Path
 DEFAULT_SDK_MAX_BUDGET_USD = 1.00
 DEFAULT_SDK_MAX_TURNS = 4
 DEFAULT_SDK_MODEL = "sonnet"
+DEFAULT_API_FALLBACK_RESERVE_USD = 0.25
 DEFAULT_API_FALLBACK_RUN_MAX_BUDGET_USD = 5.0
 DEFAULT_API_FALLBACK_MAX_CALLS = 200
 _warned_api_fallback = False
@@ -130,8 +131,10 @@ def _api_fallback_max_calls() -> int:
 
 
 def _api_fallback_reserve_usd() -> float:
-    fallback = _float_env("PKS_SDK_MAX_BUDGET_USD", DEFAULT_SDK_MAX_BUDGET_USD)
-    value = _float_env("PKS_API_FALLBACK_RESERVE_USD", fallback)
+    # Keep the paid fallback pre-call reserve independent from the subscription
+    # per-extraction ceiling. Otherwise raising the OAuth safety ceiling would
+    # make small paid fallback budgets fail before the first call.
+    value = _float_env("PKS_API_FALLBACK_RESERVE_USD", DEFAULT_API_FALLBACK_RESERVE_USD)
     return max(0.0, float(value or 0.0))
 
 

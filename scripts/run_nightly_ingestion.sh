@@ -65,7 +65,7 @@ export CI="${CI:-1}"
 
 mkdir -p "$LOG_DIR"
 
-log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG"; }
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S %Z')] $*" | tee -a "$LOG"; }
 
 # ---------------------------------------------------------------------------
 # Fault isolation: each ingestion pipeline runs as an independent "stage". A

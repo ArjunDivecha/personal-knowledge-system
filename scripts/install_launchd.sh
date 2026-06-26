@@ -15,6 +15,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLIST_SRC="$SCRIPT_DIR/com.arjun.knowledge-ingestion.plist"
 PLIST_DST="$HOME/Library/LaunchAgents/com.arjun.knowledge-ingestion.plist"
 RUNNER="$SCRIPT_DIR/run_nightly_ingestion.sh"
+DOMAIN="gui/$(id -u)"
+LABEL="com.arjun.knowledge-ingestion"
 
 echo "Installing com.arjun.knowledge-ingestion..."
 
@@ -22,18 +24,19 @@ echo "Installing com.arjun.knowledge-ingestion..."
 chmod +x "$RUNNER"
 
 # Unload any existing job (ignore error if not loaded)
-launchctl unload "$PLIST_DST" 2>/dev/null || true
+launchctl bootout "$DOMAIN" "$PLIST_DST" 2>/dev/null || true
 
 # Copy and load
 cp "$PLIST_SRC" "$PLIST_DST"
-launchctl load "$PLIST_DST"
+launchctl bootstrap "$DOMAIN" "$PLIST_DST"
+launchctl enable "$DOMAIN/$LABEL"
 
 echo ""
 echo "✓ Installed and loaded com.arjun.knowledge-ingestion"
 echo "  Schedule: nightly at 23:00 local time"
 echo "  Runner:   $RUNNER"
 echo "  Logs:     ingestion/logs/nightly/YYYY-MM-DD.log"
-echo "  Verify:   launchctl list | grep arjun.knowledge"
+echo "  Verify:   launchctl print $DOMAIN/$LABEL"
 echo ""
 echo "To uninstall:"
-echo "  launchctl unload $PLIST_DST && rm $PLIST_DST"
+echo "  launchctl bootout $DOMAIN $PLIST_DST && rm $PLIST_DST"
