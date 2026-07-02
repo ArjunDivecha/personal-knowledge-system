@@ -12,6 +12,8 @@ import { formatConsolidationNote } from "./consolidation";
 import { recordDestructiveAction } from "./tripwires";
 import {
 	type JudgeQueueItem,
+	type JudgeVerdict,
+	type JudgeVerdictSynthesis,
 	type PendingVerdict,
 	buildJudgeRubric,
 	enqueueJudgeItem,
@@ -1146,6 +1148,408 @@ function readSemanticDedupConfig(): SemanticDedupConfig {
 
 function safeOperationIdPart(value: string): string {
 	return value.replace(/[^a-zA-Z0-9_:-]/g, "_").slice(0, 120);
+}
+
+// =============================================================================
+// INSIGHT SYNTHESIS — CMA-dreaming parity
+// =============================================================================
+// See docs/pks-dream-insight-synthesis-prd-2026-07-02.md. Deterministic
+// detection of related-but-not-duplicate clusters (cosine in the insight band,
+// strictly below the contest-band floor), enqueued to the judge queue as
+// `insight_synthesis` ops. The Mac-side Opus judge synthesizes the insight and
+// returns it IN the verdict (`synthesis` block); the next cycle applies it
+// additively via addInsight (placement "append") or createEntry (placement
+// "create", context_type recurring_pattern). Gated by DREAM_INSIGHT_MODE
+// (default off). Additive-only: this phase can never archive, merge, demote,
+// or delete an entry.
+
+export const INSIGHT_SEEN_PREFIX = "dream:insight:seen:";
+export const INSIGHT_SYNTHESIS_ACTOR = "dream:insight_synthesis";
+
+export interface InsightSynthesisConfig {
+	bandMin: number;              // INSIGHT_BAND_MIN
+	bandMax: number;              // INSIGHT_BAND_MAX (exclusive; ≤ contest-band floor)
+	minClusterSize: number;       // MIN_CLUSTER_SIZE
+	maxClusterSize: number;       // MAX_CLUSTER_SIZE (over-merge guard)
+	maxQueries: number;           // MAX_QUERIES (Worker subrequest budget)
+	perRunEnqueueCap: number;     // PER_RUN_ENQUEUE_CAP
+	seenTtlDays: number;          // SEEN_FINGERPRINT_TTL_DAYS
+	maxInsightChars: number;      // MAX_INSIGHT_CHARS
+}
+
+export function readInsightSynthesisConfig(): InsightSynthesisConfig {
+	const block = (MEMORY_POLICY as Record<string, unknown>).insight_synthesis as
+		| Record<string, unknown>
+		| undefined;
+	const num = (key: string, fallback: number): number =>
+		typeof block?.[key] === "number" ? (block[key] as number) : fallback;
+	return {
+		bandMin: num("INSIGHT_BAND_MIN", 0.8),
+		bandMax: num("INSIGHT_BAND_MAX", 0.9),
+		minClusterSize: num("MIN_CLUSTER_SIZE", 3),
+		maxClusterSize: num("MAX_CLUSTER_SIZE", 6),
+		maxQueries: num("MAX_QUERIES", 150),
+		perRunEnqueueCap: num("PER_RUN_ENQUEUE_CAP", 5),
+		seenTtlDays: num("SEEN_FINGERPRINT_TTL_DAYS", 90),
+		maxInsightChars: num("MAX_INSIGHT_CHARS", 500),
+	};
+}
+
+/** Eligible = active knowledge entry that no other Dream machinery is
+ *  disputing: not archived, not contested, not quarantined. */
+export function isInsightClusterEligible(entry: LoadedEntry): boolean {
+	if (entry.type !== "knowledge") return false;
+	if (entry.metadata.archived === true) return false;
+	if (typeof entry.entry.state === "string" && entry.entry.state !== "active") return false;
+	if (entry.metadata.injection_quarantine === true) return false;
+	return true;
+}
+
+export interface InsightClusterCandidate {
+	fingerprint: string;
+	member_ids: string[];
+	domains: string[];
+	min_cosine: number;
+	max_cosine: number;
+}
+
+export function insightClusterFingerprint(memberIds: string[]): string {
+	return [...memberIds].sort().join("|");
+}
+
+// Like buildSemanticEdges but keeps only band-interior hits. Same fail-open
+// health probe: a dead vector store disables the phase for the run instead of
+// failing the cycle.
+async function buildInsightBandEdges(
+	entries: LoadedEntry[],
+	neighborFn: NeighborFn,
+	config: InsightSynthesisConfig,
+): Promise<{ edges: DedupEdge[]; queriesRun: number; disabled: boolean }> {
+	const byId = new Map(entries.map((e) => [e.id, e]));
+	const queryEntries = entries.slice(0, Math.max(0, config.maxQueries));
+	const edges: DedupEdge[] = [];
+	let queriesRun = 0;
+	if (queryEntries.length === 0) {
+		return { edges, queriesRun, disabled: false };
+	}
+	try {
+		await withTimeout(neighborFn(queryEntries[0]), SEMANTIC_PROBE_TIMEOUT_MS, "insight probe");
+	} catch {
+		return { edges: [], queriesRun: 0, disabled: true };
+	}
+	const seenPairs = new Set<string>();
+	for (const entry of queryEntries) {
+		queriesRun += 1;
+		let hits: NeighborHit[];
+		try {
+			hits = await withTimeout(neighborFn(entry), SEMANTIC_CALL_TIMEOUT_MS, "insight query");
+		} catch {
+			continue;
+		}
+		for (const hit of hits) {
+			if (hit.id === entry.id) continue;
+			if (!byId.has(hit.id)) continue;
+			if (hit.score < config.bandMin || hit.score >= config.bandMax) continue;
+			const pairKey = entry.id < hit.id ? `${entry.id}|${hit.id}` : `${hit.id}|${entry.id}`;
+			if (seenPairs.has(pairKey)) continue;
+			seenPairs.add(pairKey);
+			edges.push({ a: entry.id, b: hit.id, cosine: hit.score });
+		}
+	}
+	return { edges, queriesRun, disabled: false };
+}
+
+/** Pure cluster builder over band edges. A candidate cluster has
+ *  minClusterSize..maxClusterSize members spanning ≥2 distinct domains
+ *  (cross-cutting, not same-topic trivia). Deterministic ordering by
+ *  fingerprint so caps bite reproducibly. Exported for tests. */
+export function buildInsightClusters(
+	entries: LoadedEntry[],
+	edges: Array<{ a: string; b: string; cosine: number }>,
+	config: Pick<InsightSynthesisConfig, "minClusterSize" | "maxClusterSize">,
+): InsightClusterCandidate[] {
+	const byId = new Map(entries.map((e) => [e.id, e]));
+	const edgeIds = new Set<string>();
+	for (const edge of edges) {
+		if (byId.has(edge.a) && byId.has(edge.b)) {
+			edgeIds.add(edge.a);
+			edgeIds.add(edge.b);
+		}
+	}
+	const components = connectedComponents([...edgeIds], edges);
+	const clusters: InsightClusterCandidate[] = [];
+	for (const memberIds of components) {
+		if (memberIds.length < config.minClusterSize) continue;
+		if (memberIds.length > config.maxClusterSize) continue;
+		const domains = new Set<string>();
+		for (const id of memberIds) {
+			const member = byId.get(id);
+			if (!member) continue;
+			const domain = typeof member.entry.domain === "string" && member.entry.domain.trim().length > 0
+				? member.entry.domain.trim().toLowerCase()
+				: member.label.toLowerCase();
+			domains.add(domain);
+		}
+		if (domains.size < 2) continue;
+		const memberSet = new Set(memberIds);
+		let minCosine = 1;
+		let maxCosine = 0;
+		for (const edge of edges) {
+			if (!memberSet.has(edge.a) || !memberSet.has(edge.b)) continue;
+			minCosine = Math.min(minCosine, edge.cosine);
+			maxCosine = Math.max(maxCosine, edge.cosine);
+		}
+		clusters.push({
+			fingerprint: insightClusterFingerprint(memberIds),
+			member_ids: [...memberIds].sort(),
+			domains: [...domains].sort(),
+			min_cosine: Math.round(minCosine * 10000) / 10000,
+			max_cosine: Math.round(maxCosine * 10000) / 10000,
+		});
+	}
+	clusters.sort((left, right) => left.fingerprint.localeCompare(right.fingerprint));
+	return clusters;
+}
+
+export interface InsightSynthesisPhaseSummary {
+	status: "completed" | "disabled_vector_unavailable";
+	eligible_count: number;
+	queries_run: number;
+	edge_count: number;
+	clusters_detected: number;
+	enqueued: Array<Record<string, unknown>>;
+	skipped_seen: number;
+	per_run_cap: number;
+	cap_hit: boolean;
+}
+
+/** Detection + enqueue. Read-only against entries — the only write is the
+ *  judge-queue item and the seen-fingerprint marker. Caller gates on
+ *  DREAM_INSIGHT_MODE === "on" and live (non-dry) runs. */
+export async function runInsightSynthesisPhase(
+	redis: Redis,
+	vector: Index,
+	entries: LoadedEntry[],
+	runId: string,
+	timestamp: string,
+): Promise<InsightSynthesisPhaseSummary> {
+	const config = readInsightSynthesisConfig();
+	const eligible = entries
+		.filter(isInsightClusterEligible)
+		.sort((left, right) => right.salienceScore - left.salienceScore || left.id.localeCompare(right.id));
+	const neighborFn = makeVectorNeighborFn(
+		vector,
+		{
+			cosineThreshold: config.bandMax,
+			neighborK: readSemanticDedupConfig().neighborK,
+			maxQueries: config.maxQueries,
+			maxClusterSize: config.maxClusterSize,
+		},
+		new Map<string, number[] | null>(),
+	);
+	const { edges, queriesRun, disabled } = await buildInsightBandEdges(eligible, neighborFn, config);
+	if (disabled) {
+		return {
+			status: "disabled_vector_unavailable",
+			eligible_count: eligible.length,
+			queries_run: 0,
+			edge_count: 0,
+			clusters_detected: 0,
+			enqueued: [],
+			skipped_seen: 0,
+			per_run_cap: config.perRunEnqueueCap,
+			cap_hit: false,
+		};
+	}
+	const clusters = buildInsightClusters(eligible, edges, config);
+	const entriesById = new Map(eligible.map((entry) => [entry.id, entry]));
+	const enqueued: Array<Record<string, unknown>> = [];
+	let skippedSeen = 0;
+	let capHit = false;
+	for (const cluster of clusters) {
+		if (enqueued.length >= config.perRunEnqueueCap) {
+			capHit = true;
+			break;
+		}
+		const seenKey = `${INSIGHT_SEEN_PREFIX}${cluster.fingerprint}`;
+		const alreadySeen = await redis.get(seenKey);
+		if (alreadySeen) {
+			skippedSeen += 1;
+			continue;
+		}
+		const opId = `op_${runId}_insight_${safeOperationIdPart(cluster.member_ids[0])}_${cluster.member_ids.length}`;
+		const item: JudgeQueueItem = {
+			op_id: opId,
+			op_type: "insight_synthesis",
+			proposal_run_id: runId,
+			enqueued_at: timestamp,
+			target_entry_ids: cluster.member_ids,
+			rubric: buildJudgeRubric("insight_synthesis"),
+			payload: {
+				fingerprint: cluster.fingerprint,
+				domains: cluster.domains,
+				min_cosine: cluster.min_cosine,
+				max_cosine: cluster.max_cosine,
+				max_insight_chars: config.maxInsightChars,
+				members: cluster.member_ids.map((memberId) => {
+					const member = entriesById.get(memberId)!;
+					return {
+						id: member.id,
+						label: member.label,
+						domain: typeof member.entry.domain === "string" ? member.entry.domain : member.label,
+						context_type: member.contextType,
+						salience: member.salienceScore,
+						access_count: member.accessCount,
+						current_view:
+							typeof member.entry.current_view === "string"
+								? member.entry.current_view.slice(0, 700)
+								: null,
+						key_insights: Array.isArray(member.entry.key_insights)
+							? member.entry.key_insights
+								.map((row) =>
+									row && typeof row === "object" && typeof (row as Record<string, unknown>).insight === "string"
+										? ((row as Record<string, unknown>).insight as string)
+										: null,
+								)
+								.filter((text): text is string => text !== null)
+								.slice(0, 5)
+							: [],
+					};
+				}),
+			},
+		};
+		const didEnqueue = await enqueueJudgeItem(redis, item);
+		if (didEnqueue) {
+			await redis.set(seenKey, timestamp, { ex: Math.max(1, config.seenTtlDays) * 86400 });
+			enqueued.push({
+				op_id: opId,
+				fingerprint: cluster.fingerprint,
+				member_ids: cluster.member_ids,
+				domains: cluster.domains,
+			});
+		}
+	}
+	return {
+		status: "completed",
+		eligible_count: eligible.length,
+		queries_run: queriesRun,
+		edge_count: edges.length,
+		clusters_detected: clusters.length,
+		enqueued,
+		skipped_seen: skippedSeen,
+		per_run_cap: config.perRunEnqueueCap,
+		cap_hit: capHit,
+	};
+}
+
+/** Validate the content-bearing synthesis block of an insight verdict.
+ *  Returns null when valid, otherwise a human-readable rejection reason.
+ *  Exported for tests. */
+export function validateInsightSynthesis(
+	synthesis: JudgeVerdictSynthesis | undefined,
+	targetEntryIds: string[],
+	maxInsightChars: number,
+): string | null {
+	if (!synthesis || typeof synthesis !== "object") return "missing_synthesis_block";
+	const text = typeof synthesis.insight_text === "string" ? synthesis.insight_text.trim() : "";
+	if (text.length === 0) return "empty_insight_text";
+	if (text.length > maxInsightChars) return "insight_text_too_long";
+	if (synthesis.placement === "append") {
+		const anchor = typeof synthesis.anchor_entry_id === "string" ? synthesis.anchor_entry_id : "";
+		if (anchor.length === 0) return "missing_anchor_entry_id";
+		if (!targetEntryIds.includes(anchor)) return "anchor_outside_cluster";
+		return null;
+	}
+	if (synthesis.placement === "create") {
+		const domain = typeof synthesis.domain === "string" ? synthesis.domain.trim() : "";
+		if (domain.length === 0) return "missing_domain";
+		return null;
+	}
+	return "invalid_placement";
+}
+
+export interface InsightVerdictOutcome {
+	outcome: "applied" | "skipped" | "stale";
+	detail: Record<string, unknown>;
+}
+
+/** Apply one insight_synthesis verdict. Additive-only: append routes through
+ *  addInsight (revision-checked, duplicate no-op), create routes through
+ *  createEntry as a recurring_pattern entry. Idempotent via the standard
+ *  mutation-result dedup keyed `judge_insight_{op_id}`. Never throws. */
+export async function applyInsightSynthesisVerdict(
+	env: Env,
+	redis: Redis,
+	item: JudgeQueueItem,
+	verdict: JudgeVerdict,
+	runId: string,
+): Promise<InsightVerdictOutcome> {
+	if (verdict.verdict !== "apply") {
+		return { outcome: "skipped", detail: { reason: verdict.reason } };
+	}
+	const config = readInsightSynthesisConfig();
+	const rejection = validateInsightSynthesis(
+		verdict.synthesis,
+		item.target_entry_ids ?? [],
+		config.maxInsightChars,
+	);
+	if (rejection) {
+		return { outcome: "stale", detail: { error: rejection } };
+	}
+	const synthesis = verdict.synthesis!;
+	const insightText = synthesis.insight_text.trim();
+	const mutationId = `judge_insight_${item.op_id}`;
+	const reason = `dream insight synthesis (op ${item.op_id}): ${verdict.reason}`;
+	const evidenceSnippet = `Synthesized from entries: ${(item.target_entry_ids ?? []).join(", ")}`;
+	try {
+		if (synthesis.placement === "append") {
+			const anchorId = synthesis.anchor_entry_id!;
+			const anchor = await loadLoadedEntry(redis, "knowledge", anchorId);
+			if (!anchor) {
+				return { outcome: "stale", detail: { error: "anchor_not_found", anchor_entry_id: anchorId } };
+			}
+			if (anchor.metadata.archived === true) {
+				return { outcome: "stale", detail: { error: "anchor_archived", anchor_entry_id: anchorId } };
+			}
+			const result = await addInsight(env, {
+				entryId: anchorId,
+				expectedRevision: toOptionalInteger(anchor.metadata.revision) ?? 0,
+				mutationId,
+				reason,
+				actorId: INSIGHT_SYNTHESIS_ACTOR,
+				insight: insightText,
+				evidenceSnippet,
+			});
+			if (result.ok !== true) {
+				return { outcome: "stale", detail: { error: String(result.error ?? "add_insight_failed"), anchor_entry_id: anchorId } };
+			}
+			return {
+				outcome: "applied",
+				detail: { placement: "append", anchor_entry_id: anchorId, no_op: result.no_op === true, run_id: runId },
+			};
+		}
+		const result = await createEntry(env, {
+			mutationId,
+			reason,
+			actorId: INSIGHT_SYNTHESIS_ACTOR,
+			domain: synthesis.domain!.trim(),
+			currentView: insightText,
+			contextType: "recurring_pattern",
+			evidenceSnippet,
+		});
+		if (result.ok !== true) {
+			return { outcome: "stale", detail: { error: String(result.error ?? "create_entry_failed") } };
+		}
+		return {
+			outcome: "applied",
+			detail: { placement: "create", created_id: result.id ?? null, run_id: runId },
+		};
+	} catch (error) {
+		return {
+			outcome: "stale",
+			detail: { error: error instanceof Error ? error.message : String(error) },
+		};
+	}
 }
 
 async function loadCorrectionContestPlans(
@@ -5903,6 +6307,7 @@ export async function runScheduledRetierCycle(
 	retier: Awaited<ReturnType<typeof applyPercentileRetier>>;
 	verdicts_applied: number;
 	verdicts_skipped: number;
+	insight_synthesis: InsightSynthesisPhaseSummary | null;
 	skipped_reason?: string;
 }> {
 	const emptyLayer2: Awaited<ReturnType<typeof applyLayer2QuarantineAndDemote>> = {
@@ -5914,7 +6319,7 @@ export async function runScheduledRetierCycle(
 
 	const migrationBackfillComplete = await (createRedisClient(env)).get("migration:backfill_complete");
 	if (!migrationBackfillComplete) {
-		return { layer2: emptyLayer2, retier: emptyRetier, verdicts_applied: 0, verdicts_skipped: 0, skipped_reason: "migration_backfill_incomplete" };
+		return { layer2: emptyLayer2, retier: emptyRetier, verdicts_applied: 0, verdicts_skipped: 0, insight_synthesis: null, skipped_reason: "migration_backfill_incomplete" };
 	}
 
 	const redis = createRedisClient(env);
@@ -5977,6 +6382,20 @@ export async function runScheduledRetierCycle(
 							await settleJudgeItem(redis, item.op_id, "skipped", { run_id: runId, reason: verdict.reason });
 							verdictsSkipped += 1;
 						}
+					} else if (item.op_type === "insight_synthesis") {
+						// Content-bearing verdict: the judge synthesized the insight
+						// text; apply it additively (append or create). See PRD.
+						const outcome = await applyInsightSynthesisVerdict(env, redis, item, verdict, runId);
+						await settleJudgeItem(redis, item.op_id, outcome.outcome, {
+							run_id: runId,
+							verdict_reason: verdict.reason,
+							...outcome.detail,
+						});
+						if (outcome.outcome === "applied") {
+							verdictsApplied += 1;
+						} else {
+							verdictsSkipped += 1;
+						}
 					} else {
 						verdictsSkipped += 1;
 					}
@@ -5999,12 +6418,28 @@ export async function runScheduledRetierCycle(
 
 	let layer2 = emptyLayer2;
 	let retier = emptyRetier;
+	let insightSynthesis: InsightSynthesisPhaseSummary | null = null;
 	if (!dryRun) {
 		layer2 = await applyLayer2QuarantineAndDemote(redis, vector, allEntries, timestamp);
 		retier = await applyPercentileRetier(redis, vector, allEntries);
+		// Insight synthesis detection — read-only over entries; only writes are
+		// judge-queue items + seen-fingerprint markers. Gated off by default.
+		if (env.DREAM_INSIGHT_MODE === "on") {
+			try {
+				insightSynthesis = await runInsightSynthesisPhase(redis, vector, allEntries, runId, timestamp);
+			} catch (e) {
+				console.error("[scheduled-retier] insight synthesis phase failed", e);
+			}
+		}
 	}
 
-	return { layer2, retier, verdicts_applied: verdictsApplied, verdicts_skipped: verdictsSkipped };
+	return {
+		layer2,
+		retier,
+		verdicts_applied: verdictsApplied,
+		verdicts_skipped: verdictsSkipped,
+		insight_synthesis: insightSynthesis,
+	};
 }
 
 export async function runDreamCycle(
@@ -6156,6 +6591,30 @@ export async function runDreamCycle(
 								await settleJudgeItem(redis, item.op_id, "stale", {
 									verdict,
 									error: e instanceof Error ? e.message : String(e),
+								});
+							}
+						} else if (item.op_type === "insight_synthesis") {
+							// Content-bearing verdict: apply the synthesized insight
+							// additively (append or create). See PRD.
+							const outcome = await applyInsightSynthesisVerdict(env, redis, item, verdict, runId);
+							await settleJudgeItem(redis, item.op_id, outcome.outcome, {
+								verdict,
+								run_id: runId,
+								...outcome.detail,
+							});
+							if (outcome.outcome === "applied") {
+								judgeQueueSummary.verdicts_applied.push({
+									op_id: item.op_id,
+									op_type: item.op_type,
+									verdict_reason: verdict.reason,
+									...outcome.detail,
+								});
+							} else {
+								judgeQueueSummary.verdicts_skipped.push({
+									op_id: item.op_id,
+									op_type: item.op_type,
+									verdict_reason: verdict.reason,
+									outcome: outcome.outcome,
 								});
 							}
 						} else {
@@ -6347,6 +6806,7 @@ export async function runDreamCycle(
 			cap_hit: false,
 			tier_counts: { 1: 0, 2: 0, 3: 0 },
 		};
+		let insightSynthesisSummary: InsightSynthesisPhaseSummary | null = null;
 		if (!options.dryRun) {
 			for (const entry of archiveCandidatesLimited) {
 				archivedEntries.push(
@@ -6376,6 +6836,17 @@ export async function runDreamCycle(
 			// meaningless over a candidate-filtered subset) and never in dry-run.
 			if (!candidateIdFilter) {
 				retierSummary = await applyPercentileRetier(redis, vector, allEntries);
+			}
+
+			// Insight synthesis detection (CMA-dreaming parity) — read-only over
+			// entries; only writes are judge-queue items + seen markers. Skipped
+			// on targeted runs (clusters over a filtered subset are meaningless).
+			if (env.DREAM_INSIGHT_MODE === "on" && !candidateIdFilter) {
+				try {
+					insightSynthesisSummary = await runInsightSynthesisPhase(redis, vector, allEntries, runId, startedAt);
+				} catch (e) {
+					console.error("[dream-cycle] insight synthesis phase failed", e);
+				}
 			}
 
 			if (
@@ -6464,6 +6935,26 @@ export async function runDreamCycle(
 					cap_hit: retierSummary.cap_hit,
 					tier_counts: retierSummary.tier_counts,
 				},
+				insight_synthesis: insightSynthesisSummary
+					? {
+						status: insightSynthesisSummary.status,
+						eligible_count: insightSynthesisSummary.eligible_count,
+						queries_run: insightSynthesisSummary.queries_run,
+						edge_count: insightSynthesisSummary.edge_count,
+						clusters_detected: insightSynthesisSummary.clusters_detected,
+						enqueued_count: insightSynthesisSummary.enqueued.length,
+						enqueued: insightSynthesisSummary.enqueued,
+						skipped_seen: insightSynthesisSummary.skipped_seen,
+						per_run_cap: insightSynthesisSummary.per_run_cap,
+						cap_hit: insightSynthesisSummary.cap_hit,
+					}
+					: {
+						status: options.dryRun
+							? "skipped_dry_run"
+							: candidateIdFilter
+								? "skipped_targeted_run"
+								: "off",
+					},
 			},
 			counts: {
 				total_entries: allEntries.length,

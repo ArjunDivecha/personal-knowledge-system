@@ -109,6 +109,17 @@
     "SEMANTIC_MAX_CLUSTER_SIZE": 6,
     "_tuning_note": "COSINE_DUP_THRESHOLD raised 0.86->0.95 from the 2026-05-29 sweep: 0.86 chained a 1980-member mega-cluster; 0.95 yields tight 2-6 clusters with the size guard splitting the rest to lexical. Operator decision (PRD open Q#1) — retune as needed."
   },
+  "insight_synthesis": {
+    "INSIGHT_BAND_MIN": 0.80,
+    "INSIGHT_BAND_MAX": 0.90,
+    "MIN_CLUSTER_SIZE": 3,
+    "MAX_CLUSTER_SIZE": 6,
+    "MAX_QUERIES": 150,
+    "PER_RUN_ENQUEUE_CAP": 5,
+    "SEEN_FINGERPRINT_TTL_DAYS": 90,
+    "MAX_INSIGHT_CHARS": 500,
+    "_note": "Dream insight synthesis (CMA-dreaming parity, docs/pks-dream-insight-synthesis-prd-2026-07-02.md). Band sits strictly below COSINE_CONTEST_BAND floor (0.90) so insight clustering never overlaps dedup/contradiction territory. Detection is deterministic on the Worker; synthesis happens on the Mac-side Opus judge; application is additive-only (append key_insight or create recurring_pattern entry). Gated by DREAM_INSIGHT_MODE (default off)."
+  },
   "project_lifecycle": {
     "active_stale_after_days": 90,
     "active_recent_access_grace_days": 30

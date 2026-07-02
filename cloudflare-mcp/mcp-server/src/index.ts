@@ -1430,6 +1430,7 @@ async function runScheduledGovernedDream(
 					retier_changed: retierSummary.retier.changed,
 					verdicts_applied: retierSummary.verdicts_applied,
 					verdicts_skipped: retierSummary.verdicts_skipped,
+					insight_synthesis: retierSummary.insight_synthesis,
 					skipped_reason: retierSummary.skipped_reason ?? null,
 				}
 				: null,
@@ -3423,6 +3424,15 @@ const defaultHandler = {
 					reason: z.string().min(1).max(2000),
 					judge_model: z.string().min(1).max(100),
 					judge_source: z.enum(["claude_cli", "anthropic_api"]),
+					// Content-bearing verdicts (insight_synthesis only). Shape is
+					// validated here; semantics (anchor ∈ cluster, etc.) are
+					// re-validated by the cycle before applying.
+					synthesis: z.object({
+						insight_text: z.string().min(1).max(500),
+						placement: z.enum(["append", "create"]),
+						anchor_entry_id: z.string().min(1).optional(),
+						domain: z.string().min(1).max(200).optional(),
+					}).optional(),
 				}).parse(body);
 				const redis = createRedisClient(env);
 				const { judgeVerdictKey } = await import("./judgeQueue");

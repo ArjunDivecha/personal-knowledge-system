@@ -16,6 +16,10 @@ declare global {
 		DREAM_AUTO_APPLY_MODE?: "off" | "governed" | "full";
 		DREAM_OPUS_MODE?: "off" | "on";
 		RETRIEVAL_POLICY_MODE?: "off" | "on";
+		// Insight synthesis (CMA-dreaming parity). "on" enables nightly cluster
+		// detection + judge enqueue; verdicts apply additively next cycle.
+		// See docs/pks-dream-insight-synthesis-prd-2026-07-02.md.
+		DREAM_INSIGHT_MODE?: "off" | "on";
 		DREAM_PHASE9_OUTCOME_GATE_ENABLED?: string;
 		DREAM_PHASE9_AUTO_ROLLBACK_ENABLED?: string;
 		DREAM_PHASE9_PROBE_SET_KEY?: string;

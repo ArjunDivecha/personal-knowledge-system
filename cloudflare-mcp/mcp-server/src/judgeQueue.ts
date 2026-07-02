@@ -43,7 +43,23 @@ export type JudgeOpType =
 	// 3.4 — contradiction resolution: both entries are contested; judge decides
 	// whether they are truly contradictory (skip = keep both contested, needs
 	// Phase 7C supersession) or complementary/compatible (apply = restore active).
-	| "contradiction_resolution";
+	| "contradiction_resolution"
+	// Insight synthesis (CMA-dreaming parity, see
+	// docs/pks-dream-insight-synthesis-prd-2026-07-02.md): a cluster of related
+	// but non-duplicate entries; the judge decides whether they support one
+	// durable cross-cutting insight and, if so, RETURNS the synthesized text in
+	// the verdict's `synthesis` block — the only content-bearing verdict type.
+	| "insight_synthesis";
+
+// Content payload carried by an `apply` verdict on an insight_synthesis op.
+// placement "append" refines one cluster member (anchor_entry_id required);
+// placement "create" makes a new recurring_pattern entry (domain required).
+export interface JudgeVerdictSynthesis {
+	insight_text: string;
+	placement: "append" | "create";
+	anchor_entry_id?: string;
+	domain?: string;
+}
 
 export interface JudgeQueueItem {
 	op_id: string;
@@ -62,6 +78,8 @@ export interface JudgeVerdict {
 	judged_at: string;
 	judge_model: string;
 	judge_source: "claude_cli" | "anthropic_api";
+	// Present only on insight_synthesis apply verdicts; ignored elsewhere.
+	synthesis?: JudgeVerdictSynthesis;
 }
 
 /**
@@ -206,5 +224,7 @@ export function buildJudgeRubric(opType: JudgeOpType): string {
 			return "Decide whether to permanently delete this archived entry. Apply only if there is no plausible future relevance: not a recurring project, not an identity element, not a returning interest. Skip when in doubt — hard-delete is the only irreversible step.";
 		case "contradiction_resolution":
 			return "Two knowledge entries were flagged as contradicting each other and both are now marked 'contested'. Read their current_view texts and the listed contradiction reasons. Apply if they are NOT genuinely contradictory (i.e., they are complementary, about different time periods, or the contradiction reasons are spurious) — this restores both entries to active. Skip if the contradiction is real and requires human resolution or a Phase 7C supersession step to reconcile the conflicting views.";
+		case "insight_synthesis":
+			return "You are shown a cluster of related knowledge entries from different domains. Decide whether they collectively support ONE durable, cross-cutting insight that is NOT already stated in any single entry. Apply only if the insight is non-obvious, durable (still true in six months), and evidenced by at least three of the entries — and include a `synthesis` block: insight_text (one or two sentences, max 500 chars), and placement: 'append' with anchor_entry_id (a cluster member ID) when the insight refines that one entry, or 'create' with a short domain string when the insight genuinely spans entries. Skip when in doubt — a wrong new memory is worse than a missed insight.";
 	}
 }
