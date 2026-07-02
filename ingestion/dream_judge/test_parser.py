@@ -90,6 +90,140 @@ class BuildPromptTests(unittest.TestCase):
         self.assertIn("JSON object", prompt)
 
 
+class InsightVerdictParseTests(unittest.TestCase):
+    """Content-bearing insight_synthesis verdicts (PRD 2026-07-02)."""
+
+    TARGETS = ["ke_a", "ke_b", "ke_c"]
+
+    def test_valid_apply_append(self):
+        text = (
+            '{"verdict": "apply", "reason": "clear cross-cutting pattern", '
+            '"synthesis": {"insight_text": "Turnover limits dominate alpha capture.", '
+            '"placement": "append", "anchor_entry_id": "ke_b"}}'
+        )
+        result = run.parse_insight_verdict_response(text, self.TARGETS)
+        self.assertIsNotNone(result)
+        verdict, reason, synthesis = result
+        self.assertEqual(verdict, "apply")
+        self.assertEqual(reason, "clear cross-cutting pattern")
+        self.assertEqual(synthesis["placement"], "append")
+        self.assertEqual(synthesis["anchor_entry_id"], "ke_b")
+        self.assertNotIn("domain", synthesis)
+
+    def test_valid_apply_create(self):
+        text = (
+            '{"verdict": "apply", "reason": "spans entries", '
+            '"synthesis": {"insight_text": "A durable pattern.", '
+            '"placement": "create", "domain": "cross-domain synthesis"}}'
+        )
+        result = run.parse_insight_verdict_response(text, self.TARGETS)
+        self.assertIsNotNone(result)
+        verdict, _reason, synthesis = result
+        self.assertEqual(verdict, "apply")
+        self.assertEqual(synthesis["domain"], "cross-domain synthesis")
+        self.assertNotIn("anchor_entry_id", synthesis)
+
+    def test_skip_needs_no_synthesis(self):
+        result = run.parse_insight_verdict_response(
+            '{"verdict": "skip", "reason": "no durable insight"}', self.TARGETS
+        )
+        self.assertEqual(result, ("skip", "no durable insight", None))
+
+    def test_apply_without_synthesis_is_rejected(self):
+        self.assertIsNone(
+            run.parse_insight_verdict_response(
+                '{"verdict": "apply", "reason": "looks good"}', self.TARGETS
+            )
+        )
+
+    def test_apply_with_anchor_outside_cluster_is_rejected(self):
+        text = (
+            '{"verdict": "apply", "reason": "ok", '
+            '"synthesis": {"insight_text": "x", "placement": "append", "anchor_entry_id": "ke_zzz"}}'
+        )
+        self.assertIsNone(run.parse_insight_verdict_response(text, self.TARGETS))
+
+    def test_apply_with_overlong_text_is_rejected(self):
+        text = (
+            '{"verdict": "apply", "reason": "ok", '
+            f'"synthesis": {{"insight_text": "{"x" * 501}", "placement": "create", "domain": "d"}}}}'
+        )
+        self.assertIsNone(run.parse_insight_verdict_response(text, self.TARGETS))
+
+    def test_apply_with_invalid_placement_is_rejected(self):
+        text = (
+            '{"verdict": "apply", "reason": "ok", '
+            '"synthesis": {"insight_text": "x", "placement": "replace", "anchor_entry_id": "ke_a"}}'
+        )
+        self.assertIsNone(run.parse_insight_verdict_response(text, self.TARGETS))
+
+    def test_fenced_insight_verdict_parses(self):
+        text = (
+            "```json\n"
+            '{"verdict": "apply", "reason": "ok", "synthesis": {"insight_text": "x", '
+            '"placement": "append", "anchor_entry_id": "ke_a"}}\n'
+            "```"
+        )
+        result = run.parse_insight_verdict_response(text, self.TARGETS)
+        self.assertIsNotNone(result)
+
+
+class ValidateSynthesisTests(unittest.TestCase):
+
+    def test_rejection_reasons(self):
+        targets = ["ke_a"]
+        self.assertEqual(run.validate_synthesis(None, targets), "missing_synthesis_block")
+        self.assertEqual(
+            run.validate_synthesis({"insight_text": " ", "placement": "create", "domain": "d"}, targets),
+            "empty_insight_text",
+        )
+        self.assertEqual(
+            run.validate_synthesis({"insight_text": "x", "placement": "append"}, targets),
+            "missing_anchor_entry_id",
+        )
+        self.assertEqual(
+            run.validate_synthesis({"insight_text": "x", "placement": "create"}, targets),
+            "missing_domain",
+        )
+        self.assertIsNone(
+            run.validate_synthesis(
+                {"insight_text": "x", "placement": "append", "anchor_entry_id": "ke_a"}, targets
+            )
+        )
+
+
+class ParseDispatchTests(unittest.TestCase):
+
+    def test_dispatch_by_op_type(self):
+        classic_item = {"op_type": "duplicate_merge_borderline", "target_entry_ids": ["ke_a", "ke_b"]}
+        result = run.parse_response_for_item('{"verdict": "apply", "reason": "same memory"}', classic_item)
+        self.assertEqual(result, ("apply", "same memory", None))
+
+        insight_item = {"op_type": "insight_synthesis", "target_entry_ids": ["ke_a", "ke_b", "ke_c"]}
+        # A classic-shaped apply (no synthesis) must be rejected for insight ops.
+        self.assertIsNone(
+            run.parse_response_for_item('{"verdict": "apply", "reason": "same memory"}', insight_item)
+        )
+
+
+class InsightPromptTests(unittest.TestCase):
+
+    def test_insight_prompt_asks_for_synthesis_block(self):
+        from .run import build_prompt
+        item = {
+            "op_type": "insight_synthesis",
+            "rubric": "decide whether these entries support one durable insight",
+            "target_entry_ids": ["ke_a", "ke_b", "ke_c"],
+            "payload": {"members": [{"id": "ke_a"}, {"id": "ke_b"}, {"id": "ke_c"}]},
+        }
+        prompt = build_prompt(item)
+        self.assertIn("insight_synthesis", prompt)
+        self.assertIn("synthesis", prompt)
+        self.assertIn("anchor_entry_id", prompt)
+        self.assertIn("placement", prompt)
+        self.assertIn("prefer SKIP", prompt)
+
+
 class ClaudeCliResolverTests(unittest.TestCase):
 
     def test_resolve_claude_cli_uses_env_path(self):

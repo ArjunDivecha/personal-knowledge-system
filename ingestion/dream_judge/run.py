@@ -139,7 +139,14 @@ def fetch_pending_items() -> list[dict[str, Any]]:
     return pending
 
 
-def post_verdict(op_id: str, verdict: str, reason: str, judge_model: str, judge_source: str) -> None:
+def post_verdict(
+    op_id: str,
+    verdict: str,
+    reason: str,
+    judge_model: str,
+    judge_source: str,
+    synthesis: dict[str, Any] | None = None,
+) -> None:
     url = f"{WORKER_BASE_URL}/ops/dream/judge_verdict"
     payload = {
         "op_id": op_id,
@@ -148,6 +155,8 @@ def post_verdict(op_id: str, verdict: str, reason: str, judge_model: str, judge_
         "judge_model": judge_model,
         "judge_source": judge_source,
     }
+    if synthesis is not None:
+        payload["synthesis"] = synthesis
     resp = requests.post(url, headers=auth_headers(), data=json.dumps(payload), timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
     log.info("  → posted verdict %s for %s (source=%s)", verdict, op_id, judge_source)
@@ -160,6 +169,29 @@ def build_prompt(item: dict[str, Any]) -> str:
     op_type = item.get("op_type", "?")
     rubric = item.get("rubric", "")
     payload = json.dumps(item.get("payload", {}), indent=2, ensure_ascii=False)
+    if op_type == "insight_synthesis":
+        # Content-bearing verdict: an apply must CARRY the synthesized insight.
+        # See docs/pks-dream-insight-synthesis-prd-2026-07-02.md.
+        return (
+            "You are reviewing a cluster of related entries in a personal knowledge memory system.\n"
+            "Your job is to decide ONE thing: is there a durable cross-cutting insight here (APPLY), or not (SKIP)?\n\n"
+            f"Op type: {op_type}\n"
+            f"Rubric: {rubric}\n\n"
+            "Payload (the cluster you must decide on):\n"
+            "```json\n"
+            f"{payload}\n"
+            "```\n\n"
+            "Reply with EXACTLY a single JSON object on one line, nothing else.\n"
+            "To skip:\n"
+            '{"verdict": "skip", "reason": "1-2 sentences explaining your decision"}\n'
+            "To apply, include the synthesized insight:\n"
+            '{"verdict": "apply", "reason": "1-2 sentences", "synthesis": {"insight_text": "the insight, max 500 chars", '
+            '"placement": "append" | "create", "anchor_entry_id": "<a member id, required for append>", '
+            '"domain": "<short domain string, required for create>"}}\n\n'
+            "Use placement 'append' with anchor_entry_id when the insight refines one member entry; "
+            "use placement 'create' with a domain when it genuinely spans entries.\n"
+            "If anything is ambiguous, prefer SKIP. A wrong new memory is worse than a missed insight."
+        )
     return (
         "You are reviewing a border-case decision in a personal knowledge memory system.\n"
         "Your job is to decide ONE thing: APPLY the proposed action, or SKIP it.\n\n"
@@ -175,8 +207,8 @@ def build_prompt(item: dict[str, Any]) -> str:
     )
 
 
-def parse_verdict_response(text: str) -> tuple[str, str] | None:
-    """Parse the JSON verdict from the model's response. Returns (verdict, reason) or None."""
+def extract_json_object(text: str) -> dict[str, Any] | None:
+    """Pull the first JSON object out of a model response (fences, preamble tolerated)."""
     text = (text or "").strip()
     # If wrapped in code fences, strip them.
     if text.startswith("```"):
@@ -193,6 +225,16 @@ def parse_verdict_response(text: str) -> tuple[str, str] | None:
         obj = json.loads(text[start:end + 1])
     except json.JSONDecodeError:
         return None
+    if not isinstance(obj, dict):
+        return None
+    return obj
+
+
+def parse_verdict_response(text: str) -> tuple[str, str] | None:
+    """Parse the JSON verdict from the model's response. Returns (verdict, reason) or None."""
+    obj = extract_json_object(text)
+    if obj is None:
+        return None
     verdict = obj.get("verdict")
     reason = obj.get("reason", "")
     if verdict not in ("apply", "skip"):
@@ -200,6 +242,91 @@ def parse_verdict_response(text: str) -> tuple[str, str] | None:
     if not isinstance(reason, str) or not reason.strip():
         return None
     return verdict, reason.strip()
+
+
+MAX_INSIGHT_CHARS = 500
+
+
+def validate_synthesis(
+    synthesis: Any,
+    target_entry_ids: list[str],
+    max_chars: int = MAX_INSIGHT_CHARS,
+) -> str | None:
+    """Mirror of the Worker-side validator. Returns a rejection reason or None when valid."""
+    if not isinstance(synthesis, dict):
+        return "missing_synthesis_block"
+    text = synthesis.get("insight_text")
+    if not isinstance(text, str) or not text.strip():
+        return "empty_insight_text"
+    if len(text.strip()) > max_chars:
+        return "insight_text_too_long"
+    placement = synthesis.get("placement")
+    if placement == "append":
+        anchor = synthesis.get("anchor_entry_id")
+        if not isinstance(anchor, str) or not anchor:
+            return "missing_anchor_entry_id"
+        if anchor not in target_entry_ids:
+            return "anchor_outside_cluster"
+        return None
+    if placement == "create":
+        domain = synthesis.get("domain")
+        if not isinstance(domain, str) or not domain.strip():
+            return "missing_domain"
+        return None
+    return "invalid_placement"
+
+
+def parse_insight_verdict_response(
+    text: str,
+    target_entry_ids: list[str],
+) -> tuple[str, str, dict[str, Any] | None] | None:
+    """
+    Parse a content-bearing insight_synthesis verdict.
+    Returns (verdict, reason, synthesis_or_none) or None on parse/validation
+    failure — failure leaves the item pending so it is retried next night
+    rather than posting a half-valid verdict.
+    """
+    obj = extract_json_object(text)
+    if obj is None:
+        return None
+    verdict = obj.get("verdict")
+    reason = obj.get("reason", "")
+    if verdict not in ("apply", "skip"):
+        return None
+    if not isinstance(reason, str) or not reason.strip():
+        return None
+    if verdict == "skip":
+        return verdict, reason.strip(), None
+    synthesis = obj.get("synthesis")
+    rejection = validate_synthesis(synthesis, target_entry_ids)
+    if rejection is not None:
+        log.warning("insight verdict rejected (%s); leaving item pending", rejection)
+        return None
+    # Normalize: keep only the fields the Worker accepts.
+    normalized: dict[str, Any] = {
+        "insight_text": synthesis["insight_text"].strip(),
+        "placement": synthesis["placement"],
+    }
+    if synthesis["placement"] == "append":
+        normalized["anchor_entry_id"] = synthesis["anchor_entry_id"]
+    else:
+        normalized["domain"] = synthesis["domain"].strip()
+    return verdict, reason.strip(), normalized
+
+
+def parse_response_for_item(
+    text: str,
+    item: dict[str, Any],
+) -> tuple[str, str, dict[str, Any] | None] | None:
+    """Dispatch parsing by op_type. Returns (verdict, reason, synthesis|None) or None."""
+    if item.get("op_type") == "insight_synthesis":
+        target_ids = item.get("target_entry_ids") or []
+        return parse_insight_verdict_response(text, list(target_ids))
+    parsed = parse_verdict_response(text)
+    if parsed is None:
+        return None
+    verdict, reason = parsed
+    return verdict, reason, None
 
 
 # ----------------------------------------------------------------------------
@@ -221,10 +348,10 @@ def resolve_claude_cli() -> str | None:
     return None
 
 
-def judge_via_claude_cli(prompt: str, model: str) -> tuple[str, str, str] | None:
+def judge_via_claude_cli(prompt: str, model: str, item: dict[str, Any]) -> tuple[str, str, dict[str, Any] | None, str] | None:
     """
     Try `claude --print --model <model> <prompt>`.
-    Returns (verdict, reason, source) or None on failure.
+    Returns (verdict, reason, synthesis_or_none, source) or None on failure.
     Source = "claude_cli" on success, "claude_cli_failed" if invocation fails.
     """
     claude_bin = resolve_claude_cli()
@@ -258,7 +385,7 @@ def judge_via_claude_cli(prompt: str, model: str) -> tuple[str, str, str] | None
         )
         return None
 
-    parsed = parse_verdict_response(result.stdout)
+    parsed = parse_response_for_item(result.stdout, item)
     if parsed is None:
         log.warning(
             "claude CLI output was unparseable. stdout=%s",
@@ -266,13 +393,13 @@ def judge_via_claude_cli(prompt: str, model: str) -> tuple[str, str, str] | None
         )
         return None
 
-    verdict, reason = parsed
-    return verdict, reason, "claude_cli"
+    verdict, reason, synthesis = parsed
+    return verdict, reason, synthesis, "claude_cli"
 
 
-def judge_via_anthropic_api(prompt: str, model: str) -> tuple[str, str, str] | None:
+def judge_via_anthropic_api(prompt: str, model: str, item: dict[str, Any]) -> tuple[str, str, dict[str, Any] | None, str] | None:
     """
-    Fallback: call Anthropic API directly. Returns (verdict, reason, source) or None.
+    Fallback: call Anthropic API directly. Returns (verdict, reason, synthesis_or_none, source) or None.
     Emits a warning since this incurs API cost vs the subscription path.
     """
     if not ANTHROPIC_API_KEY:
@@ -296,12 +423,12 @@ def judge_via_anthropic_api(prompt: str, model: str) -> tuple[str, str, str] | N
         for block in resp.content:
             if hasattr(block, "text"):
                 text += block.text
-        parsed = parse_verdict_response(text)
+        parsed = parse_response_for_item(text, item)
         if parsed is None:
             log.error("Anthropic API response was unparseable: %s", text[:300])
             return None
-        verdict, reason = parsed
-        return verdict, reason, "anthropic_api"
+        verdict, reason, synthesis = parsed
+        return verdict, reason, synthesis, "anthropic_api"
     except Exception as e:
         log.error("Anthropic API call failed: %s", e)
         return None
@@ -312,16 +439,16 @@ def judge_item(
     model: str,
     force_api: bool,
     allow_api_fallback: bool,
-) -> tuple[str, str, str] | None:
+) -> tuple[str, str, dict[str, Any] | None, str] | None:
     prompt = build_prompt(item)
     if not force_api:
-        result = judge_via_claude_cli(prompt, model)
+        result = judge_via_claude_cli(prompt, model, item)
         if result is not None:
             return result
     if not allow_api_fallback:
         log.error("Anthropic API fallback disabled; set DREAM_ALLOW_ANTHROPIC_API_FALLBACK=1 or pass --allow-api-fallback for a deliberate API-billed judge run")
         return None
-    return judge_via_anthropic_api(prompt, model)
+    return judge_via_anthropic_api(prompt, model, item)
 
 
 # ----------------------------------------------------------------------------
@@ -383,10 +510,12 @@ def main() -> int:
             n_failed += 1
             continue
 
-        verdict, reason, source = judged
+        verdict, reason, synthesis, source = judged
         if source == "anthropic_api":
             n_api_fallback += 1
         log.info("  verdict=%s source=%s reason=%s", verdict, source, reason[:120])
+        if synthesis is not None:
+            log.info("  synthesis placement=%s text=%s", synthesis.get("placement"), str(synthesis.get("insight_text"))[:120])
 
         if verdict == "apply":
             n_applied += 1
@@ -398,7 +527,7 @@ def main() -> int:
             continue
 
         try:
-            post_verdict(op_id, verdict, reason, OPUS_MODEL, source)
+            post_verdict(op_id, verdict, reason, OPUS_MODEL, source, synthesis=synthesis)
         except Exception as e:
             log.error("  ✗ failed to post verdict for %s: %s", op_id, e)
             n_failed += 1
