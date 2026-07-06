@@ -676,6 +676,24 @@ The root [Makefile](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/
 - `make deploy-staging`
 - `make dream-live-canary`
 
+### Retrieval-quality eval baseline (added 2026-07-06)
+
+`scripts/run_eval.py` runs the probe suite in [tests/probes/](tests/probes/README.md)
+(8 axes: recall, project, explicit-save, exact-lexical, stale-fact, supersession,
+negative, paraphrase) read-only against production or staging and writes
+`scripts/reports/eval_baseline_<UTC>.json`. `--compare OLD NEW` diffs two reports
+(the shadow A/B safety rail for retrieval changes). Design and metric definitions:
+`../PRD-eval-baseline-v1.md`. Rule: no ranking/forgetting/admission change ships
+without a before/after eval diff.
+
+First production baseline (2026-07-06, 51 probes): carry_forward_recall 0.90,
+project_recall 0.86, exact_lexical 0.67, stale_leak_rate 0.25, supersession 0.50,
+negative_precision 1.00, paraphrase_consistency 0.67, ~254 tokens/query median.
+The lexical and stale/supersession gaps are the expected targets of upgrade-plan
+items 1 and 5. The LLM-judge for future answer-mode scoring is DeepSeek V4 Flash
+via the direct API (validated 26/26 vs Sonnet 4.6 and V4 Pro; escalation to Sonnet
+on uncertainty).
+
 The long-term rule is simple: production is not the default test bed.
 
 The staging smoke path is now governance-shaped. It covers:

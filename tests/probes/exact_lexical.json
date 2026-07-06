@@ -1,0 +1,71 @@
+[
+  {
+    "id": "lex_asado_duckdb_path",
+    "axis": "exact_lexical",
+    "enabled": true,
+    "priority": "high",
+    "query": "Data/asado.duckdb",
+    "expect_entry_ids": ["ke_ae0a7d555995"],
+    "expect_any_of": ["asado.duckdb"],
+    "notes": "Exact file path. Pure-vector retrieval is expected to be weak here; this axis is the before/after number for hybrid retrieval (upgrade-plan item 1)."
+  },
+  {
+    "id": "lex_bbg_hist_fields",
+    "axis": "exact_lexical",
+    "enabled": true,
+    "priority": "high",
+    "query": "bbg.hist PX_BID PX_ASK",
+    "expect_entry_ids": ["ke_7a7bc070fbde"],
+    "expect_any_of": ["PX_BID", "PX_ASK", "bbg.hist"],
+    "notes": "Exact API call + Bloomberg field mnemonics. Verified live 2026-07-05: ke_7a7bc070fbde."
+  },
+  {
+    "id": "lex_embedding_model_name",
+    "axis": "exact_lexical",
+    "enabled": true,
+    "priority": "high",
+    "query": "text-embedding-3-large",
+    "expect_entry_ids": ["ke_231701212087"],
+    "expect_any_of": ["text-embedding-3-large", "3072"],
+    "notes": "Exact model identifier. Verified live 2026-07-05: ke_231701212087 documents the 1536/3072 dimension mismatch."
+  },
+  {
+    "id": "lex_repo_news",
+    "axis": "exact_lexical",
+    "enabled": true,
+    "priority": "medium",
+    "query": "ArjunDivecha/News repo pipeline",
+    "expect_any_of": ["News"],
+    "min_rank": 5,
+    "notes": "Exact repo slug; several entries carry top_repo=ArjunDivecha/News. Weak-form check: any News-pipeline entry in top-5."
+  },
+  {
+    "id": "lex_corwin_schultz",
+    "axis": "exact_lexical",
+    "enabled": true,
+    "priority": "medium",
+    "query": "Corwin-Schultz spread estimator",
+    "expect_entry_ids": ["ke_59dd7975c96b"],
+    "expect_any_of": ["Corwin-Schultz"],
+    "notes": "Proper-noun estimator name. Verified live 2026-07-05: ke_59dd7975c96b."
+  },
+  {
+    "id": "lex_1mtr_3mtr_12mtr",
+    "axis": "exact_lexical",
+    "enabled": true,
+    "priority": "medium",
+    "query": "1MTR 3MTR 12MTR signal direction",
+    "expect_entry_ids": ["ke_9443a2946ad1"],
+    "expect_any_of": ["1MTR", "mean-rever"],
+    "notes": "Exact feature mnemonics. Verified live 2026-07-05: ke_9443a2946ad1 (momentum features exhibit mean-reversion in LoopPilot)."
+  },
+  {
+    "id": "lex_guarded_connect",
+    "axis": "exact_lexical",
+    "enabled": false,
+    "priority": "low",
+    "query": "guarded_connect duckdb lock",
+    "expect_any_of": ["guarded_connect"],
+    "notes": "OPERATOR: the guarded_connect convention lives in Claude auto-memory, not necessarily in a PKS entry — verify a PKS entry exists before enabling."
+  }
+]

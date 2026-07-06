@@ -1,0 +1,50 @@
+[
+  {
+    "id": "neg_capital_france",
+    "axis": "negative",
+    "enabled": true,
+    "priority": "high",
+    "query": "what is the capital of France",
+    "notes": "Generic world fact; no personal memory should score above the injection threshold."
+  },
+  {
+    "id": "neg_quicksort",
+    "axis": "negative",
+    "enabled": true,
+    "priority": "high",
+    "query": "explain how quicksort works",
+    "notes": "Generic CS question."
+  },
+  {
+    "id": "neg_unit_conversion",
+    "axis": "negative",
+    "enabled": true,
+    "priority": "medium",
+    "query": "convert 100 fahrenheit to celsius",
+    "notes": "Pure computation."
+  },
+  {
+    "id": "neg_poem",
+    "axis": "negative",
+    "enabled": true,
+    "priority": "medium",
+    "query": "write a haiku about autumn leaves",
+    "notes": "Creative request with no personalization operator ('for me' absent) — per conditioning-retrieval-policy, bare creative asks imply no lookup."
+  },
+  {
+    "id": "neg_python_syntax",
+    "axis": "negative",
+    "enabled": true,
+    "priority": "medium",
+    "query": "python list comprehension syntax",
+    "notes": "Generic syntax question. Risk of false injection from coding-adjacent entries — exactly what this axis measures."
+  },
+  {
+    "id": "neg_who_is_einstein",
+    "axis": "negative",
+    "enabled": true,
+    "priority": "low",
+    "query": "who was Albert Einstein",
+    "notes": "Public figure, no personal linkage."
+  }
+]

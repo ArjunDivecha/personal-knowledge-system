@@ -1,0 +1,11 @@
+[
+  {
+    "id": "esave_example_disabled",
+    "axis": "explicit_save_recall",
+    "enabled": false,
+    "priority": "high",
+    "query": "things I explicitly asked to remember",
+    "expect_any_of": [],
+    "notes": "OPERATOR: this axis needs seeding from entries with context_type=explicit_save — none were verified during the 2026-07-06 session (the live index page showed none in the top slice). Run: search entries by context_type=explicit_save, pick 5-10, write one probe each. The axis exists so the runner reports it as UNMEASURED rather than silently absent."
+  }
+]

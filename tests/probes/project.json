@@ -1,0 +1,82 @@
+[
+  {
+    "id": "proj_asado_warehouse",
+    "axis": "project_recall",
+    "enabled": true,
+    "priority": "high",
+    "query": "where is the ASADO analytical warehouse stored",
+    "expect_entry_ids": ["ke_ae0a7d555995"],
+    "expect_any_of": ["asado.duckdb", "DuckDB warehouse"],
+    "notes": "Verified live 2026-07-05: ke_ae0a7d555995 'ASADO consolidates into a single analytical DuckDB warehouse at Data/asado.duckdb'."
+  },
+  {
+    "id": "proj_t2_pipeline_steps",
+    "axis": "project_recall",
+    "enabled": true,
+    "priority": "high",
+    "query": "T2 factor timing pipeline structure how many steps",
+    "expect_entry_ids": ["ke_df026db27b98", "ke_0cb343b00189"],
+    "expect_any_of": ["15-step", "15 sequential", "34 countries", "34-country"],
+    "notes": "Verified live 2026-07-05: two active entries describe the 15-step / 34-country T2 system (they are a duplicate pair — if a Dream merge retires one id, the other or the text fallback still passes)."
+  },
+  {
+    "id": "proj_news_flash_step",
+    "axis": "project_recall",
+    "enabled": true,
+    "priority": "medium",
+    "query": "which step of the News pipeline generates the Flash report",
+    "expect_entry_ids": ["ke_449ce54a214a"],
+    "expect_any_of": ["Step 4", "step 4"],
+    "notes": "Verified live 2026-07-05: ke_449ce54a214a 'Flash report generation is Step 4 in a multi-step pipeline'."
+  },
+  {
+    "id": "proj_lawbot_vercel_limits",
+    "axis": "project_recall",
+    "enabled": true,
+    "priority": "high",
+    "query": "California Law Chatbot serverless memory and timeout limits",
+    "expect_entry_ids": ["ke_ee4fa7ab280b"],
+    "expect_any_of": ["1024MB", "60s", "60 second"],
+    "notes": "Verified live 2026-07-05: ke_ee4fa7ab280b 'Vercel serverless functions with 1024MB memory and 60s timeout'."
+  },
+  {
+    "id": "proj_pks_stack",
+    "axis": "project_recall",
+    "enabled": true,
+    "priority": "high",
+    "query": "what infrastructure does my personal knowledge system run on",
+    "expect_entry_ids": ["ke_2fa5449b8c5b", "ke_9dc9ab024969"],
+    "expect_any_of": ["Cloudflare Worker", "Upstash Redis"],
+    "notes": "Verified live 2026-07-05: ke_2fa5449b8c5b 'PKS runs on Cloudflare Worker (write gateway) + Upstash Redis (source of truth)'."
+  },
+  {
+    "id": "proj_lora_config",
+    "axis": "project_recall",
+    "enabled": true,
+    "priority": "medium",
+    "query": "LoRA hyperparameters for the News fine-tune",
+    "expect_entry_ids": ["ke_b1f1822362c7"],
+    "expect_any_of": ["rank=16", "alpha=32", "2e-4"],
+    "notes": "Verified live 2026-07-06 via direct search call (rank 1, final_score 0.97)."
+  },
+  {
+    "id": "proj_lawbot_pdf_chunking",
+    "axis": "project_recall",
+    "enabled": true,
+    "priority": "medium",
+    "query": "how are CEB PDFs chunked for the law chatbot",
+    "expect_entry_ids": ["ke_c3c287383a7a"],
+    "expect_any_of": ["PyMuPDF", "fitz", "semantic chunking"],
+    "notes": "Verified live 2026-07-05: ke_c3c287383a7a."
+  },
+  {
+    "id": "proj_neo4j_factors",
+    "axis": "project_recall",
+    "enabled": false,
+    "priority": "low",
+    "query": "how many Factor nodes get daily enrichment in Neo4j",
+    "expect_entry_ids": ["ke_ef3260ba0530"],
+    "expect_any_of": ["157 Factor nodes", "9 daily performance"],
+    "notes": "OPERATOR: verify 157/9 are still current before enabling."
+  }
+]
