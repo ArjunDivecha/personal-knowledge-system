@@ -17,6 +17,7 @@ const redisMock = vi.hoisted(() => ({
 	scard: vi.fn(),
 	llen: vi.fn(),
 	incr: vi.fn(),
+	setnx: vi.fn(),
 }));
 
 const vectorMock = vi.hoisted(() => ({
@@ -448,6 +449,13 @@ beforeEach(() => {
 	redisMock.scard.mockResolvedValue(0);
 	redisMock.llen.mockResolvedValue(0);
 	redisMock.incr.mockResolvedValue(1);
+	redisMock.setnx.mockImplementation(async (key: string, value: unknown) => {
+		if (key in redisStore) {
+			return 0;
+		}
+		redisStore[key] = value;
+		return 1;
+	});
 	vectorMock.update.mockResolvedValue(undefined);
 	vectorMock.upsert.mockResolvedValue(undefined);
 	vectorMock.delete.mockResolvedValue(undefined);
@@ -1168,7 +1176,7 @@ describe("OAuth and MCP integration", () => {
 			expect(payload.ok).toBe(true);
 			expect(payload.created).toBe(true);
 			expect(payload.type).toBe("knowledge");
-			expect(String(payload.id)).toMatch(/^ke_[a-f0-9]{12}$/);
+			expect(String(payload.id)).toMatch(/^ke_[a-f0-9]{16}$/);
 			expect(payload.revision).toBe(1);
 			expect((((payload.entry as Record<string, unknown>).metadata as Record<string, unknown>).revision)).toBe(1);
 			expect((((payload.entry as Record<string, unknown>).metadata as Record<string, unknown>).context_type)).toBe("explicit_save");
