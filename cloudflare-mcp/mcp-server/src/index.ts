@@ -2747,7 +2747,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 									matched_terms: phase8QueryIntent.matched_terms,
 									as_of: phase8QueryIntent.as_of,
 								},
-								scoring: "ranked by retrieval tier, then a weighted score of semantic similarity, recency, salience, source weight, Phase 8 lexical/entity/vector/temporal/lane/source scoring, and (when RETRIEVAL_POLICY_MODE=on) Layer 0 cross-context + quarantine penalties; archived entries excluded by default"
+								scoring: "ranked by final_score only (tier acts as a multiplier inside the score, not a sort key): weighted semantic similarity, recency, salience, source weight, Phase 8 lexical/entity/vector/temporal/lane/source scoring, and (when RETRIEVAL_POLICY_MODE=on) Layer 0 cross-context + quarantine penalties; archived entries excluded by default"
 							})
 						}],
 					};
