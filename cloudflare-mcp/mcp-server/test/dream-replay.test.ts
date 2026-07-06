@@ -835,7 +835,10 @@ describe("Dream replay logic", () => {
 		expect(conflictB.state).toBe("active");
 		expect(conflictA.related_knowledge).toEqual([]);
 		expect(conflictB.related_knowledge).toEqual([]);
-		expect((conflictA.metadata as Record<string, unknown>).revision).toBe(1);
+		// Revision is monotonic: the mark_contested apply bumps 0->1 and the rollback
+		// is itself a forward write that bumps 1->2. Rollback restores content/state
+		// from the before-snapshot but never rewinds the revision counter.
+		expect((conflictA.metadata as Record<string, unknown>).revision).toBe(2);
 		expect(mockState.store.get(`dream:run:${String(proposal.run_id)}:rollback:rollback-contested-test`)).toBeTruthy();
 	});
 
