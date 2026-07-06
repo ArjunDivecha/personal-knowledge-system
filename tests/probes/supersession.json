@@ -1,0 +1,32 @@
+[
+  {
+    "id": "sup_search_formula",
+    "axis": "supersession",
+    "enabled": true,
+    "priority": "high",
+    "query": "current PKS search scoring formula",
+    "expect_any_of": ["0.55", "salience"],
+    "forbid_any_of": ["70% relevance + 30% recency"],
+    "notes": "Old 70/30 (README-era) superseded by 55/15/30 blend. Pass = new value surfaces AND old formula does not surface as current."
+  },
+  {
+    "id": "sup_forgetting_wired",
+    "axis": "supersession",
+    "enabled": true,
+    "priority": "medium",
+    "query": "is the PKS forgetting layer running in the nightly dream",
+    "expect_any_of": ["retier", "Layer 2", "layer-2", "quarantine"],
+    "forbid_any_of": ["dead code in production", "never calls"],
+    "notes": "June 2026 review's 'forgetting is dead code' finding was superseded ~mid-June when runDreamCycle was wired to cron (retier_changed:400 in live runs, verified 2026-07-05). The old finding surfacing as current = supersession failure."
+  },
+  {
+    "id": "sup_draft_ranking",
+    "axis": "supersession",
+    "enabled": false,
+    "priority": "low",
+    "query": "what is the top lever in the PKS upgrade plan",
+    "expect_any_of": ["eval", "retrieval"],
+    "forbid_any_of": ["admission control as the top lever"],
+    "notes": "OPERATOR: enable after the 2026-07-06 plan revision (eval-first, retrieval before admission) has been ingested into PKS — until then the probe would fail for pipeline-lag reasons, not supersession reasons."
+  }
+]

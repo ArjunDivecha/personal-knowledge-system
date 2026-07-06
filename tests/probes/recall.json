@@ -1,0 +1,182 @@
+[
+  {
+    "id": "recall_dip_factor",
+    "axis": "carry_forward_recall",
+    "enabled": true,
+    "priority": "high",
+    "query": "demographic inflation pressure DIP factor",
+    "expect_any_of": ["DIP", "demographic inflation", "Juselius"],
+    "notes": "ASADO flagship; audit found 0 DIP entries surfaced. OPERATOR: verify the canonical DIP entry id/domain."
+  },
+  {
+    "id": "recall_asado_strategy_1",
+    "axis": "carry_forward_recall",
+    "enabled": true,
+    "priority": "high",
+    "query": "ASADO country rotation analog signal strategy 1",
+    "expect_any_of": ["ASADO", "analog signal", "Strategy #1", "country rotation"],
+    "notes": "OPERATOR: confirm ASADO Strategy #1 entry exists."
+  },
+  {
+    "id": "recall_gdelt_asado_pipeline",
+    "axis": "carry_forward_recall",
+    "enabled": true,
+    "priority": "high",
+    "query": "GDELT signal construction feeding ASADO",
+    "expect_any_of": ["GDELT", "ASADO"],
+    "notes": "GDELT -> ASADO pipeline."
+  },
+  {
+    "id": "recall_inmobi_ipo_advisory",
+    "axis": "carry_forward_recall",
+    "enabled": true,
+    "priority": "high",
+    "query": "InMobi IPO advisory engagement",
+    "expect_any_of": ["InMobi"],
+    "notes": "current advisory work."
+  },
+  {
+    "id": "recall_t2_ic_saturation",
+    "axis": "carry_forward_recall",
+    "enabled": true,
+    "priority": "high",
+    "query": "T2 factor timing IC saturation",
+    "expect_any_of": ["IC saturation", "T2", "factor timing"],
+    "notes": "OPERATOR: confirm T2 IC-saturation phrasing."
+  },
+  {
+    "id": "recall_looppilot_runner",
+    "axis": "carry_forward_recall",
+    "enabled": true,
+    "priority": "medium",
+    "query": "LoopPilot autonomous experiment loop runner",
+    "expect_any_of": ["LoopPilot", "Loop Pilot"],
+    "notes": "known duplicate cluster (4x LoopPilot-architecture)."
+  },
+  {
+    "id": "recall_looppilot_promotion_baseline",
+    "axis": "carry_forward_recall",
+    "enabled": true,
+    "priority": "medium",
+    "query": "LoopPilot promotion logic and best_metrics baseline",
+    "expect_any_of": ["LoopPilot", "promotion", "best_metrics"],
+    "notes": "from prior Codex/Claude Code sessions."
+  },
+  {
+    "id": "recall_pattern_cnn_trading",
+    "axis": "carry_forward_recall",
+    "enabled": true,
+    "priority": "medium",
+    "query": "Pattern CNN trading Jiang Kelly Xiu re-imagined images",
+    "expect_any_of": ["Pattern", "CNN", "Jiang", "Kelly", "Xiu"],
+    "notes": "known duplicate cluster (4x Pattern-CNN). OPERATOR: verify."
+  },
+  {
+    "id": "recall_karpathy_nanochat",
+    "axis": "carry_forward_recall",
+    "enabled": true,
+    "priority": "medium",
+    "query": "Karpathy nanochat training loop",
+    "expect_any_of": ["Karpathy", "nanochat"],
+    "notes": "known duplicate cluster (3x Karpathy-Loop). OPERATOR: verify."
+  },
+  {
+    "id": "recall_pks_dream_forgetting",
+    "axis": "carry_forward_recall",
+    "enabled": true,
+    "priority": "high",
+    "query": "personal knowledge system Dream forgetting design",
+    "expect_any_of": ["Dream", "forgetting", "PKS", "memory operating system"],
+    "notes": "PKS itself."
+  },
+  {
+    "id": "recall_dream_quarantine_demotion",
+    "axis": "carry_forward_recall",
+    "enabled": true,
+    "priority": "medium",
+    "query": "Dream quarantine before tier demotion synaptic weakening",
+    "expect_any_of": ["quarantine", "demote", "Layer 2", "synaptic"],
+    "notes": "recent Dream-and-forgetting work."
+  },
+  {
+    "id": "recall_semantic_entity_resolution",
+    "axis": "carry_forward_recall",
+    "enabled": true,
+    "priority": "high",
+    "query": "semantic entity resolution deduplication embeddings",
+    "expect_any_of": ["entity resolution", "dedup", "duplicate"],
+    "notes": "this remediation effort."
+  },
+  {
+    "id": "recall_cloudflare_mcp_upstash",
+    "axis": "carry_forward_recall",
+    "enabled": true,
+    "priority": "medium",
+    "query": "Cloudflare Worker MCP server Upstash retrieval",
+    "expect_any_of": ["Cloudflare", "MCP", "Upstash"],
+    "notes": "infrastructure stack."
+  },
+  {
+    "id": "recall_bloomberg_opusbloomberg",
+    "axis": "carry_forward_recall",
+    "enabled": true,
+    "priority": "medium",
+    "query": "Bloomberg terminal data integration OpusBloomberg",
+    "expect_any_of": ["Bloomberg", "OpusBloomberg"],
+    "notes": "data sourcing."
+  },
+  {
+    "id": "recall_country_equity_rotation",
+    "axis": "carry_forward_recall",
+    "enabled": true,
+    "priority": "high",
+    "query": "country equity rotation backtest sharpe",
+    "expect_any_of": ["country", "rotation", "equity", "backtest"],
+    "notes": "core professional domain."
+  },
+  {
+    "id": "recall_gmo_quant_identity",
+    "axis": "carry_forward_recall",
+    "enabled": true,
+    "priority": "high",
+    "query": "GMO senior advisor quantitative investing identity",
+    "expect_any_of": ["GMO", "quantitative", "senior advisor"],
+    "notes": "professional identity. OPERATOR: verify identity entry."
+  },
+  {
+    "id": "recall_agent_session_ingestion",
+    "axis": "carry_forward_recall",
+    "enabled": true,
+    "priority": "medium",
+    "query": "agent session ingestion Claude Code Codex pipeline",
+    "expect_any_of": ["agent session", "Claude Code", "Codex", "ingestion"],
+    "notes": "ingestion subsystem."
+  },
+  {
+    "id": "recall_salience_half_life",
+    "axis": "carry_forward_recall",
+    "enabled": true,
+    "priority": "medium",
+    "query": "salience scoring memory decay half life",
+    "expect_any_of": ["salience", "decay", "half-life", "half life"],
+    "notes": "memory model."
+  },
+  {
+    "id": "recall_california_law_taxonomy",
+    "axis": "carry_forward_recall",
+    "enabled": true,
+    "priority": "medium",
+    "query": "California law chatbot content classification taxonomy",
+    "expect_any_of": ["California", "classification", "taxonomy", "legal"],
+    "notes": "recent merged cluster."
+  },
+  {
+    "id": "recall_tweet_reader_fxtwitter",
+    "axis": "carry_forward_recall",
+    "enabled": true,
+    "priority": "medium",
+    "query": "tweet reader ingestion fxtwitter fallback",
+    "expect_any_of": ["tweet", "twitter", "fxtwitter"],
+    "notes": "tweets module."
+  }
+]

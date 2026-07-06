@@ -1,0 +1,52 @@
+[
+  {
+    "id": "stale_embedding_dims",
+    "axis": "stale_fact",
+    "enabled": true,
+    "priority": "high",
+    "query": "what embedding model and dimensions does PKS production search use",
+    "expect_any_of": ["text-embedding-3-large", "3072"],
+    "forbid_any_of": ["production uses text-embedding-3-small"],
+    "notes": "Current = 3-large/3072. The legacy 3-small/1536 exists in a known-bug entry (ke_231701212087) where mentioning it is CORRECT context, so the forbidden string targets only the wrong-as-current phrasing. OPERATOR: tighten once supersession metadata exists."
+  },
+  {
+    "id": "stale_search_weights",
+    "axis": "stale_fact",
+    "enabled": true,
+    "priority": "high",
+    "query": "how is PKS search scored relevance recency salience weights",
+    "expect_any_of": ["0.55", "55%", "semantic"],
+    "forbid_any_of": ["70% relevance + 30% recency", "70/30"],
+    "notes": "README's old 70/30 formula was superseded by 0.55 semantic + 0.15 recency + 0.30 salience (verified in salience.ts/memory_policy.json 2026-07-06). If a stale 70/30 entry surfaces un-flagged, that's a leak."
+  },
+  {
+    "id": "stale_judge_model",
+    "axis": "stale_fact",
+    "enabled": true,
+    "priority": "medium",
+    "query": "which model does the Dream judge use",
+    "expect_any_of": ["judge"],
+    "forbid_any_of": ["claude-opus-4-6"],
+    "notes": "claude-opus-4-6 is a retired model ID (CLAUDE.md model policy); its appearance as the current judge model is a stale leak. Default fixed to claude-opus-4-8 in ingestion/dream_judge/run.py on 2026-07-06."
+  },
+  {
+    "id": "stale_mcp_four_tools",
+    "axis": "stale_fact",
+    "enabled": true,
+    "priority": "medium",
+    "query": "how many MCP tools does the personal knowledge system expose",
+    "expect_any_of": ["24", "twenty-four"],
+    "forbid_any_of": ["4 MCP tools", "four tools", "exposes 4 tools"],
+    "notes": "The '4 tools' claim (get_index/get_context/get_deep/search) is a 2026-03-era fact; the production worker registers 24 tools (verified index.ts 2026-07-06). OPERATOR: update expected count when tools change."
+  },
+  {
+    "id": "stale_example_disabled",
+    "axis": "stale_fact",
+    "enabled": false,
+    "priority": "low",
+    "query": "example stale plan query",
+    "expect_any_of": [],
+    "forbid_any_of": ["example stale phrase"],
+    "notes": "Migrated from tests/fixtures/temporal_staleness_probes.json — disabled schema example only."
+  }
+]
