@@ -1,11 +1,21 @@
 [
   {
-    "id": "esave_example_disabled",
+    "id": "esave_eval_discipline",
+    "axis": "explicit_save_recall",
+    "enabled": true,
+    "priority": "high",
+    "query": "what is my eval discipline for changing PKS retrieval",
+    "expect_entry_ids": ["ke_85828e07e5d64b1a"],
+    "expect_any_of": ["run_eval.py", "before/after"],
+    "notes": "Canary entry created 2026-07-06 via create_entry (the first-ever explicit_save entry in production — the class was EMPTY before it: a full read-only Redis scan on 2026-07-06 found 0 entries with context_type=explicit_save among 6,945 active knowledge keys). Beyond recall, this probe watches whether Layer-2/retier ever weakens the highest-authority context class (June review C4)."
+  },
+  {
+    "id": "esave_class_empty_note",
     "axis": "explicit_save_recall",
     "enabled": false,
     "priority": "high",
-    "query": "things I explicitly asked to remember",
+    "query": "(not a runnable probe)",
     "expect_any_of": [],
-    "notes": "OPERATOR: this axis needs seeding from entries with context_type=explicit_save — none were verified during the 2026-07-06 session (the live index page showed none in the top slice). Run: search entries by context_type=explicit_save, pick 5-10, write one probe each. The axis exists so the runner reports it as UNMEASURED rather than silently absent."
+    "notes": "OPERATOR FINDING 2026-07-06: ingestion has never produced an explicit_save entry — 'remember this' moments in chat transcripts are not being classified into the class the whole protection design centers on. Fixing explicit-save detection in distillation/ingestion extractors is upgrade-plan item 3 work. Seed more probes here as real explicit saves accumulate."
   }
 ]

@@ -15,9 +15,9 @@
     "enabled": true,
     "priority": "high",
     "query": "bbg.hist PX_BID PX_ASK",
-    "expect_entry_ids": ["ke_7a7bc070fbde"],
+    "expect_entry_ids": ["ke_153bb3d8adb3"],
     "expect_any_of": ["PX_BID", "PX_ASK", "bbg.hist"],
-    "notes": "Exact API call + Bloomberg field mnemonics. Verified live 2026-07-05: ke_7a7bc070fbde."
+    "notes": "Exact API call + Bloomberg field mnemonics. ROOT CAUSE (baseline miss, diagnosed 2026-07-06): the original target ke_7a7bc070fbde was merged away ~2026-07-05/06 and 'PX_BID' now appears in ZERO active entries (full Redis scan) — live summarization drift; content recoverable only from archive snapshots. 'bbg.hist' survives in exactly one entry (ke_153bb3d8adb3, BLPAPI wrapper pattern), now the target. This probe doubles as a drift sentinel."
   },
   {
     "id": "lex_embedding_model_name",
@@ -55,9 +55,9 @@
     "enabled": true,
     "priority": "medium",
     "query": "1MTR 3MTR 12MTR signal direction",
-    "expect_entry_ids": ["ke_9443a2946ad1"],
+    "expect_entry_ids": ["ke_9443a2946ad1", "ke_07de3487a6d7", "ke_17bd296a39cb", "ke_676a9207b02e"],
     "expect_any_of": ["1MTR", "mean-rever"],
-    "notes": "Exact feature mnemonics. Verified live 2026-07-05: ke_9443a2946ad1 (momentum features exhibit mean-reversion in LoopPilot)."
+    "notes": "Exact feature mnemonics. ROOT CAUSE (baseline miss, diagnosed 2026-07-06): 16 active entries contain '1MTR' (most tier 1) yet NONE reached the vector top-40 candidates — embeddings cannot match token-level mnemonics. This is the cleanest evidence for hybrid lexical candidate generation (upgrade-plan item 1). Extra target ids added from the Redis scan."
   },
   {
     "id": "lex_guarded_connect",
