@@ -40,6 +40,7 @@ The `scripts/` directory contains many one-off or recurring operational tools, i
 - Dream-related audits and benchmarks
 - repo-agent-context export/install helpers
 - staging provisioning and verification tools
+- `scripts/run_eval.py` — retrieval-quality eval runner (see [Testing guidance](testing.md))
 
 When changing a script, check whether it writes to `scripts/reports/`, `ingestion/checkpoints/`, or Redis keys. Many of these scripts are designed around durable artifacts rather than stdout alone.
 
@@ -60,8 +61,9 @@ Typical workflow:
 
 1. Update the Worker server modules.
 2. Run the Worker Vitest suite.
-3. Inspect the relevant `docs/` PRD if behavior is phase-gated.
-4. Check whether the orchestrator or tests need matching updates.
+3. Run `scripts/run_eval.py` before the change, then again after, and diff the two reports (`--compare`) — the README requires this before any ranking, forgetting, or admission change ships.
+4. Inspect the relevant `docs/` PRD if behavior is phase-gated.
+5. Check whether the orchestrator or tests need matching updates.
 
 ### Orchestrator changes
 
