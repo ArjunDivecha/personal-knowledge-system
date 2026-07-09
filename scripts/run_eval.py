@@ -43,6 +43,15 @@ are still written.
 --compare OLD.json NEW.json diffs two prior reports (no network) — the shadow
 A/B safety rail: per-axis metric deltas plus per-probe pass/fail flips.
 
+--fail-on-regression (used with --compare) turns that diff into a deterministic
+gate: exit 1 if any enabled probe flips pass->fail, or any measured axis metric
+degrades beyond its tolerance (recall-family/supersession/negative/paraphrase:
+new < old - 0.02; stale_leak_rate, where lower is better: new > old + 0.02).
+An axis UNMEASURED (null) in either report is skipped, never scored as a
+regression (no-fake-zero rule). Without the flag, --compare is unchanged
+(descriptive only, always exits 0). See tests/python/test_run_eval_compare.py
+and contracts/retrieval-regression-gate.spec.md for the gate contract.
+
 The LLM-judge escalation path (DeepSeek V4 Flash direct API, validated 26/26 on
 2026-07-06, see judge-shootout results) applies to ANSWER-mode evaluation
 (Phase B/C: judging which injected memories an assistant's answer used); this
@@ -57,6 +66,8 @@ USAGE:
   python3 scripts/run_eval.py --base-url https://arjun-knowledge-mcp-staging.arjun-divecha.workers.dev --config-tag shadow-X
   python3 scripts/run_eval.py --only-axis exact_lexical
   python3 scripts/run_eval.py --compare reports/eval_baseline_A.json reports/eval_baseline_B.json
+  python3 scripts/run_eval.py --compare tests/baselines/retrieval_baseline.json reports/fresh.json --fail-on-regression
+      # exit 0 = no regression, exit 1 = a probe flipped pass->fail or an axis degraded beyond tolerance
 
 NOTES:
 - Read-only: only the `search` tool is called; access_count side effects on the
@@ -95,6 +106,12 @@ AXIS_METRIC = {
     "paraphrase": "paraphrase_consistency",
 }
 
+# stale_leak_rate is the one metric where LOWER is better (fewer stale leaks);
+# every other metric here is HIGHER-is-better. Used by --fail-on-regression to
+# pick the correct "worse" direction per axis (PKS-RETRIEVAL-REGRESSION-GATE-001).
+LOWER_IS_BETTER_METRICS = {"stale_leak_rate"}
+REGRESSION_TOLERANCE = 0.02  # absolute, applied in the "worse" direction per axis
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="PKS retrieval-mode eval runner")
@@ -108,6 +125,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--include-disabled", action="store_true",
                    help="also run enabled:false draft probes (reported separately, never scored)")
     p.add_argument("--compare", nargs=2, metavar=("OLD", "NEW"), default=None)
+    p.add_argument("--fail-on-regression", action="store_true",
+                   help="with --compare: exit 1 if any enabled probe flips pass->fail "
+                        "or any measured axis metric degrades beyond tolerance "
+                        f"({REGRESSION_TOLERANCE} absolute); UNMEASURED axes are skipped")
     return p.parse_args()
 
 
@@ -272,19 +293,32 @@ def run_eval(args: argparse.Namespace) -> int:
     return 1 if errors else 0
 
 
-def compare(old_path: str, new_path: str) -> int:
+def axis_regressed(axis: str, old_value: float, new_value: float) -> bool:
+    """True iff new_value is worse than old_value by more than REGRESSION_TOLERANCE,
+    direction-aware per LOWER_IS_BETTER_METRICS (PKS-RETRIEVAL-REGRESSION-GATE-001 INV2)."""
+    metric = AXIS_METRIC.get(axis)
+    if metric in LOWER_IS_BETTER_METRICS:
+        return new_value > old_value + REGRESSION_TOLERANCE
+    return new_value < old_value - REGRESSION_TOLERANCE
+
+
+def compare(old_path: str, new_path: str, fail_on_regression: bool = False) -> int:
     old = json.loads(Path(old_path).read_text())
     new = json.loads(Path(new_path).read_text())
     print(f"OLD {old['config_tag']} ({old['generated_at']})  vs  "
           f"NEW {new['config_tag']} ({new['generated_at']})\n")
     print(f"{'axis':26} {'old':>8} {'new':>8} {'delta':>8}")
+    regressed_axes: list[str] = []
     for axis in AXIS_METRIC:
         ov = old["axes"].get(axis, {}).get("value")
         nv = new["axes"].get(axis, {}).get("value")
-        delta = (f"{nv - ov:+.3f}" if isinstance(ov, (int, float)) and isinstance(nv, (int, float))
-                 else "—")
+        both_measured = isinstance(ov, (int, float)) and isinstance(nv, (int, float))
+        delta = f"{nv - ov:+.3f}" if both_measured else "—"
         print(f"{axis:26} {ov if ov is not None else 'UNMEAS':>8} "
               f"{nv if nv is not None else 'UNMEAS':>8} {delta:>8}")
+        # UNMEASURED (either side null) is skipped, never scored as a regression (INV4).
+        if both_measured and axis_regressed(axis, ov, nv):
+            regressed_axes.append(axis)
     old_p = {r["id"]: r.get("passed") for r in old["probes"] if r.get("enabled")}
     new_p = {r["id"]: r.get("passed") for r in new["probes"] if r.get("enabled")}
     flips = [(pid, old_p.get(pid), new_p.get(pid))
@@ -294,13 +328,30 @@ def compare(old_path: str, new_path: str) -> int:
         print(f"  {pid}: {o} -> {n}")
     om, nm = old["tokens_per_query"], new["tokens_per_query"]
     print(f"tokens/query median {om['median']} -> {nm['median']}")
+
+    if not fail_on_regression:
+        return 0
+
+    # A probe that passed in OLD and is not True in NEW is a regression — this
+    # includes an explicit pass->fail flip AND a probe silently missing from
+    # the NEW report (e.g. a --only-axis run, a dropped/renamed probe id):
+    # both mean "a previously-passing check is no longer proven to pass".
+    regressed_probes = [pid for pid, o, n in flips if o is True and n is not True]
+    if regressed_axes or regressed_probes:
+        print("\nREGRESSION GATE: FAIL")
+        if regressed_axes:
+            print(f"  degraded axes (> {REGRESSION_TOLERANCE} beyond baseline): {regressed_axes}")
+        if regressed_probes:
+            print(f"  probes no longer proven passing (flipped or missing): {regressed_probes}")
+        return 1
+    print("\nREGRESSION GATE: PASS")
     return 0
 
 
 def main() -> int:
     args = parse_args()
     if args.compare:
-        return compare(*args.compare)
+        return compare(*args.compare, fail_on_regression=args.fail_on_regression)
     return run_eval(args)
 
 

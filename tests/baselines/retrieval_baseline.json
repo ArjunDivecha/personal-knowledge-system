@@ -1,0 +1,1565 @@
+{
+ "generated_at": "2026-07-09T14:25:38+00:00",
+ "config_tag": "gate-check",
+ "base_url": "https://mcp.dancing-ganesh.com",
+ "k": 5,
+ "negative_threshold": 0.85,
+ "note_access_side_effect": "search calls may increment server-side access counts; baseline runs are not organic usage",
+ "note_tokens": "token_estimate = chars/4 of returned label+summary; search response has no usage field",
+ "n_enabled": 52,
+ "n_drafts": 5,
+ "errors": 0,
+ "axes": {
+  "carry_forward_recall": {
+   "metric": "recall_at_k",
+   "value": 0.9,
+   "n": 20,
+   "status": "measured"
+  },
+  "project_recall": {
+   "metric": "recall_at_k",
+   "value": 0.857,
+   "n": 7,
+   "status": "measured"
+  },
+  "explicit_save_recall": {
+   "metric": "recall_at_k",
+   "value": 1.0,
+   "n": 1,
+   "status": "measured"
+  },
+  "exact_lexical": {
+   "metric": "recall_at_k",
+   "value": 0.667,
+   "n": 6,
+   "status": "measured"
+  },
+  "stale_fact": {
+   "metric": "stale_leak_rate",
+   "value": 0.5,
+   "n": 4,
+   "status": "measured"
+  },
+  "supersession": {
+   "metric": "supersession_accuracy",
+   "value": 0.5,
+   "n": 2,
+   "status": "measured"
+  },
+  "negative": {
+   "metric": "negative_precision",
+   "value": 1.0,
+   "n": 6,
+   "status": "measured"
+  },
+  "paraphrase": {
+   "metric": "paraphrase_consistency",
+   "value": 0.667,
+   "n": 3,
+   "status": "measured"
+  }
+ },
+ "tokens_per_query": {
+  "median": 254,
+  "p95": 267
+ },
+ "paraphrase_groups": {
+  "lora_config": {
+   "consistent": true,
+   "common_ids": [
+    "ke_b1f1822362c7"
+   ],
+   "legs": [
+    "para_lora_a",
+    "para_lora_b"
+   ]
+  },
+  "asado_warehouse": {
+   "consistent": false,
+   "common_ids": [],
+   "legs": [
+    "para_asado_a",
+    "para_asado_b"
+   ]
+  },
+  "bbg_spreads": {
+   "consistent": true,
+   "common_ids": [
+    "ke_145d5b974622",
+    "ke_4fac0f92e470"
+   ],
+   "legs": [
+    "para_bbg_a",
+    "para_bbg_b"
+   ]
+  }
+ },
+ "probes": [
+  {
+   "id": "lex_asado_duckdb_path",
+   "axis": "exact_lexical",
+   "enabled": true,
+   "query": "Data/asado.duckdb",
+   "paraphrase_group": null,
+   "latency_s": 4.18,
+   "token_estimate": 251,
+   "top_ids": [
+    "ke_8ce1600b1f18",
+    "ke_e806ea8473b3",
+    "ke_1ca852cb56c3",
+    "ke_52a4dfa20fd3",
+    "ke_b9c30430abe1"
+   ],
+   "top_final_scores": [
+    1.0983,
+    0.9431,
+    0.9403,
+    0.9398,
+    0.9345
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "lex_bbg_hist_fields",
+   "axis": "exact_lexical",
+   "enabled": true,
+   "query": "bbg.hist PX_BID PX_ASK",
+   "paraphrase_group": null,
+   "latency_s": 2.42,
+   "token_estimate": 245,
+   "top_ids": [
+    "ke_812f9dd2dcc8",
+    "ke_098270efab7f",
+    "ke_4e8fee2ee4d2",
+    "ke_c9246908a74f",
+    "ke_93fb22b897e7"
+   ],
+   "top_final_scores": [
+    0.8543,
+    0.8512,
+    0.7617,
+    0.7436,
+    0.7341
+   ],
+   "expected_found": false,
+   "id_hit": false,
+   "text_hit": false,
+   "leaks": [],
+   "passed": false
+  },
+  {
+   "id": "lex_embedding_model_name",
+   "axis": "exact_lexical",
+   "enabled": true,
+   "query": "text-embedding-3-large",
+   "paraphrase_group": null,
+   "latency_s": 2.85,
+   "token_estimate": 253,
+   "top_ids": [
+    "ke_231701212087",
+    "ke_a14b114f6a85",
+    "ke_860cf7c41e04",
+    "ke_e2fc05398e0f",
+    "ke_92870487a1ff"
+   ],
+   "top_final_scores": [
+    0.9656,
+    0.8528,
+    0.8221,
+    0.8205,
+    0.803
+   ],
+   "expected_found": true,
+   "id_hit": true,
+   "text_hit": false,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "lex_repo_news",
+   "axis": "exact_lexical",
+   "enabled": true,
+   "query": "ArjunDivecha/News repo pipeline",
+   "paraphrase_group": null,
+   "latency_s": 2.56,
+   "token_estimate": 240,
+   "top_ids": [
+    "ke_ece4408958f2",
+    "ke_a5c7f2f60dbd",
+    "ke_5c2de012d012",
+    "ke_2b7427c120f3",
+    "ke_9119b1e2e698"
+   ],
+   "top_final_scores": [
+    1.1164,
+    1.0842,
+    0.957,
+    0.9536,
+    0.9338
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "lex_corwin_schultz",
+   "axis": "exact_lexical",
+   "enabled": true,
+   "query": "Corwin-Schultz spread estimator",
+   "paraphrase_group": null,
+   "latency_s": 2.13,
+   "token_estimate": 256,
+   "top_ids": [
+    "ke_989aec8b9432",
+    "ke_de7c33d2c21b",
+    "ke_3f080a5023be",
+    "ke_8055ad0ea595",
+    "ke_784360a72fc0"
+   ],
+   "top_final_scores": [
+    0.9729,
+    0.7521,
+    0.6802,
+    0.6683,
+    0.6051
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "lex_1mtr_3mtr_12mtr",
+   "axis": "exact_lexical",
+   "enabled": true,
+   "query": "1MTR 3MTR 12MTR signal direction",
+   "paraphrase_group": null,
+   "latency_s": 2.85,
+   "token_estimate": 247,
+   "top_ids": [
+    "ke_4f1e6268c1b9",
+    "ke_e0908648597a",
+    "ke_e4da992cab7c",
+    "ke_1161ba4d8481",
+    "ke_26b4663b5697"
+   ],
+   "top_final_scores": [
+    0.7447,
+    0.6424,
+    0.636,
+    0.6042,
+    0.6034
+   ],
+   "expected_found": false,
+   "id_hit": false,
+   "text_hit": false,
+   "leaks": [],
+   "passed": false
+  },
+  {
+   "id": "esave_eval_discipline",
+   "axis": "explicit_save_recall",
+   "enabled": true,
+   "query": "what is my eval discipline for changing PKS retrieval",
+   "paraphrase_group": null,
+   "latency_s": 2.87,
+   "token_estimate": 255,
+   "top_ids": [
+    "ke_85828e07e5d64b1a",
+    "ke_e8b1aa974c2e",
+    "ke_2cc747dca0ed",
+    "ke_afac988a5d05",
+    "ke_5bc4eda0fbf4"
+   ],
+   "top_final_scores": [
+    1.0241,
+    0.8782,
+    0.8637,
+    0.8335,
+    0.8326
+   ],
+   "expected_found": true,
+   "id_hit": true,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "neg_capital_france",
+   "axis": "negative",
+   "enabled": true,
+   "query": "what is the capital of France",
+   "paraphrase_group": null,
+   "latency_s": 2.71,
+   "token_estimate": 244,
+   "top_ids": [
+    "ke_e43aa67269e3",
+    "ke_8d14f1691f17",
+    "ke_72d21f85f65f",
+    "ke_0a2ea5105ac1",
+    "ke_9e7f3812d15f"
+   ],
+   "top_final_scores": [
+    0.5636,
+    0.507,
+    0.4746,
+    0.461,
+    0.4315
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": false,
+   "leaks": [],
+   "passed": true,
+   "top_score": 0.5636
+  },
+  {
+   "id": "neg_quicksort",
+   "axis": "negative",
+   "enabled": true,
+   "query": "explain how quicksort works",
+   "paraphrase_group": null,
+   "latency_s": 2.72,
+   "token_estimate": 258,
+   "top_ids": [
+    "ke_379c5c45ff79",
+    "ke_6f0845df93a4",
+    "ke_a09e072c7f8d",
+    "ke_cf535b972fb8",
+    "ke_9a4f69f63b3f"
+   ],
+   "top_final_scores": [
+    0.5913,
+    0.4683,
+    0.4679,
+    0.4675,
+    0.4672
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": false,
+   "leaks": [],
+   "passed": true,
+   "top_score": 0.5913
+  },
+  {
+   "id": "neg_unit_conversion",
+   "axis": "negative",
+   "enabled": true,
+   "query": "convert 100 fahrenheit to celsius",
+   "paraphrase_group": null,
+   "latency_s": 2.09,
+   "token_estimate": 244,
+   "top_ids": [
+    "ke_3b36fefd9182",
+    "ke_3919354d9987",
+    "ke_7a6fe6d2f617",
+    "ke_d8b46e94620e",
+    "ke_34a0f2fcdc4b"
+   ],
+   "top_final_scores": [
+    0.6005,
+    0.5959,
+    0.5159,
+    0.4701,
+    0.4691
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": false,
+   "leaks": [],
+   "passed": true,
+   "top_score": 0.6005
+  },
+  {
+   "id": "neg_poem",
+   "axis": "negative",
+   "enabled": true,
+   "query": "write a haiku about autumn leaves",
+   "paraphrase_group": null,
+   "latency_s": 2.69,
+   "token_estimate": 270,
+   "top_ids": [
+    "ke_142e5c85cb63",
+    "ke_548e4ced8499",
+    "ke_a4287e8db7b9",
+    "ke_dfba19cdf023",
+    "ke_3e43a35d3920"
+   ],
+   "top_final_scores": [
+    0.6394,
+    0.5768,
+    0.5716,
+    0.5696,
+    0.5611
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": false,
+   "leaks": [],
+   "passed": true,
+   "top_score": 0.6394
+  },
+  {
+   "id": "neg_python_syntax",
+   "axis": "negative",
+   "enabled": true,
+   "query": "python list comprehension syntax",
+   "paraphrase_group": null,
+   "latency_s": 2.26,
+   "token_estimate": 250,
+   "top_ids": [
+    "ke_c9e893c8fe05",
+    "ke_60934900da1f",
+    "ke_068bc6837fa74125",
+    "ke_f4d913130284",
+    "ke_115dea7a856e"
+   ],
+   "top_final_scores": [
+    0.6193,
+    0.5742,
+    0.4861,
+    0.4838,
+    0.4838
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": false,
+   "leaks": [],
+   "passed": true,
+   "top_score": 0.6193
+  },
+  {
+   "id": "neg_who_is_einstein",
+   "axis": "negative",
+   "enabled": true,
+   "query": "who was Albert Einstein",
+   "paraphrase_group": null,
+   "latency_s": 2.55,
+   "token_estimate": 258,
+   "top_ids": [
+    "ke_4a3efaa8340e",
+    "ke_5d56b52f471d",
+    "ke_c384add0b285",
+    "ke_1a60c25e11f2",
+    "ke_7ed1f86571e6"
+   ],
+   "top_final_scores": [
+    0.5496,
+    0.5294,
+    0.5225,
+    0.5223,
+    0.5147
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": false,
+   "leaks": [],
+   "passed": true,
+   "top_score": 0.5496
+  },
+  {
+   "id": "para_lora_a",
+   "axis": "paraphrase",
+   "enabled": true,
+   "query": "LoRA settings for my News fine-tune",
+   "paraphrase_group": "lora_config",
+   "latency_s": 2.14,
+   "token_estimate": 254,
+   "top_ids": [
+    "ke_b1f1822362c7",
+    "ke_d1e52ca0bb3f",
+    "ke_ecb4d9a1c6a8",
+    "ke_56e2e82597e8",
+    "ke_67a689793eb6"
+   ],
+   "top_final_scores": [
+    0.9828,
+    0.8073,
+    0.788,
+    0.7855,
+    0.783
+   ],
+   "expected_found": true,
+   "id_hit": true,
+   "text_hit": false,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "para_lora_b",
+   "axis": "paraphrase",
+   "enabled": true,
+   "query": "what rank and alpha am I using for low-rank adaptation training",
+   "paraphrase_group": "lora_config",
+   "latency_s": 2.25,
+   "token_estimate": 248,
+   "top_ids": [
+    "ke_5773eda2d964",
+    "ke_1e0ad5854055",
+    "ke_6d699bc913b4",
+    "ke_4ee91f590444",
+    "ke_b1f1822362c7"
+   ],
+   "top_final_scores": [
+    0.7503,
+    0.5973,
+    0.5916,
+    0.5666,
+    0.2437
+   ],
+   "expected_found": true,
+   "id_hit": true,
+   "text_hit": false,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "para_asado_a",
+   "axis": "paraphrase",
+   "enabled": true,
+   "query": "ASADO DuckDB warehouse location",
+   "paraphrase_group": "asado_warehouse",
+   "latency_s": 2.39,
+   "token_estimate": 244,
+   "top_ids": [
+    "ke_ae0a7d555995",
+    "ke_8ce1600b1f18",
+    "ke_e806ea8473b3",
+    "ke_52a4dfa20fd3",
+    "ke_63306c7108fb"
+   ],
+   "top_final_scores": [
+    1.1995,
+    1.0388,
+    1.0387,
+    1.035,
+    1.0318
+   ],
+   "expected_found": true,
+   "id_hit": true,
+   "text_hit": false,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "para_asado_b",
+   "axis": "paraphrase",
+   "enabled": true,
+   "query": "which single database file holds the consolidated macro research data",
+   "paraphrase_group": "asado_warehouse",
+   "latency_s": 2.15,
+   "token_estimate": 263,
+   "top_ids": [
+    "ke_69b03674b101",
+    "ke_43b77fdfc22f",
+    "ke_6cab9eafde4a",
+    "ke_48f8ffdffd52",
+    "ke_0ed5e8bef7dd"
+   ],
+   "top_final_scores": [
+    0.8274,
+    0.645,
+    0.6048,
+    0.5857,
+    0.2449
+   ],
+   "expected_found": false,
+   "id_hit": false,
+   "text_hit": false,
+   "leaks": [],
+   "passed": false
+  },
+  {
+   "id": "para_bbg_a",
+   "axis": "paraphrase",
+   "enabled": true,
+   "query": "pulling bid ask history from Bloomberg for spread calculation",
+   "paraphrase_group": "bbg_spreads",
+   "latency_s": 2.3,
+   "token_estimate": 247,
+   "top_ids": [
+    "ke_812f9dd2dcc8",
+    "ke_4fac0f92e470",
+    "ke_d65b43a1c63d",
+    "ke_03234b7a7327",
+    "ke_145d5b974622"
+   ],
+   "top_final_scores": [
+    0.979,
+    0.8851,
+    0.8825,
+    0.8799,
+    0.877
+   ],
+   "expected_found": false,
+   "id_hit": false,
+   "text_hit": false,
+   "leaks": [],
+   "passed": false
+  },
+  {
+   "id": "para_bbg_b",
+   "axis": "paraphrase",
+   "enabled": true,
+   "query": "how did I compute trailing spreads from terminal data",
+   "paraphrase_group": "bbg_spreads",
+   "latency_s": 2.32,
+   "token_estimate": 259,
+   "top_ids": [
+    "ke_145d5b974622",
+    "ke_ab846663d952",
+    "ke_32e5cd60dddc",
+    "ke_d4d1027863a1",
+    "ke_4fac0f92e470"
+   ],
+   "top_final_scores": [
+    0.7785,
+    0.77,
+    0.7636,
+    0.7365,
+    0.7362
+   ],
+   "expected_found": false,
+   "id_hit": false,
+   "text_hit": false,
+   "leaks": [],
+   "passed": false
+  },
+  {
+   "id": "proj_asado_warehouse",
+   "axis": "project_recall",
+   "enabled": true,
+   "query": "where is the ASADO analytical warehouse stored",
+   "paraphrase_group": null,
+   "latency_s": 2.92,
+   "token_estimate": 234,
+   "top_ids": [
+    "ke_ae0a7d555995",
+    "ke_116616986b27",
+    "ke_29114415cf3d",
+    "ke_63306c7108fb",
+    "ke_fdf2807cd1c8"
+   ],
+   "top_final_scores": [
+    1.1868,
+    1.1773,
+    1.0696,
+    0.9532,
+    0.8741
+   ],
+   "expected_found": true,
+   "id_hit": true,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "proj_t2_pipeline_steps",
+   "axis": "project_recall",
+   "enabled": true,
+   "query": "T2 factor timing pipeline structure how many steps",
+   "paraphrase_group": null,
+   "latency_s": 2.09,
+   "token_estimate": 256,
+   "top_ids": [
+    "ke_fc740e5766f5",
+    "ke_df026db27b98",
+    "ke_bfba36f8b31b",
+    "ke_6f1bf535f800",
+    "ke_f90f56930b6d"
+   ],
+   "top_final_scores": [
+    1.0794,
+    1.0391,
+    0.9118,
+    0.8894,
+    0.8548
+   ],
+   "expected_found": true,
+   "id_hit": true,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "proj_news_flash_step",
+   "axis": "project_recall",
+   "enabled": true,
+   "query": "which step of the News pipeline generates the Flash report",
+   "paraphrase_group": null,
+   "latency_s": 2.48,
+   "token_estimate": 250,
+   "top_ids": [
+    "ke_449ce54a214a",
+    "ke_91f81bf784ec",
+    "ke_8da2d4aa6666",
+    "ke_a9c2f82c7aaa",
+    "ke_9d8b56085cfa"
+   ],
+   "top_final_scores": [
+    1.3411,
+    0.934,
+    0.9304,
+    0.8756,
+    0.8752
+   ],
+   "expected_found": true,
+   "id_hit": true,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "proj_lawbot_vercel_limits",
+   "axis": "project_recall",
+   "enabled": true,
+   "query": "California Law Chatbot serverless memory and timeout limits",
+   "paraphrase_group": null,
+   "latency_s": 2.32,
+   "token_estimate": 216,
+   "top_ids": [
+    "ke_589310793faf",
+    "ke_bbb3645fe4ec",
+    "ke_7e1949d6f8b0",
+    "ke_f863106863d9",
+    "ke_1710cdb02ca1"
+   ],
+   "top_final_scores": [
+    0.938,
+    0.6811,
+    0.6703,
+    0.6189,
+    0.6145
+   ],
+   "expected_found": false,
+   "id_hit": false,
+   "text_hit": false,
+   "leaks": [],
+   "passed": false
+  },
+  {
+   "id": "proj_pks_stack",
+   "axis": "project_recall",
+   "enabled": true,
+   "query": "what infrastructure does my personal knowledge system run on",
+   "paraphrase_group": null,
+   "latency_s": 2.64,
+   "token_estimate": 249,
+   "top_ids": [
+    "ke_fa712793ad41",
+    "ke_656fb93f77f0",
+    "ke_d8d4298e8ced",
+    "ke_0952853f2552",
+    "ke_91c37f8c6b78"
+   ],
+   "top_final_scores": [
+    0.9386,
+    0.9168,
+    0.9055,
+    0.9038,
+    0.8784
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "proj_lora_config",
+   "axis": "project_recall",
+   "enabled": true,
+   "query": "LoRA hyperparameters for the News fine-tune",
+   "paraphrase_group": null,
+   "latency_s": 2.23,
+   "token_estimate": 260,
+   "top_ids": [
+    "ke_b1f1822362c7",
+    "ke_b8daa60b9ef7",
+    "ke_d1e52ca0bb3f",
+    "ke_ecb4d9a1c6a8",
+    "ke_12f3440fa090"
+   ],
+   "top_final_scores": [
+    1.0399,
+    0.9544,
+    0.8734,
+    0.8644,
+    0.8531
+   ],
+   "expected_found": true,
+   "id_hit": true,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "proj_lawbot_pdf_chunking",
+   "axis": "project_recall",
+   "enabled": true,
+   "query": "how are CEB PDFs chunked for the law chatbot",
+   "paraphrase_group": null,
+   "latency_s": 2.43,
+   "token_estimate": 237,
+   "top_ids": [
+    "ke_db71581bcc49",
+    "ke_0bc5f6e7032c",
+    "ke_a46423612052",
+    "ke_b4ca5bd0c960",
+    "ke_84121f4583f5"
+   ],
+   "top_final_scores": [
+    1.0757,
+    1.0042,
+    0.9951,
+    0.9914,
+    0.9549
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "recall_dip_factor",
+   "axis": "carry_forward_recall",
+   "enabled": true,
+   "query": "demographic inflation pressure DIP factor",
+   "paraphrase_group": null,
+   "latency_s": 2.49,
+   "token_estimate": 256,
+   "top_ids": [
+    "ke_322e1725a88f",
+    "ke_16b391f72beb",
+    "ke_b36fe988df4a",
+    "ke_323a22adcf0a",
+    "ke_f7720599e21c"
+   ],
+   "top_final_scores": [
+    0.7578,
+    0.6881,
+    0.6703,
+    0.6456,
+    0.6023
+   ],
+   "expected_found": false,
+   "id_hit": false,
+   "text_hit": false,
+   "leaks": [],
+   "passed": false
+  },
+  {
+   "id": "recall_asado_strategy_1",
+   "axis": "carry_forward_recall",
+   "enabled": true,
+   "query": "ASADO country rotation analog signal strategy 1",
+   "paraphrase_group": null,
+   "latency_s": 2.37,
+   "token_estimate": 267,
+   "top_ids": [
+    "ke_47be9353acb4",
+    "ke_ff17575edeb1",
+    "ke_f81760da887e",
+    "ke_f786a70aea55",
+    "ke_14e227519b15"
+   ],
+   "top_final_scores": [
+    0.9554,
+    0.913,
+    0.8991,
+    0.8914,
+    0.8882
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "recall_gdelt_asado_pipeline",
+   "axis": "carry_forward_recall",
+   "enabled": true,
+   "query": "GDELT signal construction feeding ASADO",
+   "paraphrase_group": null,
+   "latency_s": 2.45,
+   "token_estimate": 261,
+   "top_ids": [
+    "ke_7580075549ab",
+    "ke_ff17575edeb1",
+    "ke_ce18a53b9325",
+    "ke_fea76cf6cc1b",
+    "ke_076b17edde21"
+   ],
+   "top_final_scores": [
+    1.111,
+    0.8847,
+    0.8751,
+    0.8748,
+    0.8652
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "recall_inmobi_ipo_advisory",
+   "axis": "carry_forward_recall",
+   "enabled": true,
+   "query": "InMobi IPO advisory engagement",
+   "paraphrase_group": null,
+   "latency_s": 2.64,
+   "token_estimate": 255,
+   "top_ids": [
+    "ke_3527d41d9a52",
+    "ke_06f4fa2d3356",
+    "ke_46f8d3311484",
+    "ke_0cb14c1cb862",
+    "ke_851097276003"
+   ],
+   "top_final_scores": [
+    0.7201,
+    0.6614,
+    0.6609,
+    0.6604,
+    0.585
+   ],
+   "expected_found": false,
+   "id_hit": false,
+   "text_hit": false,
+   "leaks": [],
+   "passed": false
+  },
+  {
+   "id": "recall_t2_ic_saturation",
+   "axis": "carry_forward_recall",
+   "enabled": true,
+   "query": "T2 factor timing IC saturation",
+   "paraphrase_group": null,
+   "latency_s": 2.13,
+   "token_estimate": 261,
+   "top_ids": [
+    "ke_fc740e5766f5",
+    "ke_df026db27b98",
+    "ke_9e01e1f200f5",
+    "ke_6f1bf535f800",
+    "ke_bfba36f8b31b"
+   ],
+   "top_final_scores": [
+    0.9115,
+    0.871,
+    0.7613,
+    0.7387,
+    0.7347
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "recall_looppilot_runner",
+   "axis": "carry_forward_recall",
+   "enabled": true,
+   "query": "LoopPilot autonomous experiment loop runner",
+   "paraphrase_group": null,
+   "latency_s": 2.7,
+   "token_estimate": 252,
+   "top_ids": [
+    "ke_3929a10dcfdd",
+    "ke_630c43fed87c",
+    "ke_1e9025bae3b7",
+    "ke_63ccc1569ef4",
+    "ke_80652f55f8a6"
+   ],
+   "top_final_scores": [
+    1.1123,
+    1.0157,
+    1.0011,
+    0.976,
+    0.973
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "recall_looppilot_promotion_baseline",
+   "axis": "carry_forward_recall",
+   "enabled": true,
+   "query": "LoopPilot promotion logic and best_metrics baseline",
+   "paraphrase_group": null,
+   "latency_s": 2.85,
+   "token_estimate": 248,
+   "top_ids": [
+    "ke_3929a10dcfdd",
+    "ke_ee97ebda76fe",
+    "ke_630c43fed87c",
+    "ke_dfd511604104",
+    "ke_80652f55f8a6"
+   ],
+   "top_final_scores": [
+    0.8353,
+    0.7953,
+    0.7882,
+    0.7591,
+    0.7547
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "recall_pattern_cnn_trading",
+   "axis": "carry_forward_recall",
+   "enabled": true,
+   "query": "Pattern CNN trading Jiang Kelly Xiu re-imagined images",
+   "paraphrase_group": null,
+   "latency_s": 2.47,
+   "token_estimate": 265,
+   "top_ids": [
+    "ke_b9956b106d1f",
+    "ke_39453d4525e7",
+    "ke_ac83e3fa8f13",
+    "ke_dc06675711f6",
+    "ke_5018aab29a85"
+   ],
+   "top_final_scores": [
+    0.849,
+    0.7427,
+    0.7391,
+    0.7351,
+    0.6997
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "recall_karpathy_nanochat",
+   "axis": "carry_forward_recall",
+   "enabled": true,
+   "query": "Karpathy nanochat training loop",
+   "paraphrase_group": null,
+   "latency_s": 2.65,
+   "token_estimate": 250,
+   "top_ids": [
+    "ke_6c65d4c9ba74",
+    "ke_f4b332a13d3f",
+    "ke_33336a13d03f",
+    "ke_e748c7557867",
+    "ke_a7fb1580f531"
+   ],
+   "top_final_scores": [
+    1.0398,
+    0.7891,
+    0.7737,
+    0.7643,
+    0.7517
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "recall_pks_dream_forgetting",
+   "axis": "carry_forward_recall",
+   "enabled": true,
+   "query": "personal knowledge system Dream forgetting design",
+   "paraphrase_group": null,
+   "latency_s": 2.9,
+   "token_estimate": 270,
+   "top_ids": [
+    "ke_c0e07727b947",
+    "ke_c0dd9ba42b5d",
+    "ke_6df3576838b4",
+    "ke_133dd33499f8",
+    "ke_e5fdf89dc5ce"
+   ],
+   "top_final_scores": [
+    1.1378,
+    1.066,
+    1.0394,
+    1.0341,
+    1.0189
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "recall_dream_quarantine_demotion",
+   "axis": "carry_forward_recall",
+   "enabled": true,
+   "query": "Dream quarantine before tier demotion synaptic weakening",
+   "paraphrase_group": null,
+   "latency_s": 2.72,
+   "token_estimate": 267,
+   "top_ids": [
+    "ke_07d23279881e",
+    "ke_f8674ec36daf",
+    "ke_133dd33499f8",
+    "ke_6df3576838b4",
+    "ke_c0dd9ba42b5d"
+   ],
+   "top_final_scores": [
+    1.0111,
+    0.9065,
+    0.9035,
+    0.8859,
+    0.8722
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "recall_semantic_entity_resolution",
+   "axis": "carry_forward_recall",
+   "enabled": true,
+   "query": "semantic entity resolution deduplication embeddings",
+   "paraphrase_group": null,
+   "latency_s": 2.7,
+   "token_estimate": 272,
+   "top_ids": [
+    "ke_387c509f65ff",
+    "ke_a7063451e3f6",
+    "ke_0f33a68290b4",
+    "ke_fec3ebb8cbd4",
+    "ke_b95e318425d8"
+   ],
+   "top_final_scores": [
+    0.9954,
+    0.8965,
+    0.8398,
+    0.7932,
+    0.7756
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "recall_cloudflare_mcp_upstash",
+   "axis": "carry_forward_recall",
+   "enabled": true,
+   "query": "Cloudflare Worker MCP server Upstash retrieval",
+   "paraphrase_group": null,
+   "latency_s": 2.6,
+   "token_estimate": 243,
+   "top_ids": [
+    "ke_2fa5449b8c5b",
+    "ke_f0fb4a434fe2",
+    "ke_2590b9555628",
+    "ke_2a297b50766c",
+    "ke_b55d96eda8f4"
+   ],
+   "top_final_scores": [
+    1.225,
+    0.9303,
+    0.9142,
+    0.8855,
+    0.8708
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "recall_bloomberg_opusbloomberg",
+   "axis": "carry_forward_recall",
+   "enabled": true,
+   "query": "Bloomberg terminal data integration OpusBloomberg",
+   "paraphrase_group": null,
+   "latency_s": 2.29,
+   "token_estimate": 257,
+   "top_ids": [
+    "ke_098270efab7f",
+    "ke_195d248e337e",
+    "ke_145d5b974622",
+    "ke_d65b43a1c63d",
+    "ke_ab846663d952"
+   ],
+   "top_final_scores": [
+    1.1963,
+    1.0755,
+    1.0451,
+    1.0232,
+    1.0038
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "recall_country_equity_rotation",
+   "axis": "carry_forward_recall",
+   "enabled": true,
+   "query": "country equity rotation backtest sharpe",
+   "paraphrase_group": null,
+   "latency_s": 2.66,
+   "token_estimate": 258,
+   "top_ids": [
+    "ke_e2a0930dd466",
+    "ke_4dae13e499f9",
+    "ke_24202834e568",
+    "ke_22564beb2d9c",
+    "ke_5b2235ab60754b27"
+   ],
+   "top_final_scores": [
+    0.8365,
+    0.7907,
+    0.7861,
+    0.7792,
+    0.7767
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "recall_gmo_quant_identity",
+   "axis": "carry_forward_recall",
+   "enabled": true,
+   "query": "GMO senior advisor quantitative investing identity",
+   "paraphrase_group": null,
+   "latency_s": 3.06,
+   "token_estimate": 256,
+   "top_ids": [
+    "ke_5d56b52f471d",
+    "ke_7ed1f86571e6",
+    "ke_4a459fb69b28",
+    "ke_2077281cef8b",
+    "ke_7054d5016e7c"
+   ],
+   "top_final_scores": [
+    1.0201,
+    0.9489,
+    0.9458,
+    0.8833,
+    0.8799
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "recall_agent_session_ingestion",
+   "axis": "carry_forward_recall",
+   "enabled": true,
+   "query": "agent session ingestion Claude Code Codex pipeline",
+   "paraphrase_group": null,
+   "latency_s": 2.8,
+   "token_estimate": 254,
+   "top_ids": [
+    "ke_9f1b54d35c17",
+    "ke_4baa9e7be0ce",
+    "ke_fa768f11222d",
+    "ke_25bc65eb5ede",
+    "ke_445f3a095138"
+   ],
+   "top_final_scores": [
+    1.0349,
+    0.941,
+    0.9326,
+    0.9189,
+    0.9075
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "recall_salience_half_life",
+   "axis": "carry_forward_recall",
+   "enabled": true,
+   "query": "salience scoring memory decay half life",
+   "paraphrase_group": null,
+   "latency_s": 2.62,
+   "token_estimate": 246,
+   "top_ids": [
+    "ke_dcd43c7d45ee",
+    "ke_81af196df73a",
+    "ke_5cc85140d4bd",
+    "ke_30a9035c3e90",
+    "ke_c979b532a11c"
+   ],
+   "top_final_scores": [
+    1.013,
+    0.9406,
+    0.9118,
+    0.9066,
+    0.8998
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "recall_california_law_taxonomy",
+   "axis": "carry_forward_recall",
+   "enabled": true,
+   "query": "California law chatbot content classification taxonomy",
+   "paraphrase_group": null,
+   "latency_s": 2.4,
+   "token_estimate": 264,
+   "top_ids": [
+    "ke_46c9f7231a2d",
+    "ke_d165fd41121c",
+    "ke_5e7875835417",
+    "ke_15c86a4bee56",
+    "ke_8b46c1cf0010"
+   ],
+   "top_final_scores": [
+    1.0214,
+    0.9585,
+    0.9579,
+    0.9535,
+    0.9099
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "recall_tweet_reader_fxtwitter",
+   "axis": "carry_forward_recall",
+   "enabled": true,
+   "query": "tweet reader ingestion fxtwitter fallback",
+   "paraphrase_group": null,
+   "latency_s": 2.34,
+   "token_estimate": 241,
+   "top_ids": [
+    "ke_32379a085029",
+    "ke_2ad25d9e0b1d",
+    "ke_26bc70991626",
+    "ke_37636d65aba5",
+    "ke_ff2c5b60d4da"
+   ],
+   "top_final_scores": [
+    0.8163,
+    0.81,
+    0.7829,
+    0.7635,
+    0.7352
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "stale_embedding_dims",
+   "axis": "stale_fact",
+   "enabled": true,
+   "query": "what embedding model and dimensions does PKS production search use",
+   "paraphrase_group": null,
+   "latency_s": 2.71,
+   "token_estimate": 264,
+   "top_ids": [
+    "ke_f80014ac2d4d",
+    "ke_231701212087",
+    "ke_2e2c4f33caf6",
+    "ke_aec64588fa9e",
+    "ke_83d3c0af1adc"
+   ],
+   "top_final_scores": [
+    0.9786,
+    0.8842,
+    0.8211,
+    0.7851,
+    0.7802
+   ],
+   "expected_found": false,
+   "id_hit": false,
+   "text_hit": false,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "stale_search_weights",
+   "axis": "stale_fact",
+   "enabled": true,
+   "query": "how is PKS search scored relevance recency salience weights",
+   "paraphrase_group": null,
+   "latency_s": 2.49,
+   "token_estimate": 253,
+   "top_ids": [
+    "ke_f80014ac2d4d",
+    "ke_298c5d99a6ed",
+    "ke_529b9478ebac",
+    "ke_046119ec8af4",
+    "ke_568ce6e21c25"
+   ],
+   "top_final_scores": [
+    1.0501,
+    0.9187,
+    0.8751,
+    0.8649,
+    0.8456
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "stale_judge_model",
+   "axis": "stale_fact",
+   "enabled": true,
+   "query": "which model does the Dream judge use",
+   "paraphrase_group": null,
+   "latency_s": 2.73,
+   "token_estimate": 265,
+   "top_ids": [
+    "ke_323713202eae",
+    "ke_d4b7c49b1c48",
+    "ke_cc6885799bc7",
+    "ke_aa1619f13af7",
+    "ke_e5fdf89dc5ce"
+   ],
+   "top_final_scores": [
+    0.9525,
+    0.8799,
+    0.8716,
+    0.8715,
+    0.8509
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": true,
+   "leaks": [
+    "claude-opus-4-6"
+   ],
+   "passed": false
+  },
+  {
+   "id": "stale_mcp_four_tools",
+   "axis": "stale_fact",
+   "enabled": true,
+   "query": "how many MCP tools does the personal knowledge system expose",
+   "paraphrase_group": null,
+   "latency_s": 2.73,
+   "token_estimate": 247,
+   "top_ids": [
+    "ke_a8e7c09c8223",
+    "ke_eb6950e9bb1c",
+    "ke_42bce700dbf5",
+    "ke_02dca6cf0930",
+    "ke_aeffc95ede44"
+   ],
+   "top_final_scores": [
+    1.0617,
+    1.0365,
+    0.9707,
+    0.9405,
+    0.9349
+   ],
+   "expected_found": false,
+   "id_hit": false,
+   "text_hit": false,
+   "leaks": [
+    "four tools"
+   ],
+   "passed": false
+  },
+  {
+   "id": "sup_search_formula",
+   "axis": "supersession",
+   "enabled": true,
+   "query": "current PKS search scoring formula",
+   "paraphrase_group": null,
+   "latency_s": 2.66,
+   "token_estimate": 253,
+   "top_ids": [
+    "ke_f80014ac2d4d",
+    "ke_529b9478ebac",
+    "ke_298c5d99a6ed",
+    "ke_568ce6e21c25",
+    "ke_046119ec8af4"
+   ],
+   "top_final_scores": [
+    1.1113,
+    0.9258,
+    0.9128,
+    0.8993,
+    0.863
+   ],
+   "expected_found": true,
+   "id_hit": false,
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
+  },
+  {
+   "id": "sup_forgetting_wired",
+   "axis": "supersession",
+   "enabled": true,
+   "query": "is the PKS forgetting layer running in the nightly dream",
+   "paraphrase_group": null,
+   "latency_s": 2.61,
+   "token_estimate": 243,
+   "top_ids": [
+    "ke_143a6f1fb01a",
+    "ke_cdc417317473",
+    "ke_2206279a6830",
+    "ke_9076a5004c57",
+    "ke_aaa9d38862fc"
+   ],
+   "top_final_scores": [
+    0.9308,
+    0.7801,
+    0.7725,
+    0.7468,
+    0.725
+   ],
+   "expected_found": false,
+   "id_hit": false,
+   "text_hit": false,
+   "leaks": [],
+   "passed": false
+  }
+ ]
+}
