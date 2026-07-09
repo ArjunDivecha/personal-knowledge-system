@@ -30,7 +30,10 @@ if not env_path.exists():
 if not env_path.exists():
     # Try distillation folder
     env_path = Path(__file__).parent.parent.parent / "distillation" / ".env"
-load_dotenv(env_path)
+# The launchd wrapper may source the repo-level .env before Python starts.
+# Keep ingestion/.env authoritative for ingestion-specific keys so an unrelated
+# repo-level provider key cannot shadow the OpenAI embedding key.
+load_dotenv(env_path, override=True)
 
 
 # -----------------------------------------------------------------------------

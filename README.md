@@ -795,6 +795,17 @@ The system is trying to enforce a few simple rules:
 - **1.0.0** (December 2024)
   Initial implementation with distillation pipeline, Cloudflare MCP server, and Claude integration.
 
+## Current Upgrade Program (2026-07)
+
+`docs/pks-foundational-upgrade-spec-2026-07-07.md` is the active foundational
+upgrade spec (Fable 5 commission): Phase 0 diagnosis of the live store,
+injection/ranking redesign, consolidation + lossless-merge gating, contradiction
+resolution, evaluation harness, and a staged reversible rollout. Its executable
+half lives in `contracts/*.spec.md` — seven Divecha-gated implementation
+contracts (author-validated) meant to be handed to cheaper coding models in
+Build Mode. Start with `contracts/retrieval-regression-gate.spec.md` (stage 0),
+then `usage-signal-loop`, per the rollout table in the spec §6.
+
 ## License
 
 Private repository. Not for redistribution.
