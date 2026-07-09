@@ -61,7 +61,9 @@ const GITHUB_ACCOUNTS = ['arjun-via', 'ArjunDivecha'];
 const MEMORY_SCHEMA_VERSION = 2;
 // 3.3 — Only the rank-1 search result counts as "use" for access_count purposes.
 // Top-5 triggers were granting every search result permanent archive immunity.
-const MAX_RECONSOLIDATION_SEARCH_RESULTS = 1;
+// Exported (PKS-USAGE-SIGNAL-001) so tests pin this value: raising it re-opens
+// the exposure≠use bug and must be a deliberate, reviewed change.
+export const MAX_RECONSOLIDATION_SEARCH_RESULTS = 1;
 const MAX_RECONSOLIDATION_ERROR_LOGS = 100;
 const RECONSOLIDATION_PROMOTION_THRESHOLD = 3;
 const MAX_OPERATOR_DREAM_ARCHIVE_LIMIT = 10;
@@ -684,7 +686,7 @@ function appendConsolidationNote(metadata: Record<string, unknown>, note: string
 	metadata.consolidation_notes = existingNotes.slice(-20);
 }
 
-function applyAccessSignals(
+export function applyAccessSignals(
 	entry: Record<string, unknown>,
 	accessCountRaw: unknown,
 	lastAccessedRaw: unknown,
@@ -703,6 +705,21 @@ function applyAccessSignals(
 	metadata.last_accessed = latestIsoTimestamp(storedLastAccessed, sideLastAccessed);
 	metadata.salience_score = computeSalience(entry);
 	return entry;
+}
+
+// PKS-USAGE-SIGNAL-001 — which search results earn an access-signal write.
+// Two rules, both load-bearing:
+//   1. Exposure ≠ use (3.3): only the top MAX_RECONSOLIDATION_SEARCH_RESULTS
+//      (rank-1) result counts as "use"; candidate-pool exposure never does.
+//   2. Synthetic traffic never reinforces: eval/benchmark callers pass
+//      suppress_access_signals=true and get zero write-backs, so nightly
+//      regression-gate runs (scripts/run_eval.py) don't fabricate usage.
+export function selectReconsolidationTargets<T>(
+	topResults: T[],
+	suppressAccessSignals: boolean | undefined,
+): T[] {
+	if (suppressAccessSignals === true) return [];
+	return topResults.slice(0, MAX_RECONSOLIDATION_SEARCH_RESULTS);
 }
 
 // GitHub API helper
@@ -2553,9 +2570,11 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 				limit: z.number().optional().describe("Max results (default 5)"),
 				tier_filter: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional()
 					.describe("Optional tier filter: 1, 2, or 3"),
+				suppress_access_signals: z.boolean().optional()
+					.describe("Set true for synthetic/benchmark traffic (e.g. eval probes): skips the access-count/last-accessed reinforcement write so the query does not count as organic use"),
 			},
 			READ_ONLY_TOOL_ANNOTATIONS,
-			async ({ query, limit, tier_filter }) => {
+			async ({ query, limit, tier_filter, suppress_access_signals }) => {
 				try {
 					const redis = this.getRedis(this.env);
 					const vector = this.getVector(this.env);
@@ -2714,7 +2733,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 						return b.similarity_score - a.similarity_score;
 					});
 					const topResults = filteredResults.slice(0, requestedLimit);
-					for (const result of topResults.slice(0, MAX_RECONSOLIDATION_SEARCH_RESULTS)) {
+					for (const result of selectReconsolidationTargets(topResults, suppress_access_signals)) {
 						const entryType: EntryType = result.type === "project" ? "project" : "knowledge";
 						this.scheduleReconsolidation(entryType, result.id);
 					}

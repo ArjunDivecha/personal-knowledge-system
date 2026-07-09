@@ -70,9 +70,12 @@ USAGE:
       # exit 0 = no regression, exit 1 = a probe flipped pass->fail or an axis degraded beyond tolerance
 
 NOTES:
-- Read-only: only the `search` tool is called; access_count side effects on the
-  server (top-5 reconsolidation) are inherent to calling search at all and are
-  flagged in the report header so baseline runs aren't mistaken for organic use.
+- Read-only: only the `search` tool is called. Every probe passes
+  suppress_access_signals=true (PKS-USAGE-SIGNAL-001) so benchmark queries do
+  NOT increment server-side access counts once a Worker honoring the flag is
+  deployed; on older Workers the unknown argument is stripped by zod and the
+  legacy rank-1 reconsolidation side effect applies (flagged in the report
+  header either way so baseline runs aren't mistaken for organic use).
 - Runtime: ~1 rps sequential; ~40 enabled probes ≈ under 2 minutes.
 =============================================================================
 """
@@ -111,6 +114,19 @@ AXIS_METRIC = {
 # pick the correct "worse" direction per axis (PKS-RETRIEVAL-REGRESSION-GATE-001).
 LOWER_IS_BETTER_METRICS = {"stale_leak_rate"}
 REGRESSION_TOLERANCE = 0.02  # absolute, applied in the "worse" direction per axis
+
+
+def build_search_arguments(query: str) -> dict:
+    """Arguments for every MCP `search` call this runner makes.
+
+    suppress_access_signals=True (PKS-USAGE-SIGNAL-001) marks the query as
+    synthetic benchmark traffic: a Worker honoring the flag skips the
+    access_count/last_accessed reinforcement write, so nightly eval runs don't
+    fabricate usage signal that salience then treats as organic. Removing the
+    flag would silently re-poison the usage loop — the unit test in
+    tests/python/test_run_eval_search_args.py pins it.
+    """
+    return {"query": query, "suppress_access_signals": True}
 
 
 def parse_args() -> argparse.Namespace:
@@ -214,7 +230,7 @@ def run_eval(args: argparse.Namespace) -> int:
             t0 = time.time()
             payload = call_mcp_tool(session, args.base_url, token, session_id,
                                     rpc_id=rpc_id, name="search",
-                                    arguments={"query": probe["query"]})
+                                    arguments=build_search_arguments(probe["query"]))
             results = payload.get("results", [])
             row["latency_s"] = round(time.time() - t0, 2)
             row["token_estimate"] = sum(
@@ -268,8 +284,10 @@ def run_eval(args: argparse.Namespace) -> int:
         "base_url": args.base_url,
         "k": args.k,
         "negative_threshold": args.negative_threshold,
-        "note_access_side_effect": "search calls may increment server-side access counts; "
-                                   "baseline runs are not organic usage",
+        "note_access_side_effect": "all probes passed suppress_access_signals=true; Workers "
+                                   "honoring the flag write no access signals for this run — "
+                                   "older Workers strip the arg and apply legacy rank-1 "
+                                   "reconsolidation; baseline runs are not organic usage",
         "note_tokens": "token_estimate = chars/4 of returned label+summary; search response has no usage field",
         "n_enabled": len(scored), "n_drafts": len(drafts), "errors": errors,
         "axes": axes,
