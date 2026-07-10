@@ -192,6 +192,11 @@ class RepoAgentContextThinIndexTests(unittest.TestCase):
             def mget(self, *keys):
                 return [self.values[key] for key in keys]
 
+            def get(self, key: str):
+                # 3.6 — save_thin_index checks index:rebuild:lock before writing;
+                # no lock held in this fixture.
+                return self.values.get(key)
+
             def set(self, key: str, value: str):
                 self.values[key] = json.loads(value)
 

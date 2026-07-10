@@ -87,17 +87,16 @@ gates:
   intent: INV5 holds and the existing python checker suite stays green
   must_assert: INV5 holds (git diff --name-only is a subset of scope.in, no scope.forbid
     path touched) and the repo tests/python suite still passes; exit nonzero otherwise
-  command: "distillation/venv/bin/python -m unittest discover -s tests/python -p 'test_*.py'\
-    \ > /tmp/pks_g4_suite.log 2>&1\ntail -8 /tmp/pks_g4_suite.log\nNEW_MODULE_FAILS=$(grep\
-    \ -E '^(FAIL|ERROR): .*test_run_eval_compare' /tmp/pks_g4_suite.log || true)\n\
-    UNEXPECTED=$(grep -E '^(FAIL|ERROR):' /tmp/pks_g4_suite.log | grep -v 'test_run_eval_compare'\
-    \ | grep -vE 'test_update_thin_index_rebuilds_canonical_counts_from_redis|test_api_fallback_runs_when_explicitly_allowed'\
-    \ || true)\nif [ -n \"$NEW_MODULE_FAILS\" ] || [ -n \"$UNEXPECTED\" ]; then\n\
-    \  echo \"G4 FAIL: new-module-failures=[$NEW_MODULE_FAILS] unexpected-failures=[$UNEXPECTED]\"\
-    \n  exit 1\nfi\necho \"G4 PASS: checker suite green for this contract's scope\
-    \ (2 pre-existing failures unrelated to this contract and documented in ledger.blockers,\
-    \ unchanged in count/identity: test_update_thin_index_rebuilds_canonical_counts_from_redis,\
-    \ test_api_fallback_runs_when_explicitly_allowed)\"\nexit 0\n"
+  command: |
+    distillation/venv/bin/python -m unittest discover -s tests/python -p 'test_*.py' > /tmp/pks_g4_suite.log 2>&1
+    RC=$?
+    tail -8 /tmp/pks_g4_suite.log
+    if [ $RC -ne 0 ]; then
+      echo "G4 FAIL: tests/python suite not green"
+      exit 1
+    fi
+    echo "G4 PASS: tests/python suite fully green (the 2 formerly pre-existing failures were fixed 2026-07-10; no allowlist remains)"
+    exit 0
   requires_permission: false
 - id: G5
   intent: 'end-to-end: produce a fresh report from the live MCP and gate it against
@@ -174,12 +173,13 @@ ledger:
     yet been run a SECOND time to exercise the real compare-against-committed-baseline
     path (this run only bootstrapped it) \u2014 that is what "scale" actually
     requires and is still open.'
-  - '2 tests/python failures pre-exist and are unrelated to this contract''s scope
-    (not caused by, not fixable within, this diff): test_repo_agent_context.RepoAgentContextThinIndexTests.test_update_thin_index_rebuilds_canonical_counts_from_redis
-    (ERROR) and test_dream_judge_fallback.DreamJudgeFallbackTests.test_api_fallback_runs_when_explicitly_allowed
-    (FAIL). G4''s command allowlists exactly these two by name so the gate proves
-    "no new failures" rather than blocking forever on pre-existing breakage outside
-    scope.in. Flagged to Arjun; not silently fixed or hidden.'
+  - 'RESOLVED 2026-07-10 with Arjun''s explicit approval: the 2 pre-existing
+    tests/python failures were root-caused and fixed (both test-side drift, source
+    intentional): test_repo_agent_context thin-index — the FakeRedis double lacked
+    .get, which save_thin_index needs since f4a72c3 (Phase 3.6 rebuild-lock check);
+    test_dream_judge_fallback — 29d5c03 added the item param to judge_via_anthropic_api
+    for content-bearing insight verdicts and the mock assertion was stale. Suite
+    now fully green (276/276); G4''s allowlist removed.'
   - at: '2026-07-09T14:25:38.648338+00:00'
     failed_gates:
     - SCOPE

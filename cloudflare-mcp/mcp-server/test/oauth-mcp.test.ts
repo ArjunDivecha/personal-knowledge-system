@@ -6,6 +6,7 @@ import fxSimple from "./fixtures/fxtwitter-simple.json";
 const redisMock = vi.hoisted(() => ({
 	get: vi.fn(),
 	set: vi.fn(),
+	setnx: vi.fn(),
 	rename: vi.fn(),
 	del: vi.fn(),
 	scan: vi.fn(),
@@ -392,6 +393,12 @@ beforeEach(() => {
 	redisMock.set.mockImplementation(async (key: string, value: unknown) => {
 		redisStore[key] = value;
 		return "OK";
+	});
+	// SET NX semantics (4.1 atomic entry-id allocation): 1 if newly set, 0 if the key exists.
+	redisMock.setnx.mockImplementation(async (key: string, value: unknown) => {
+		if (key in redisStore) return 0;
+		redisStore[key] = value;
+		return 1;
 	});
 	redisMock.rename.mockImplementation(async (source: string, destination: string) => {
 		if (!(source in redisStore)) {
@@ -1168,7 +1175,8 @@ describe("OAuth and MCP integration", () => {
 			expect(payload.ok).toBe(true);
 			expect(payload.created).toBe(true);
 			expect(payload.type).toBe("knowledge");
-			expect(String(payload.id)).toMatch(/^ke_[a-f0-9]{12}$/);
+			// 4.1 — entry ids are 16 hex chars (64 bits), allocated atomically via SET NX.
+			expect(String(payload.id)).toMatch(/^ke_[a-f0-9]{16}$/);
 			expect(payload.revision).toBe(1);
 			expect((((payload.entry as Record<string, unknown>).metadata as Record<string, unknown>).revision)).toBe(1);
 			expect((((payload.entry as Record<string, unknown>).metadata as Record<string, unknown>).context_type)).toBe("explicit_save");

@@ -99,14 +99,13 @@ gates:
     make worker-typecheck || exit 1
     cd cloudflare-mcp/mcp-server
     npx vitest run --no-file-parallelism > /tmp/pks_g3_worker_suite.log 2>&1
+    RC=$?
     tail -5 /tmp/pks_g3_worker_suite.log
-    NEW_FAILS=$(grep -E "^\s+× " /tmp/pks_g3_worker_suite.log | grep -vE "creates a knowledge entry through the write-scoped MCP tool|rolls back supported applied proposal operations with revision preflight" || true)
-    if [ -n "$NEW_FAILS" ]; then
-      echo "G3 FAIL: new worker-test failures beyond the two documented pre-existing ones:"
-      echo "$NEW_FAILS"
+    if [ $RC -ne 0 ]; then
+      echo "G3 FAIL: worker vitest suite not green"
       exit 1
     fi
-    echo "G3 PASS: no new failures (2 pre-existing documented in ledger.blockers, unchanged)"
+    echo "G3 PASS: worker suite fully green (the 2 formerly pre-existing failures were fixed 2026-07-10; no allowlist remains)"
   requires_permission: false
 - id: G4
   intent: 'end-to-end on staging: suppression honored and organic reinforcement still
@@ -191,19 +190,27 @@ scale: graduated AND G4 confirms both suppression and organic reinforcement on s
   AND after 7 nights of production traffic the access-write rate from organic sessions
   is nonzero while nightly eval runs produce zero access writes
 ledger:
-  turns: 1
+  turns: 2
   consecutive_failures: 0
   blockers:
-  - '2 worker vitest failures pre-exist at committed HEAD (verified by stashing this
-    contract''s diff and re-running): oauth-mcp.test.ts "creates a knowledge entry
-    through the write-scoped MCP tool" and dream-replay.test.ts "rolls back supported
-    applied proposal operations with revision preflight". Unrelated to this scope
-    (create_entry write path, dream rollback preflight). G3 allowlists exactly these
-    two by name; flagged to Arjun, not silently fixed or hidden. Same repo-hygiene
-    pattern as the 2 pre-existing python failures noted in the stage-0 contract.'
-  - 'G4 (staging e2e) not yet run: requires a staging deploy of this code and
-    STAGING_WORKER_BASE_URL. Production deploy is a separate, explicitly-approved
-    step — code on main is NOT live until wrangler deploy runs.'
+  - 'RESOLVED 2026-07-10: the 2 pre-existing worker vitest failures were root-caused
+    and fixed with Arjun''s explicit approval (all test-side drift, source intentional):
+    (a) oauth-mcp create_entry — the redis mock lacked setnx, added in 21bb4e4 for
+    atomic 16-hex-char entry-id allocation; mock now implements SET NX semantics
+    against its store and the id regex was updated 12->16 chars. (b) dream-replay
+    rollback — b2bf422 (Phase 2) made rollback a compensating write that bumps
+    revision monotonically instead of rewinding; expectation updated 1->2 with the
+    CAS rationale in a comment. Both suites now fully green (worker 209/209,
+    python 276/276); G3''s allowlist removed.'
+  - 'RESOLVED 2026-07-10: G4 ran green against staging
+    (arjun-knowledge-mcp-staging.arjun-divecha.workers.dev, version 83f1a36d):
+    suppressed search steady at access_count=2 across two calls, organic search
+    bumped 2->3 with fresh last_accessed. Production deployed (version 8c1037ac)
+    and verified live the same way: suppression steady at 5, organic bumped to 6.
+    First prod verification attempt FAILED (3->4 on a suppressed call) because the
+    first call landed on a not-yet-propagated old-code DO instance which strips
+    the unknown flag — retry after 90s with a fresh session passed cleanly; the
+    arithmetic of the failed run is fully explained by old-code behavior.'
   lessons:
   - 'v1 of this contract (authored 2026-07-07) was built on a false premise: it
     claimed search never writes last_accessed and the retrievalBoost term was dead

@@ -835,7 +835,10 @@ describe("Dream replay logic", () => {
 		expect(conflictB.state).toBe("active");
 		expect(conflictA.related_knowledge).toEqual([]);
 		expect(conflictB.related_knowledge).toEqual([]);
-		expect((conflictA.metadata as Record<string, unknown>).revision).toBe(1);
+		// Phase 2 (b2bf422): rollback is a compensating write — content is restored
+		// from the before-snapshot but revision bumps monotonically (apply 0->1,
+		// rollback 1->2) so CAS clients never see one revision with two contents.
+		expect((conflictA.metadata as Record<string, unknown>).revision).toBe(2);
 		expect(mockState.store.get(`dream:run:${String(proposal.run_id)}:rollback:rollback-contested-test`)).toBeTruthy();
 	});
 
