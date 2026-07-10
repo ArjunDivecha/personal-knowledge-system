@@ -198,6 +198,8 @@ def correction_event_to_entry(event: CorrectionEvent) -> KnowledgeEntry:
         conversation_id=event.conversation_id,
         message_ids=[event.message_id],
         snippet=_truncate(event.user_text, 200),
+        asserted_by="user",
+        assertion_kind="correction",
     )
     return KnowledgeEntry(
         id=f"ke_{event.event_id.removeprefix('ce_')[:12]}",

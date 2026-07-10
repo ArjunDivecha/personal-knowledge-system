@@ -277,6 +277,8 @@ JSON format:
                                 "conversation_id": f"github:{repo_name}:readme",
                                 "message_ids": [],
                                 "snippet": i.get("evidence_snippet", "")[:200],
+                                "asserted_by": "inferred",
+                                "assertion_kind": "fact",
                             }
                         }
                         for i in raw.get("key_insights", [])
@@ -288,6 +290,8 @@ JSON format:
                                 "conversation_id": f"github:{repo_name}:readme",
                                 "message_ids": [],
                                 "snippet": f"Demonstrated in {repo_name}",
+                                "asserted_by": "inferred",
+                                "assertion_kind": "hypothesis",
                             }
                         }
                         for cap in raw.get("capabilities", [])
@@ -418,6 +422,8 @@ JSON format:
                                 "conversation_id": f"github:{repo_name}:commits",
                                 "message_ids": [],
                                 "snippet": raw.get("evidence_snippet", "")[:200],
+                                "asserted_by": "inferred",
+                                "assertion_kind": "fact",
                             }
                         }
                     ],
@@ -558,6 +564,8 @@ JSON format:
                                     "conversation_id": conversation_id,
                                     "message_ids": [],
                                     "snippet": item.get("evidence_snippet", "")[:240],
+                                    "asserted_by": "inferred",
+                                    "assertion_kind": "fact",
                                 },
                             }
                             for item in raw.get("key_insights", [])
@@ -570,6 +578,8 @@ JSON format:
                                     "conversation_id": conversation_id,
                                     "message_ids": [],
                                     "snippet": f"Documented in {path}",
+                                    "asserted_by": "inferred",
+                                    "assertion_kind": "hypothesis",
                                 },
                             }
                             for cap in raw.get("capabilities", [])
@@ -720,6 +730,8 @@ JSON format:
                                 "conversation_id": conversation_id,
                                 "message_ids": [],
                                 "snippet": item.get("evidence_snippet", "")[:240],
+                                "asserted_by": "inferred",
+                                "assertion_kind": "fact",
                             },
                         }
                         for item in raw.get("key_insights", [])
@@ -732,6 +744,8 @@ JSON format:
                                 "conversation_id": conversation_id,
                                 "message_ids": [],
                                 "snippet": f"Demonstrated in repo-attached {surface} context",
+                                "asserted_by": "inferred",
+                                "assertion_kind": "hypothesis",
                             },
                         }
                         for capability in raw.get("capabilities", [])
@@ -873,6 +887,8 @@ JSON format:
                                 "conversation_id": f"gmail:{email_date}:{email_subject[:50]}",
                                 "message_ids": [],
                                 "snippet": raw.get("evidence_snippet", "")[:200],
+                                "asserted_by": "inferred",
+                                "assertion_kind": "fact",
                             }
                         }
                     ],
@@ -883,6 +899,8 @@ JSON format:
                                 "conversation_id": f"gmail:{email_date}:{email_subject[:50]}",
                                 "message_ids": [],
                                 "snippet": raw.get("evidence_snippet", "")[:200],
+                                "asserted_by": "inferred",
+                                "assertion_kind": "fact",
                             }
                         }
                     ],
@@ -1024,6 +1042,8 @@ JSON format:
                                 "conversation_id": f"github:{repo_name}:code",
                                 "message_ids": [],
                                 "snippet": raw.get("evidence_snippet", "")[:200],
+                                "asserted_by": "inferred",
+                                "assertion_kind": "fact",
                             }
                         }
                     ],

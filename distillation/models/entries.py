@@ -144,6 +144,41 @@ class Evidence:
     conversation_id: str          # Original conversation UUID
     message_ids: list[str]        # List of message UUIDs that support this
     snippet: str                  # Max 200 chars - key quote from the message
+    # Provenance backbone (PKS-CONTRADICTION-LIFECYCLE-001). Both optional and
+    # additive: None means "unknown". asserted_by is "user" | "assistant" |
+    # "inferred" (None treated as inferred downstream); assertion_kind is
+    # "decision" | "preference" | "correction" | "fact" | "hypothesis" (None
+    # treated as hypothesis downstream). Serialized ONLY when not None so that
+    # pre-change entry JSON round-trips byte-identically (INV5).
+    asserted_by: Optional[str] = None
+    assertion_kind: Optional[str] = None
+
+
+def _serialize_evidence(evidence: "Evidence") -> dict:
+    """Serialize an Evidence to a dict, emitting the provenance keys only when
+    present so old entries (no provenance) round-trip unchanged (INV5)."""
+    data = {
+        "conversation_id": evidence.conversation_id,
+        "message_ids": evidence.message_ids,
+        "snippet": evidence.snippet,
+    }
+    if evidence.asserted_by is not None:
+        data["asserted_by"] = evidence.asserted_by
+    if evidence.assertion_kind is not None:
+        data["assertion_kind"] = evidence.assertion_kind
+    return data
+
+
+def _deserialize_evidence(ev: dict) -> "Evidence":
+    """Rebuild an Evidence from a dict, defaulting the additive provenance
+    fields to None when absent (old-format entries)."""
+    return Evidence(
+        conversation_id=ev.get("conversation_id", ""),
+        message_ids=ev.get("message_ids", []),
+        snippet=ev.get("snippet", ""),
+        asserted_by=ev.get("asserted_by"),
+        assertion_kind=ev.get("assertion_kind"),
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -303,42 +338,26 @@ class KnowledgeEntry:
                     "view": p.view,
                     "confidence": p.confidence,
                     "as_of": p.as_of,
-                    "evidence": {
-                        "conversation_id": p.evidence.conversation_id,
-                        "message_ids": p.evidence.message_ids,
-                        "snippet": p.evidence.snippet,
-                    }
+                    "evidence": _serialize_evidence(p.evidence),
                 } for p in self.positions
             ],
             "key_insights": [
                 {
                     "insight": i.insight,
-                    "evidence": {
-                        "conversation_id": i.evidence.conversation_id,
-                        "message_ids": i.evidence.message_ids,
-                        "snippet": i.evidence.snippet,
-                    }
+                    "evidence": _serialize_evidence(i.evidence),
                 } for i in self.key_insights
             ],
             "knows_how_to": [
                 {
                     "capability": c.capability,
-                    "evidence": {
-                        "conversation_id": c.evidence.conversation_id,
-                        "message_ids": c.evidence.message_ids,
-                        "snippet": c.evidence.snippet,
-                    }
+                    "evidence": _serialize_evidence(c.evidence),
                 } for c in self.knows_how_to
             ],
             "open_questions": [
                 {
                     "question": q.question,
                     "context": q.context,
-                    "evidence": {
-                        "conversation_id": q.evidence.conversation_id,
-                        "message_ids": q.evidence.message_ids,
-                        "snippet": q.evidence.snippet,
-                    } if q.evidence else None
+                    "evidence": _serialize_evidence(q.evidence) if q.evidence else None
                 } for q in self.open_questions
             ],
             "related_repos": [
@@ -358,11 +377,7 @@ class KnowledgeEntry:
                     "from_view": e.from_view,
                     "to_view": e.to_view,
                     "date": e.date,
-                    "evidence": {
-                        "conversation_id": e.evidence.conversation_id,
-                        "message_ids": e.evidence.message_ids,
-                        "snippet": e.evidence.snippet,
-                    }
+                    "evidence": _serialize_evidence(e.evidence),
                 } for e in self.evolution
             ],
             "metadata": normalize_knowledge_metadata_dict({
@@ -401,11 +416,7 @@ class KnowledgeEntry:
                 view=p["view"],
                 confidence=p["confidence"],
                 as_of=p["as_of"],
-                evidence=Evidence(
-                    conversation_id=ev.get("conversation_id", ""),
-                    message_ids=ev.get("message_ids", []),
-                    snippet=ev.get("snippet", ""),
-                )
+                evidence=_deserialize_evidence(ev),
             ))
         
         # Parse insights
@@ -414,11 +425,7 @@ class KnowledgeEntry:
             ev = i.get("evidence", {})
             key_insights.append(Insight(
                 insight=i["insight"],
-                evidence=Evidence(
-                    conversation_id=ev.get("conversation_id", ""),
-                    message_ids=ev.get("message_ids", []),
-                    snippet=ev.get("snippet", ""),
-                )
+                evidence=_deserialize_evidence(ev),
             ))
         
         # Parse capabilities
@@ -427,11 +434,7 @@ class KnowledgeEntry:
             ev = c.get("evidence", {})
             knows_how_to.append(Capability(
                 capability=c["capability"],
-                evidence=Evidence(
-                    conversation_id=ev.get("conversation_id", ""),
-                    message_ids=ev.get("message_ids", []),
-                    snippet=ev.get("snippet", ""),
-                )
+                evidence=_deserialize_evidence(ev),
             ))
         
         # Parse questions
@@ -441,11 +444,7 @@ class KnowledgeEntry:
             open_questions.append(OpenQuestion(
                 question=q["question"],
                 context=q.get("context"),
-                evidence=Evidence(
-                    conversation_id=ev.get("conversation_id", ""),
-                    message_ids=ev.get("message_ids", []),
-                    snippet=ev.get("snippet", ""),
-                ) if ev else None
+                evidence=_deserialize_evidence(ev) if ev else None
             ))
         
         # Parse repos
@@ -471,11 +470,7 @@ class KnowledgeEntry:
                 from_view=e.get("from_view", ""),
                 to_view=e.get("to_view", ""),
                 date=e.get("date", ""),
-                evidence=Evidence(
-                    conversation_id=ev.get("conversation_id", ""),
-                    message_ids=ev.get("message_ids", []),
-                    snippet=ev.get("snippet", ""),
-                )
+                evidence=_deserialize_evidence(ev),
             ))
         
         # Parse metadata
@@ -624,11 +619,7 @@ class ProjectEntry:
                     "decision": d.decision,
                     "rationale": d.rationale,
                     "date": d.date,
-                    "evidence": {
-                        "conversation_id": d.evidence.conversation_id,
-                        "message_ids": d.evidence.message_ids,
-                        "snippet": d.evidence.snippet,
-                    } if d.evidence else None
+                    "evidence": _serialize_evidence(d.evidence) if d.evidence else None
                 } for d in self.decisions_made
             ],
             "tech_stack": self.tech_stack,
@@ -679,11 +670,7 @@ class ProjectEntry:
                 decision=d["decision"],
                 rationale=d.get("rationale"),
                 date=d.get("date", ""),
-                evidence=Evidence(
-                    conversation_id=ev.get("conversation_id", ""),
-                    message_ids=ev.get("message_ids", []),
-                    snippet=ev.get("snippet", ""),
-                ) if ev else None
+                evidence=_deserialize_evidence(ev) if ev else None
             ))
         
         # Parse repos

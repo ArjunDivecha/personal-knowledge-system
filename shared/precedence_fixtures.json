@@ -1,0 +1,170 @@
+[
+  {
+    "name": "user_vs_behavioral_escalates",
+    "a": {"asserted_by": "user", "assertion_kind": "decision", "behavioral": false, "as_of": "2026-03-01T00:00:00Z"},
+    "b": {"asserted_by": "behavioral", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-07-01T00:00:00Z"},
+    "expected": "escalate"
+  },
+  {
+    "name": "behavioral_vs_user_escalates",
+    "a": {"asserted_by": "behavioral", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-07-01T00:00:00Z"},
+    "b": {"asserted_by": "user", "assertion_kind": "decision", "behavioral": false, "as_of": "2026-03-01T00:00:00Z"},
+    "expected": "escalate"
+  },
+  {
+    "name": "user_beats_assistant_ignoring_recency",
+    "a": {"asserted_by": "user", "assertion_kind": "decision", "behavioral": false, "as_of": "2026-01-01T00:00:00Z"},
+    "b": {"asserted_by": "assistant", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-07-01T00:00:00Z"},
+    "expected": "a_wins"
+  },
+  {
+    "name": "assistant_loses_to_user_ignoring_recency",
+    "a": {"asserted_by": "assistant", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-07-01T00:00:00Z"},
+    "b": {"asserted_by": "user", "assertion_kind": "decision", "behavioral": false, "as_of": "2026-01-01T00:00:00Z"},
+    "expected": "b_wins"
+  },
+  {
+    "name": "user_beats_inferred",
+    "a": {"asserted_by": "user", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-01-01T00:00:00Z"},
+    "b": {"asserted_by": "inferred", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-07-01T00:00:00Z"},
+    "expected": "a_wins"
+  },
+  {
+    "name": "inferred_loses_to_user",
+    "a": {"asserted_by": "inferred", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-07-01T00:00:00Z"},
+    "b": {"asserted_by": "user", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-01-01T00:00:00Z"},
+    "expected": "b_wins"
+  },
+  {
+    "name": "behavioral_beats_assistant",
+    "a": {"asserted_by": "behavioral", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-01-01T00:00:00Z"},
+    "b": {"asserted_by": "assistant", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-07-01T00:00:00Z"},
+    "expected": "a_wins"
+  },
+  {
+    "name": "assistant_loses_to_behavioral",
+    "a": {"asserted_by": "assistant", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-07-01T00:00:00Z"},
+    "b": {"asserted_by": "behavioral", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-01-01T00:00:00Z"},
+    "expected": "b_wins"
+  },
+  {
+    "name": "behavioral_beats_inferred",
+    "a": {"asserted_by": "behavioral", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-01-01T00:00:00Z"},
+    "b": {"asserted_by": "inferred", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-07-01T00:00:00Z"},
+    "expected": "a_wins"
+  },
+  {
+    "name": "inferred_loses_to_behavioral",
+    "a": {"asserted_by": "inferred", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-07-01T00:00:00Z"},
+    "b": {"asserted_by": "behavioral", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-01-01T00:00:00Z"},
+    "expected": "b_wins"
+  },
+  {
+    "name": "assistant_beats_inferred",
+    "a": {"asserted_by": "assistant", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-01-01T00:00:00Z"},
+    "b": {"asserted_by": "inferred", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-07-01T00:00:00Z"},
+    "expected": "a_wins"
+  },
+  {
+    "name": "inferred_loses_to_assistant",
+    "a": {"asserted_by": "inferred", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-07-01T00:00:00Z"},
+    "b": {"asserted_by": "assistant", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-01-01T00:00:00Z"},
+    "expected": "b_wins"
+  },
+  {
+    "name": "flagship_user_march_decision_beats_yesterday_assistant_fact",
+    "a": {"asserted_by": "user", "assertion_kind": "decision", "behavioral": false, "as_of": "2026-03-01T00:00:00Z"},
+    "b": {"asserted_by": "assistant", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-07-08T00:00:00Z"},
+    "expected": "a_wins"
+  },
+  {
+    "name": "decision_beats_preference_same_authority",
+    "a": {"asserted_by": "assistant", "assertion_kind": "decision", "behavioral": false, "as_of": "2026-01-01T00:00:00Z"},
+    "b": {"asserted_by": "assistant", "assertion_kind": "preference", "behavioral": false, "as_of": "2026-07-01T00:00:00Z"},
+    "expected": "a_wins"
+  },
+  {
+    "name": "preference_beats_fact_same_authority",
+    "a": {"asserted_by": "assistant", "assertion_kind": "preference", "behavioral": false, "as_of": "2026-01-01T00:00:00Z"},
+    "b": {"asserted_by": "assistant", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-07-01T00:00:00Z"},
+    "expected": "a_wins"
+  },
+  {
+    "name": "fact_beats_hypothesis_same_authority",
+    "a": {"asserted_by": "assistant", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-01-01T00:00:00Z"},
+    "b": {"asserted_by": "assistant", "assertion_kind": "hypothesis", "behavioral": false, "as_of": "2026-07-01T00:00:00Z"},
+    "expected": "a_wins"
+  },
+  {
+    "name": "decision_beats_hypothesis_same_authority",
+    "a": {"asserted_by": "assistant", "assertion_kind": "decision", "behavioral": false, "as_of": "2026-01-01T00:00:00Z"},
+    "b": {"asserted_by": "assistant", "assertion_kind": "hypothesis", "behavioral": false, "as_of": "2026-07-01T00:00:00Z"},
+    "expected": "a_wins"
+  },
+  {
+    "name": "correction_ties_decision_falls_to_recency",
+    "a": {"asserted_by": "user", "assertion_kind": "correction", "behavioral": false, "as_of": "2026-01-01T00:00:00Z"},
+    "b": {"asserted_by": "user", "assertion_kind": "decision", "behavioral": false, "as_of": "2026-07-01T00:00:00Z"},
+    "expected": "b_wins"
+  },
+  {
+    "name": "recency_tiebreak_newer_wins",
+    "a": {"asserted_by": "assistant", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-05-01T00:00:00Z"},
+    "b": {"asserted_by": "assistant", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-06-01T00:00:00Z"},
+    "expected": "b_wins"
+  },
+  {
+    "name": "present_as_of_beats_missing",
+    "a": {"asserted_by": "assistant", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-05-01T00:00:00Z"},
+    "b": {"asserted_by": "assistant", "assertion_kind": "fact", "behavioral": false, "as_of": null},
+    "expected": "a_wins"
+  },
+  {
+    "name": "both_missing_as_of_escalates",
+    "a": {"asserted_by": "assistant", "assertion_kind": "fact", "behavioral": false, "as_of": null},
+    "b": {"asserted_by": "assistant", "assertion_kind": "fact", "behavioral": false, "as_of": null},
+    "expected": "escalate"
+  },
+  {
+    "name": "fully_tied_escalates",
+    "a": {"asserted_by": "user", "assertion_kind": "decision", "behavioral": false, "as_of": "2026-03-01T00:00:00Z"},
+    "b": {"asserted_by": "user", "assertion_kind": "decision", "behavioral": false, "as_of": "2026-03-01T00:00:00Z"},
+    "expected": "escalate"
+  },
+  {
+    "name": "none_asserted_by_equals_inferred_tie_escalates",
+    "a": {"asserted_by": null, "assertion_kind": "fact", "behavioral": false, "as_of": "2026-03-01T00:00:00Z"},
+    "b": {"asserted_by": "inferred", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-03-01T00:00:00Z"},
+    "expected": "escalate"
+  },
+  {
+    "name": "none_asserted_by_loses_to_assistant_despite_recency",
+    "a": {"asserted_by": null, "assertion_kind": "fact", "behavioral": false, "as_of": "2026-07-01T00:00:00Z"},
+    "b": {"asserted_by": "assistant", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-01-01T00:00:00Z"},
+    "expected": "b_wins"
+  },
+  {
+    "name": "none_kind_treated_as_hypothesis_loses_to_fact",
+    "a": {"asserted_by": "assistant", "assertion_kind": null, "behavioral": false, "as_of": "2026-07-01T00:00:00Z"},
+    "b": {"asserted_by": "assistant", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-01-01T00:00:00Z"},
+    "expected": "b_wins"
+  },
+  {
+    "name": "behavioral_upgrade_beats_assistant",
+    "a": {"asserted_by": "inferred", "assertion_kind": "fact", "behavioral": true, "as_of": "2026-01-01T00:00:00Z"},
+    "b": {"asserted_by": "assistant", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-07-01T00:00:00Z"},
+    "expected": "a_wins"
+  },
+  {
+    "name": "user_vs_inferred_behavioral_upgrade_escalates",
+    "a": {"asserted_by": "user", "assertion_kind": "decision", "behavioral": false, "as_of": "2026-03-01T00:00:00Z"},
+    "b": {"asserted_by": "inferred", "assertion_kind": "fact", "behavioral": true, "as_of": "2026-07-01T00:00:00Z"},
+    "expected": "escalate"
+  },
+  {
+    "name": "behavioral_flag_does_not_downgrade_user",
+    "a": {"asserted_by": "user", "assertion_kind": "decision", "behavioral": true, "as_of": "2026-01-01T00:00:00Z"},
+    "b": {"asserted_by": "assistant", "assertion_kind": "fact", "behavioral": false, "as_of": "2026-07-01T00:00:00Z"},
+    "expected": "a_wins"
+  }
+]

@@ -48,6 +48,7 @@ from models import (
 )
 from prompts.extraction import build_extraction_prompt
 from utils.llm import call_claude_json, count_tokens, chunk_text
+from utils.precedence import derive_asserted_by
 from utils.signal_flags import EXPLICIT_SAVE_FLAG, add_signal_flag, has_explicit_save_marker
 from .corrections import CorrectionEvent, build_correction_entries, detect_correction_events
 from .filter import FilteredConversation
@@ -156,11 +157,32 @@ def explicit_save_message_ids(conversation: NormalizedConversation) -> set[str]:
     }
 
 
+def _iter_entry_evidence(entry: KnowledgeEntry):
+    """Yield every Evidence object attached to a knowledge entry."""
+    for insight in entry.key_insights:
+        if insight.evidence:
+            yield insight.evidence
+    for capability in entry.knows_how_to:
+        if capability.evidence:
+            yield capability.evidence
+    for question in entry.open_questions:
+        if question.evidence:
+            yield question.evidence
+    for position in entry.positions:
+        if position.evidence:
+            yield position.evidence
+
+
 def apply_explicit_save_flags(
     entries: list[KnowledgeEntry],
     conversation: NormalizedConversation,
 ) -> None:
-    """Mark extracted entries whose evidence includes an explicit-save user turn."""
+    """Mark extracted entries whose evidence includes an explicit-save user turn.
+
+    On this path the user explicitly asked the memory system to retain the
+    entry, so its evidence is promoted to assertion_kind "decision" (the
+    highest durability rank) in addition to the explicit_save signal flag.
+    """
     marker_message_ids = explicit_save_message_ids(conversation)
     if not marker_message_ids:
         return
@@ -174,6 +196,8 @@ def apply_explicit_save_flags(
                 entry.metadata.signal_flags,
                 EXPLICIT_SAVE_FLAG,
             )
+            for evidence in _iter_entry_evidence(entry):
+                evidence.assertion_kind = "decision"
 
 
 # -----------------------------------------------------------------------------
@@ -185,65 +209,72 @@ def convert_to_knowledge_entry(
     conversation_id: str,
     conversation_created_at: str = None,
     conversation_updated_at: str = None,
+    roles_by_id: dict[str, str] | None = None,
 ) -> KnowledgeEntry:
     """
     Convert extracted JSON to KnowledgeEntry object.
-    
+
     Args:
         data: Extracted knowledge data from LLM
         conversation_id: Original conversation ID
         conversation_created_at: Original conversation creation timestamp (ISO8601)
         conversation_updated_at: Original conversation update timestamp (ISO8601)
+        roles_by_id: Optional {message_id: role} map used to derive each
+            Evidence's asserted_by provenance. None -> asserted_by "inferred".
     """
     entry_id = f"ke_{uuid.uuid4().hex[:12]}"
-    
+
     # Use original conversation timestamps if available, otherwise use now
     now = datetime.utcnow().isoformat()
     created_at = conversation_created_at or now
     updated_at = conversation_updated_at or now
-    
+
     # Collect all message IDs from evidence
     all_message_ids = set()
-    
+
     # Build key insights
     key_insights = []
     for item in data.get("key_insights", []):
         ev = item.get("evidence", {})
         msg_ids = ev.get("message_ids", [])
         all_message_ids.update(msg_ids)
-        
+
         key_insights.append(Insight(
             insight=item.get("insight", ""),
             evidence=Evidence(
                 conversation_id=conversation_id,
                 message_ids=msg_ids,
                 snippet=ev.get("snippet", "")[:200],
+                asserted_by=derive_asserted_by(msg_ids, roles_by_id),
+                assertion_kind="fact",
             ),
         ))
-    
+
     # Build capabilities
     knows_how_to = []
     for item in data.get("knows_how_to", []):
         ev = item.get("evidence", {})
         msg_ids = ev.get("message_ids", [])
         all_message_ids.update(msg_ids)
-        
+
         knows_how_to.append(Capability(
             capability=item.get("capability", ""),
             evidence=Evidence(
                 conversation_id=conversation_id,
                 message_ids=msg_ids,
                 snippet=ev.get("snippet", "")[:200] if ev.get("snippet") else "",
+                asserted_by=derive_asserted_by(msg_ids, roles_by_id),
+                assertion_kind="hypothesis",
             ),
         ))
-    
+
     # Build open questions
     open_questions = []
     for item in data.get("open_questions", []):
         ev = item.get("evidence", {})
         msg_ids = ev.get("message_ids", [])
         all_message_ids.update(msg_ids)
-        
+
         open_questions.append(OpenQuestion(
             question=item.get("question", ""),
             context=item.get("context"),
@@ -251,9 +282,11 @@ def convert_to_knowledge_entry(
                 conversation_id=conversation_id,
                 message_ids=msg_ids,
                 snippet=ev.get("snippet", "") if ev.get("snippet") else "",
+                asserted_by=derive_asserted_by(msg_ids, roles_by_id),
+                assertion_kind="fact",
             ) if msg_ids else None,
         ))
-    
+
     # Build initial position
     positions = []
     if data.get("current_view"):
@@ -265,6 +298,8 @@ def convert_to_knowledge_entry(
                 conversation_id=conversation_id,
                 message_ids=list(all_message_ids)[:3],
                 snippet="",
+                asserted_by=derive_asserted_by(list(all_message_ids)[:3], roles_by_id),
+                assertion_kind="fact",
             )
         
         positions.append(Position(
@@ -401,16 +436,21 @@ def extract_from_conversation(
         # Get original conversation timestamps
         conv_created_at = getattr(conversation, 'created_at', None)
         conv_updated_at = getattr(conversation, 'updated_at', None)
-        
+
+        # Map each message id to its role so evidence can record who asserted
+        # the claim (NormalizedMessage exposes message_id + role).
+        roles_by_id = {m.message_id: m.role for m in conversation.messages}
+
         # Convert to entries (even with validation errors, keep valid parts)
         knowledge_entries = []
         for entry_data in data.get("knowledge_entries", []):
             try:
                 entry = convert_to_knowledge_entry(
-                    entry_data, 
+                    entry_data,
                     conversation.id,
                     conversation_created_at=conv_created_at,
                     conversation_updated_at=conv_updated_at,
+                    roles_by_id=roles_by_id,
                 )
                 if entry.key_insights:  # Only keep if has at least one insight
                     knowledge_entries.append(entry)

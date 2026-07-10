@@ -7,10 +7,14 @@ scope:
   in:
   - ingestion/**
   - distillation/models/entries.py
+  - distillation/pipeline/**
+  - distillation/utils/precedence.py
   - cloudflare-mcp/mcp-server/src/**
+  - cloudflare-mcp/mcp-server/test/**
   - scripts/**
   - tests/**
   - shared/memory_policy.json
+  - shared/precedence_fixtures.json
   out:
   - distillation/run.py
   - tests/probes/**
@@ -18,6 +22,7 @@ scope:
   - mcp-server/**
   - '**/.env*'
   - archive/**
+  - shared/salience_fixtures.json
 bet:
   if: extraction produces evidence, or a contested entry's counterpart entries have
     been archived, merged, or resolved
@@ -68,33 +73,57 @@ invariants:
   check_intent: git diff --name-only is a subset of scope.in and excludes every scope.forbid
     path
 gates:
+- id: G0
+  intent: 'premise gate: the mechanisms this contract builds on exist as diagnosed
+    (roles available at extraction; Evidence schema present; contested state and
+    contradicts links exist in the Worker)'
+  must_assert: message roles are exposed in both extraction pipelines, the Evidence
+    dataclass exists, and the Worker manipulates contested state via contradicts
+    links; exit nonzero if any premise has drifted
+  command: |
+    grep -q "class Evidence" distillation/models/entries.py || { echo "G0 FAIL: Evidence dataclass missing"; exit 1; }
+    grep -q 'm.role == "user"' distillation/pipeline/filter.py || { echo "G0 FAIL: roles no longer visible in distillation filter"; exit 1; }
+    grep -q '"role"' ingestion/agent_sessions/parsers.py || { echo "G0 FAIL: roles no longer parsed in agent-sessions ingestion"; exit 1; }
+    grep -q '"contradicts"' cloudflare-mcp/mcp-server/src/dream.ts || { echo "G0 FAIL: contradicts links gone from Worker"; exit 1; }
+    echo "G0 PASS: all premises hold"
+  requires_permission: false
 - id: G1
   intent: 'INV1 and INV5 hold: provenance capture is correct and the schema change
     is additive'
   must_assert: INV1 role-mapping fixtures and INV5 backward-compat round-trips pass
     in the python test suite; exit nonzero naming the failing fixture otherwise
-  command: TODO
+  command: |
+    distillation/venv/bin/python -m unittest -v tests.python.test_provenance_capture
   requires_permission: false
 - id: G2
   intent: 'INV2 holds: the precedence lattice comparator is correct on the full labeled
-    pair set'
+    pair set, in BOTH the python and TypeScript implementations against the same
+    shared fixture table'
   must_assert: INV2 table-driven cases all pass, including user-beats-assistant-regardless-of-recency
     and the behavioral-vs-stated escalate case; exit nonzero listing failing cells
     otherwise
-  command: TODO
+  command: |
+    distillation/venv/bin/python -m unittest -v tests.python.test_precedence_lattice || exit 1
+    cd cloudflare-mcp/mcp-server && npx vitest run test/precedence.test.ts --no-file-parallelism
   requires_permission: false
 - id: G3
   intent: 'INV3 and INV4 hold: dry-run sweep is write-free and applied changes are
     receipted and reversible'
   must_assert: INV3 (zero writes in dry-run) and INV4 (receipts present, restore reproduces
     prior state) pass against fixtures; exit nonzero otherwise
-  command: TODO
+  command: |
+    distillation/venv/bin/python -m unittest -v tests.python.test_contested_fossil_sweep
   requires_permission: false
 - id: G4
-  intent: INV6 scope discipline and the existing python + worker suites stay green
-  must_assert: make test-python-checker, make worker-typecheck, and make worker-test
+  intent: INV6 scope discipline and the existing python + worker suites stay fully
+    green (no allowlists)
+  must_assert: the tests/python suite, worker typecheck, and worker vitest suite all
     exit 0, and INV6 holds; exit nonzero otherwise
-  command: TODO
+  command: |
+    distillation/venv/bin/python -m unittest discover -s tests/python -p 'test_*.py' > /tmp/pks_cl_g4_py.log 2>&1 || { tail -5 /tmp/pks_cl_g4_py.log; echo "G4 FAIL: python suite"; exit 1; }
+    make worker-typecheck > /tmp/pks_cl_g4_tc.log 2>&1 || { tail -5 /tmp/pks_cl_g4_tc.log; echo "G4 FAIL: worker typecheck"; exit 1; }
+    cd cloudflare-mcp/mcp-server && npx vitest run --no-file-parallelism > /tmp/pks_cl_g4_wk.log 2>&1 || { tail -5 /tmp/pks_cl_g4_wk.log; echo "G4 FAIL: worker suite"; exit 1; }
+    echo "G4 PASS: both suites fully green"
   requires_permission: false
 - id: G5
   intent: 'production dry-run of the fossil sweep: enumerate real contested entries
@@ -102,11 +131,29 @@ gates:
   must_assert: the sweep runs against production in dry-run, writes nothing (INV3
     semantics), and emits a reviewable JSON list of contested entries whose contradicts
     targets are archived/merged/self-referential; exit nonzero on any write attempt
-  command: TODO
+  command: |
+    distillation/venv/bin/python scripts/sweep_contested_fossils.py --dry-run
   requires_permission: true
 review:
   mode: required
-  command: TODO
+  command: |
+    DIFF=$(git diff HEAD -- distillation/models/entries.py distillation/pipeline/ distillation/utils/precedence.py ingestion/ cloudflare-mcp/mcp-server/src/precedence.ts scripts/sweep_contested_fossils.py shared/precedence_fixtures.json; git status --porcelain -- tests/ cloudflare-mcp/mcp-server/test/)
+    PROMPT="Static code review only — do NOT execute shell commands or run any test suite (the sandbox TMPDIR is broken; review by reading only, use your file-read tool for the new test files listed as untracked). Review this diff against contract PKS-CONTRADICTION-LIFECYCLE-001 for correctness bugs or violations of:
+    INV1: asserted_by derives from message role (user msg -> user, assistant -> assistant, missing/unknown -> inferred); never invented.
+    INV2: the precedence lattice — any user assertion outranks any assistant assertion regardless of recency; behavioral(3) vs user(4) returns escalate in both orders; decision>preference>fact>hypothesis within equal authority; recency only as final tiebreak; python and TypeScript implementations must be semantically identical against shared/precedence_fixtures.json.
+    INV3: the fossil sweep in dry-run performs zero store writes, structurally.
+    INV4: every applied sweep change appends a consolidation_notes receipt naming run id, basis, prior state, counterpart ids.
+    INV5: schema change is additive — old entry JSON round-trips unchanged; new keys omitted when None.
+    INV6: diff confined to the contract scope.
+    Respond with a single final line exactly 'REVIEW: PASS' or 'REVIEW: FAIL' plus the blocking issue. Nits do not block.
+
+    DIFF:
+    $DIFF"
+    codex exec "$PROMPT" --sandbox read-only --skip-git-repo-check -m gpt-5.5 -c model_reasoning_effort="high" > /tmp/pks_cl_review.log 2>&1
+    tail -5 /tmp/pks_cl_review.log
+    grep -q "REVIEW: PASS" /tmp/pks_cl_review.log && exit 0
+    echo "REVIEW GATE FAIL — see /tmp/pks_cl_review.log"
+    exit 1
   sees: &id001
   - diff
   - invariants
@@ -114,7 +161,19 @@ review:
 budget:
   max_turns: 30
   max_consecutive_failures: 3
-  preflight_estimate: required
+  preflight_estimate: complete
+  # Presented 2026-07-10 (Fable authoring + Opus implementation subagent):
+  # ~10 files — entries.py (+2 optional Evidence fields, serialization sites),
+  # new distillation/utils/precedence.py + src/precedence.ts twins with
+  # shared/precedence_fixtures.json (>=20 lattice cases), extraction wiring in
+  # distillation/pipeline/extract.py + corrections.py + ingestion/core/extractor.py
+  # (+agent_sessions if evidence has message basis), new
+  # scripts/sweep_contested_fossils.py (dry-run default, double-flag apply),
+  # 3 new python test modules + 1 vitest module. Scope.in amended by author:
+  # added distillation/pipeline/**, distillation/utils/precedence.py,
+  # cloudflare-mcp/mcp-server/test/**, shared/precedence_fixtures.json (the
+  # original scope was authored too narrowly to reach the extraction sites the
+  # contract's own Context names). G5 + apply remain stage-5, Arjun-gated.
 kill:
   after_turns: 10
 graduate: G1 through G4 exit 0, review verdict is pass, no scope.forbid path touched
@@ -122,10 +181,50 @@ scale: graduated AND G5 dry-run list reviewed and approved by Arjun AND the appl
   run clears the fossil contested set with receipts AND new extractions in production
   carry asserted_by
 ledger:
-  turns: 0
+  turns: 2
   consecutive_failures: 0
-  blockers: []
-  lessons: []
+  blockers:
+  - 'G5 (production dry-run of the fossil sweep, requires_permission) not yet
+    run. Zero writes even when it runs (dry-run is the default and only mode
+    G5 exercises) but it does read production Redis, so it stays gated on
+    Arjun''s go-ahead per this program''s standing "ask before touching
+    production" convention. Apply mode (stage 5, separate from G5) requires
+    a second explicit approval of the reviewed candidate list.'
+  lessons:
+  - 'Build was interrupted mid-flight: an Opus subagent implementing this
+    contract hit its session usage limit after finishing the schema change,
+    precedence.py/precedence.ts twins, the fixture table, and 3 of 4
+    extraction-wiring files (7 of 10 evidence-construction sites in
+    ingestion/core/extractor.py were still unwired). Picked up and finished
+    on Sonnet (high effort) rather than re-spawning: verified every completed
+    piece against the locked design before trusting it (all correct), wired
+    the remaining sites, wrote all 4 test files, and designed the fossil
+    sweep script from scratch (not attempted by the failed agent).'
+  - 'CRITICAL correctness finding made before writing the sweep script: the
+    Python KnowledgeEntry/KnowledgeMetadata dataclasses do not declare
+    several Worker-managed fields (revision, injection_quarantine,
+    quarantined_at, quarantine_streak_nights, github_repo, ...).
+    Round-tripping an entry through KnowledgeEntry.from_dict().to_dict()
+    would SILENTLY DROP every field the Python model does not know about —
+    a real corruption risk on live entries. scripts/sweep_contested_fossils.py
+    therefore operates on raw parsed JSON dicts throughout and never imports
+    the typed dataclass for read or write. Worth carrying forward: any future
+    Python script that reads-modifies-writes a live entry must do the same
+    raw-dict check before trusting KnowledgeEntry as a round-trip-safe
+    representation.'
+  - 'Adversarial review (codex, scoped diff) caught two real bugs on this
+    contract that unit tests alone had not: (1) derive_asserted_by/
+    deriveAssertedBy invented "assistant" authority for any role that was
+    merely not-user (so an unrecognized role like "system" or "tool" would
+    have been silently promoted to assistant-level authority) instead of
+    the contract-mandated "never invent, fall back to inferred" default —
+    fixed to check role !== "assistant" rather than role === undefined, with
+    regression tests in both languages. (2) FossilSweep.apply()''s receipt
+    named counterpart ids but not the literal basis text, failing INV4''s
+    explicit "naming the run id, basis, and counterpart ids" wording even
+    though the counterpart summary implied the same information — fixed to
+    include basis= explicitly. Both fixes shipped with regression tests
+    before the review passed. Three review rounds total; PASS on the third.'
 legacy:
   goal_condition: all non-permissioned gates exit 0 AND git diff --name-only is a
     subset of scope.in AND no scope.forbid path is modified
