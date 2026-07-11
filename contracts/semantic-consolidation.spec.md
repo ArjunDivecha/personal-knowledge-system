@@ -78,12 +78,28 @@ invariants:
   check_intent: git diff --name-only is a subset of scope.in and excludes every scope.forbid
     path
 gates:
+- id: G0
+  intent: 'premise gate: the mechanisms this contract builds on exist as diagnosed
+    (semantic dedup machinery, the two automated nightly call sites, the operation
+    dispatch/rollback/cap infrastructure, and the already-deployed merge hard gates)'
+  must_assert: buildReplayPlansWithSemantic and runDreamProposal exist, both automated
+    nightly call sites exist, mergeGates.ts's hard gates are wired into
+    applyDuplicateMergePlan; exit nonzero if any premise has drifted
+  command: |
+    grep -q "async function buildReplayPlansWithSemantic" cloudflare-mcp/mcp-server/src/dream.ts || { echo "G0 FAIL: buildReplayPlansWithSemantic missing"; exit 1; }
+    grep -q "export async function runDreamProposal" cloudflare-mcp/mcp-server/src/dream.ts || { echo "G0 FAIL: runDreamProposal missing"; exit 1; }
+    grep -q "async function runScheduledGovernedDream" cloudflare-mcp/mcp-server/src/index.ts || { echo "G0 FAIL: index.ts nightly path missing"; exit 1; }
+    grep -q "runBoundedSemanticSlicePass" cloudflare-mcp/mcp-server/src/scheduledDreamAsync.ts || { echo "G0 FAIL: scheduledDreamAsync.ts wiring missing"; exit 1; }
+    grep -q "validateMergeConservation" cloudflare-mcp/mcp-server/src/dream.ts || { echo "G0 FAIL: merge hard gate wiring missing"; exit 1; }
+    echo "G0 PASS: all premises hold"
+  requires_permission: false
 - id: G1
   intent: 'INV1 and INV6 hold: protected types cannot be absorbed automatically and
     the cap is coupled to the gates'
   must_assert: INV1 protected-loser holds and INV6 cap-coupling assertions pass in
     worker vitest; exit nonzero otherwise
-  command: TODO
+  command: |
+    cd cloudflare-mcp/mcp-server && npx vitest run test/protectedTypeMergeHold.test.ts test/mergeCapCoupling.test.ts --no-file-parallelism
   requires_permission: false
 - id: G2
   intent: INV3 and INV5 hold across the labeled merge-fixture library (the lossless-merge
@@ -91,19 +107,24 @@ gates:
   must_assert: every fixture labeled apply passes and every fixture labeled block
     is blocked with the violated rule named, including INV5 receipt-mapping cases;
     exit nonzero listing misclassified fixtures otherwise
-  command: TODO
+  command: |
+    cd cloudflare-mcp/mcp-server && npx vitest run test/mergeGates.test.ts --no-file-parallelism
   requires_permission: false
 - id: G3
   intent: 'INV2 and INV4 hold: bounded per-night work and starvation-free cursor coverage'
   must_assert: INV2 bound counters and degradation fallback, and INV4 full-coverage/resume
     simulations pass; exit nonzero otherwise
-  command: TODO
+  command: |
+    cd cloudflare-mcp/mcp-server && npx vitest run test/semanticCursor.test.ts test/semantic-dedup.test.ts --no-file-parallelism
   requires_permission: false
 - id: G4
-  intent: INV7 scope discipline and existing suites stay green
-  must_assert: make worker-typecheck and make worker-test exit 0 and INV7 holds; exit
-    nonzero otherwise
-  command: TODO
+  intent: INV7 scope discipline and existing suites stay fully green (no allowlists)
+  must_assert: make worker-typecheck and the full worker vitest suite exit 0; INV7
+    holds; exit nonzero otherwise
+  command: |
+    make worker-typecheck > /tmp/pks_sc_g4_tc.log 2>&1 || { tail -5 /tmp/pks_sc_g4_tc.log; echo "G4 FAIL: typecheck"; exit 1; }
+    cd cloudflare-mcp/mcp-server && npx vitest run --no-file-parallelism > /tmp/pks_sc_g4_wk.log 2>&1 || { tail -5 /tmp/pks_sc_g4_wk.log; echo "G4 FAIL: worker suite"; exit 1; }
+    echo "G4 PASS: worker suite fully green"
   requires_permission: false
 - id: G5
   intent: 'staging end-to-end: seeded paraphrase duplicates produce semantic merge
@@ -112,11 +133,22 @@ gates:
     corpus, applied merges pass post-apply verification (verify-memory-full equivalent),
     rollback of one applied merge restores prior state, and production is never targeted;
     exit nonzero otherwise
-  command: TODO
+  command: |
+    echo "G5 requires a staging deploy and a real POST /ops/dream/run_scheduled_governed trigger against staging with STAGING_DREAM_OPERATOR_TOKEN. Inspect the run summary's semantic_slice field for merges_added/contests_added, and the applied operations for any duplicate_merge; if one applied, verify it via get_deep on the canonical id, then rollback it via /ops/dream/restore and confirm both parents are restored."
   requires_permission: true
 review:
   mode: required
-  command: TODO
+  command: |
+    DIFF=$(git diff HEAD -- cloudflare-mcp/mcp-server/src/dream.ts cloudflare-mcp/mcp-server/src/index.ts cloudflare-mcp/mcp-server/src/scheduledDreamAsync.ts shared/memory_policy.json cloudflare-mcp/mcp-server/test/scheduled.test.ts cloudflare-mcp/mcp-server/test/scheduled-async.test.ts cloudflare-mcp/mcp-server/test/semantic-dedup.test.ts; git status --porcelain -- cloudflare-mcp/mcp-server/src/semanticCursor.ts cloudflare-mcp/mcp-server/test/semanticCursor.test.ts cloudflare-mcp/mcp-server/test/protectedTypeMergeHold.test.ts cloudflare-mcp/mcp-server/test/mergeCapCoupling.test.ts)
+    PROMPT="Static code review only — do NOT execute shell commands or run any test suite. Review this diff against contract PKS-SEMANTIC-CONSOLIDATION-001 for correctness bugs or violations of INV1 (protected-type hold), INV2 (bounded per-night work, fail-open), INV4 (starvation-free cursor coverage), INV6 (cap coupled to gates), INV7 (scope). mergeGates.ts (INV3/INV5) was reviewed and committed separately — do not re-review it, just confirm nothing here bypasses it. Respond with a single final line exactly 'REVIEW: PASS' or 'REVIEW: FAIL' plus the blocking issue. Nits do not block.
+
+    DIFF:
+    \$DIFF"
+    codex exec "\$PROMPT" --sandbox read-only --skip-git-repo-check -m gpt-5.5 -c model_reasoning_effort="high" > /tmp/pks_sc_review_gate.log 2>&1
+    tail -5 /tmp/pks_sc_review_gate.log
+    grep -q "REVIEW: PASS" /tmp/pks_sc_review_gate.log && exit 0
+    echo "REVIEW GATE FAIL — see /tmp/pks_sc_review_gate.log"
+    exit 1
   sees: &id001
   - diff
   - invariants
@@ -124,17 +156,83 @@ review:
 budget:
   max_turns: 40
   max_consecutive_failures: 3
-  preflight_estimate: required
+  preflight_estimate: complete
+  # Presented 2026-07-11 (Fable authoring/hard-gate implementation + Sonnet
+  # subagent for the rest): mergeGates.ts (INV3/INV5, ~587 lines incl. tests,
+  # self-authored and committed in a prior turn, already deployed to
+  # production) plus this turn's ~10 files — semanticCursor.ts (rolling
+  # cursor), dream.ts (+127: mergeSemanticSliceIntoProposal, exported
+  # loadEntriesByType), index.ts (+165: resolveScheduledDuplicateMergeLimit,
+  # INV1 hold check, runBoundedSemanticSlicePass), scheduledDreamAsync.ts
+  # (+25, mirrors index.ts wiring), memory_policy.json (cap 10->50 coupled
+  # to merge_hard_gates_active), 4 new/modified test files (56 new cases).
+  # 1 build turn (subagent) + Fable review/fix pass (a corpus-shrink cursor
+  # concern raised by adversarial review was investigated, proven a false
+  # positive with 2 new regression tests, not "fixed" since nothing was
+  # broken). 2 review rounds to convergence.
 kill:
   after_turns: 12
-graduate: G1 through G4 exit 0, review verdict is pass, no scope.forbid path touched
+graduate: G0 through G4 exit 0, review verdict is pass, no scope.forbid path touched
 scale: graduated AND G5 passes on staging AND the production backlog drain (known
   ~459 semantic clusters, 200-entry batches, verify-after-each-batch, stop-on-fail)
   completes AND nightly duplicate-candidate counts trend down for 14 days
 ledger:
-  turns: 0
+  turns: 2
   consecutive_failures: 0
-  blockers: []
+  blockers:
+  - 'LIVE BEHAVIOR CHANGE flagged for explicit sign-off before deploy:
+    shared/memory_policy.json raises scheduled_duplicate_merge_limit 10->50,
+    coupled to merge_hard_gates_active:true via resolveScheduledDuplicateMergeLimit
+    (index.ts) — the resolver clamps to 10 in running code, not just
+    convention, if the flag is ever false. merge_hard_gates_active:true is
+    factually accurate (mergeGates.ts is unconditionally wired and already
+    live in production). Up to 5x more automated duplicate_merge operations
+    may auto-apply per scheduled night once this deploys. This is deliberate
+    — INV6''s own wording is "raised to 50 only in the same change that
+    activates the hard gates" — but raising it is a real, consequential,
+    hard-to-fully-preview production behavior change, not a mechanical
+    build-loop step, so it is called out here explicitly rather than folded
+    silently into the rest of this contract''s graduation.'
+  - 'G5 (staging end-to-end: seeded paraphrase duplicates, semantic merge
+    proposal, applied, rolled back) not yet run: requires deploying this
+    code to staging and triggering a real nightly run against a staging
+    corpus that would need paraphrase-duplicate fixtures seeded first (the
+    contract''s own verification narrative). Deferred.'
+  - 'The production backlog drain (~459 known semantic clusters from the
+    2026-06-08 one-off run, 200-entry batches, verify-after-each-batch,
+    stop-on-fail per the "scale" bar) has NOT been attempted. That is a
+    separate, larger, explicitly Arjun-gated operation — stage 5 territory,
+    not part of this graduation.'
+  lessons:
+  - 'Adversarial review raised a cursor wrap-detection concern (corpus
+    shrinking between nights could cause advanceSemanticCursor to skip
+    entries) that was investigated and found to be a false positive:
+    selectCursorSlice wraps modulo the CURRENT corpus size within a single
+    call, and advanceSemanticCursor uses the same modular base, so the two
+    stay self-consistent regardless of corpus size changing night to night
+    (proven by (a % n + b) % n == (a + b) % n for non-negative a). Verified
+    empirically with a standalone vitest run before arguing it, then
+    converted into 2 permanent regression tests
+    (test/semanticCursor.test.ts) rather than left as an unverified claim
+    in a chat transcript.'
+  - 'Key architectural resolution: the spec''s own instructions were
+    slightly in tension (merge before proposal/grade/apply proceeds, vs.
+    confirm running two independent grade/apply cycles per night is safe).
+    Resolved toward ONE grade + ONE apply on a single combined proposal —
+    mergeSemanticSliceIntoProposal writes the merged operations back to
+    Redis under the base proposal''s own run_id BEFORE gradeDreamProposal/
+    applyDreamProposal are called with that same proposalId, so both
+    re-fetch and act on the combined set. This also keeps the INV6 cap a
+    single governing number over combined nightly throughput rather than
+    letting two independent cycles double-count against it. Verified the
+    ordering directly in the diff, not just trusted the subagent''s
+    self-report.'
+  - 'runDreamProposal itself DOES run twice per scheduled night (once
+    corpus-wide lexical, unchanged; once semantic-only on the bounded
+    200-entry cursor slice) — this is intentional and confirmed safe: it is
+    a pure read+compute function with no lock or rate-limit that would make
+    a second call in the same invocation unsafe. Only grade/apply run once,
+    on the merged result.'
   lessons: []
 legacy:
   goal_condition: all non-permissioned gates exit 0 AND git diff --name-only is a

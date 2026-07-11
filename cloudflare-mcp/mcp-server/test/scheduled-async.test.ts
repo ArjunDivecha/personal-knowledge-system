@@ -13,6 +13,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const dreamMock = vi.hoisted(() => ({
 	applyDreamProposal: vi.fn(),
 	gradeDreamProposal: vi.fn(),
+	loadEntriesByType: vi.fn(),
+	mergeSemanticSliceIntoProposal: vi.fn(),
 	restoreArchivedEntry: vi.fn(),
 	runDreamCycle: vi.fn(),
 	runDreamProposal: vi.fn(),
@@ -111,6 +113,14 @@ beforeEach(() => {
 		risk_score: "low",
 		operations: [{ operation_id: "dop_archive_ke_1", type: "archive_entry" }],
 	});
+	// PKS-SEMANTIC-CONSOLIDATION-001: default to an empty corpus so the bounded
+	// semantic slice pass (runBoundedSemanticSlicePass) is a no-op and this
+	// file's existing tests keep exercising the lexical-only proposal/grade/
+	// apply path unchanged.
+	dreamMock.loadEntriesByType.mockResolvedValue([]);
+	dreamMock.mergeSemanticSliceIntoProposal.mockImplementation(
+		async (_env: unknown, baseProposal: unknown) => baseProposal,
+	);
 	dreamMock.gradeDreamProposal.mockResolvedValue({
 		grade_id: "dpg_test",
 		status: "passed",

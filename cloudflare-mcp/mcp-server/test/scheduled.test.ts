@@ -9,6 +9,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const dreamMock = vi.hoisted(() => ({
 	applyDreamProposal: vi.fn(),
 	gradeDreamProposal: vi.fn(),
+	loadEntriesByType: vi.fn(),
+	mergeSemanticSliceIntoProposal: vi.fn(),
 	restoreArchivedEntry: vi.fn(),
 	runDreamCycle: vi.fn(),
 	runDreamProposal: vi.fn(),
@@ -84,6 +86,17 @@ beforeEach(() => {
 		risk_score: "low",
 		operations: [],
 	});
+	// PKS-SEMANTIC-CONSOLIDATION-001: the bounded semantic slice pass
+	// (runBoundedSemanticSlicePass, src/index.ts) loads the full candidate
+	// corpus to build this night's cursor slice. Default to an empty corpus so
+	// the slice is empty and the pass is a no-op (mergeSemanticSliceIntoProposal
+	// is never invoked) — matching this file's existing tests, which exercise
+	// the lexical-only proposal/grade/apply path. See scheduled-async.test.ts
+	// (or a dedicated semantic-slice test) for slice_size > 0 coverage.
+	dreamMock.loadEntriesByType.mockResolvedValue([]);
+	dreamMock.mergeSemanticSliceIntoProposal.mockImplementation(
+		async (_env: unknown, baseProposal: unknown) => baseProposal,
+	);
 	dreamMock.gradeDreamProposal.mockResolvedValue({
 		grade_id: "dpg_test",
 		proposal_id: "dpr_test",
@@ -281,6 +294,98 @@ describe("Scheduled Dream runner", () => {
 		expect(lastRunCounts.applied_count).toBe(2);
 		const lastRunVerification = lastRun.verification as Record<string, unknown>;
 		expect(lastRunVerification.passed).toBe(true);
+	});
+
+	it("DREAM_AUTO_APPLY_MODE=governed: bounded semantic slice pass runs a second runDreamProposal call, merges its operations in, and advances the cursor", async () => {
+		// Non-empty corpus so selectCursorSlice returns entries and the semantic
+		// slice pass actually attempts a second runDreamProposal call.
+		dreamMock.loadEntriesByType.mockResolvedValueOnce([
+			{ id: "ke_1", injectionTier: 1 },
+			{ id: "ke_2", injectionTier: 1 },
+		]).mockResolvedValueOnce([]);
+
+		// First call: the existing corpus-wide lexical proposal (unchanged).
+		dreamMock.runDreamProposal.mockResolvedValueOnce({
+			run_id: "dpr_lexical_2026-03-28T07-10-00-000Z",
+			status: "proposal_ready",
+			risk_score: "low",
+			operations: [{ operation_id: "dop_archive_ke_9", type: "archive_entry" }],
+		});
+		// Second call: the bounded semantic-slice proposal (semantic: true,
+		// candidateIds scoped to the cursor slice).
+		dreamMock.runDreamProposal.mockResolvedValueOnce({
+			run_id: "dpr_slice_2026-03-28T07-10-05-000Z",
+			status: "proposal_ready",
+			risk_score: "medium",
+			operations: [{ operation_id: "dop_merge_ke_1_ke_2", type: "duplicate_merge", keep_id: "ke_1", archive_ids: ["ke_2"] }],
+		});
+
+		// mergeSemanticSliceIntoProposal is mocked (the real dream.ts is fully
+		// mocked in this file) — return what the real implementation would: the
+		// base proposal's operations plus the slice proposal's operations.
+		dreamMock.mergeSemanticSliceIntoProposal.mockImplementationOnce(
+			async (_env: unknown, base: Record<string, unknown>, slice: Record<string, unknown>) => ({
+				...base,
+				operations: [...(base.operations as unknown[]), ...(slice.operations as unknown[])],
+				operation_count: 2,
+			}),
+		);
+
+		dreamMock.gradeDreamProposal.mockResolvedValueOnce({
+			grade_id: "dpg_merged_test",
+			status: "passed",
+			passed: true,
+			operation_ids: ["dop_archive_ke_9", "dop_merge_ke_1_ke_2"],
+		});
+		dreamMock.applyDreamProposal.mockResolvedValueOnce({
+			ok: true,
+			proposal_id: "dpr_lexical_2026-03-28T07-10-00-000Z",
+			apply_run_id: "apply_test",
+			mutation_id: "scheduled_governed_dpr_lexical_2026-03-28T07-10-00-000Z",
+			applied_count: 2,
+			operation_ids: ["dop_archive_ke_9", "dop_merge_ke_1_ke_2"],
+			side_effects: { index: "rebuilt" },
+		});
+
+		const controller = createScheduledController({
+			cron: "10 7 * * *",
+			scheduledTime: Date.parse("2026-03-28T07:10:00.000Z"),
+		});
+		const ctx = createExecutionContext();
+		const testEnv = { ...getTestEnv(), DREAM_AUTO_APPLY_MODE: "governed" as const };
+		await worker.scheduled(controller, testEnv, ctx);
+		await waitOnExecutionContext(ctx);
+
+		// runDreamProposal called twice: lexical (no semantic/candidateIds) then
+		// the bounded slice (semantic: true, candidateIds from the slice).
+		expect(dreamMock.runDreamProposal).toHaveBeenCalledTimes(2);
+		expect(dreamMock.runDreamProposal).toHaveBeenNthCalledWith(
+			2,
+			expect.anything(),
+			expect.objectContaining({
+				semantic: true,
+				candidateIds: ["ke_1", "ke_2"],
+			}),
+		);
+		expect(dreamMock.mergeSemanticSliceIntoProposal).toHaveBeenCalledTimes(1);
+		// grade/apply run exactly ONCE, on the merged proposal (not once per pass).
+		expect(dreamMock.gradeDreamProposal).toHaveBeenCalledTimes(1);
+		expect(dreamMock.applyDreamProposal).toHaveBeenCalledTimes(1);
+		expect(dreamMock.applyDreamProposal).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({
+				operationIds: expect.arrayContaining(["dop_archive_ke_9", "dop_merge_ke_1_ke_2"]),
+			}),
+		);
+		// The cursor was advanced (persisted) after a successful slice sweep.
+		const cursorWrite = redisMock.set.mock.calls.find((call) => call[0] === "dream:semantic_cursor");
+		expect(cursorWrite).toBeTruthy();
+		const cursorState = JSON.parse(cursorWrite?.[1] as string) as Record<string, unknown>;
+		// Corpus size is 2 and the slice swept both entries, so the cursor
+		// completes a full lap and wraps back to position 0 (correct — INV4
+		// coverage is what matters, not the raw position value here).
+		expect(cursorState.position).toBe(0);
+		expect(cursorState.total_swept_this_cycle).toBe(2);
 	});
 
 	it("DREAM_AUTO_APPLY_MODE=governed: skips when another Dream run holds the lock", async () => {

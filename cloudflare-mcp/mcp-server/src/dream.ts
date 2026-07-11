@@ -103,7 +103,7 @@ interface RollbackDreamApplyOptions {
 	operationIds?: string[] | null;
 }
 
-interface LoadedEntry {
+export interface LoadedEntry {
 	id: string;
 	type: EntryType;
 	entry: Record<string, unknown>;
@@ -1844,7 +1844,12 @@ async function loadEntryBatchByType(
 	return { entries: loadedEntries, archivedCount };
 }
 
-async function loadEntriesByType(redis: Redis, entryType: EntryType): Promise<LoadedEntry[]> {
+// Exported (PKS-SEMANTIC-CONSOLIDATION-001, INV2/INV4) so the scheduled-governed
+// callers (index.ts, scheduledDreamAsync.ts) can load the same candidate pool
+// runDreamProposal itself loads, sort it by (injectionTier, id), and hand a
+// bounded slice of it to selectCursorSlice — reusing this loader instead of
+// duplicating loadEntryBatchByType's Redis-scan machinery.
+export async function loadEntriesByType(redis: Redis, entryType: EntryType): Promise<LoadedEntry[]> {
 	return (await loadEntryBatchByType(redis, entryType)).entries;
 }
 
@@ -3170,6 +3175,124 @@ export async function runDreamProposal(
 	await redis.set(DREAM_LAST_PROPOSAL_KEY, JSON.stringify(proposal));
 	await updateDreamRunIndex(redis, runId);
 	return proposal;
+}
+
+// PKS-SEMANTIC-CONSOLIDATION-001, INV2: folds the bounded rolling-cursor
+// semantic slice's duplicate_merge/mark_contested operations into the
+// existing corpus-wide lexical proposal, so gradeDreamProposal/
+// applyDreamProposal/buildScheduledGovernedDecision see and act on ONE
+// combined proposal rather than two. This matters for INV6: the
+// scheduled duplicate_merge cap must govern combined nightly throughput
+// (lexical + semantic), not be silently doubled by running two independent
+// grade/apply cycles. gradeDreamProposal/applyDreamProposal both re-fetch
+// the proposal from Redis by run_id (never take a proposal object directly),
+// so the merge is persisted under `baseProposal`'s own run_id keys, not just
+// held in memory — the caller must keep using baseProposal's run_id as
+// `proposalId` for grading/applying afterwards.
+//
+// Dedup is by operation CONTENT (same keep_id + same archive_ids set for
+// duplicate_merge, same entry_ids set for mark_contested), not by
+// operation_id string equality — the two passes can independently discover
+// the same cluster with edges added/traversed in a different order,
+// producing different array orderings (and thus different deterministic
+// ids) for what is semantically the same proposed merge. Only an EXACT
+// content match is deduped; a slice proposal that finds a superset/subset of
+// an existing group is kept as a distinct operation (no partial-overlap
+// resolution — out of scope for this contract).
+export async function mergeSemanticSliceIntoProposal(
+	env: Env,
+	baseProposal: Record<string, unknown>,
+	sliceProposal: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+	const baseRunId = typeof baseProposal.run_id === "string" ? baseProposal.run_id : null;
+	if (!baseRunId || baseProposal.status !== "proposal_ready" || sliceProposal.status !== "proposal_ready") {
+		return baseProposal;
+	}
+
+	const baseOperations = toObjectArray(baseProposal.operations);
+	const sliceOperations = toObjectArray(sliceProposal.operations).filter(
+		(op) => op.type === "duplicate_merge" || op.type === "mark_contested",
+	);
+
+	const operationContentKey = (op: Record<string, unknown>): string | null => {
+		if (op.type === "duplicate_merge") {
+			const keepId = typeof op.keep_id === "string" ? op.keep_id : null;
+			if (!keepId) return null;
+			const archiveIds = [...toStringArray(op.archive_ids)].sort();
+			return `duplicate_merge::${keepId}::${archiveIds.join(",")}`;
+		}
+		if (op.type === "mark_contested") {
+			const entryIds = [...toStringArray(op.entry_ids)].sort();
+			if (entryIds.length === 0) return null;
+			return `mark_contested::${entryIds.join(",")}`;
+		}
+		return null;
+	};
+
+	const existingKeys = new Set(
+		baseOperations.map(operationContentKey).filter((key): key is string => key !== null),
+	);
+	const newOperations = sliceOperations.filter((op) => {
+		const key = operationContentKey(op);
+		return key !== null && !existingKeys.has(key);
+	});
+
+	if (newOperations.length === 0) {
+		return baseProposal;
+	}
+
+	const mergedOperations = [...baseOperations, ...newOperations].sort((a, b) => {
+		const idA = typeof a.operation_id === "string" ? a.operation_id : "";
+		const idB = typeof b.operation_id === "string" ? b.operation_id : "";
+		return idA < idB ? -1 : idA > idB ? 1 : 0;
+	});
+
+	// candidate_ids/candidate_revisions must cover every id the new operations
+	// touch — gradeDreamProposalRecord's entry_outside_snapshot check requires
+	// every touched entry to be within the proposal's own snapshot.
+	const mergedCandidateIds = new Set(toStringArray(baseProposal.candidate_ids));
+	const baseCandidateRevisions = parseStoredObject(baseProposal.candidate_revisions) ?? {};
+	const mergedCandidateRevisions: Record<string, number> = {};
+	for (const [entryId, rawRevision] of Object.entries(baseCandidateRevisions)) {
+		const revision = toOptionalInteger(rawRevision);
+		if (revision !== null) mergedCandidateRevisions[entryId] = revision;
+	}
+	const sliceCandidateRevisions = parseStoredObject(sliceProposal.candidate_revisions) ?? {};
+	for (const op of newOperations) {
+		for (const entryId of getOperationTouchedIds(op)) {
+			mergedCandidateIds.add(entryId);
+			if (mergedCandidateRevisions[entryId] === undefined) {
+				const revision = toOptionalInteger(sliceCandidateRevisions[entryId]);
+				if (revision !== null) mergedCandidateRevisions[entryId] = revision;
+			}
+		}
+	}
+
+	const addedMerges = newOperations.filter((op) => op.type === "duplicate_merge").length;
+	const addedContests = newOperations.filter((op) => op.type === "mark_contested").length;
+	const mergedProposal: Record<string, unknown> = {
+		...baseProposal,
+		candidate_ids: [...mergedCandidateIds],
+		candidate_revisions: mergedCandidateRevisions,
+		operation_count: mergedOperations.length,
+		operations: mergedOperations,
+		requires_operator_review: mergedOperations.length > 0,
+		risk_score: mergedOperations.some((op) => op.type === "duplicate_merge" || op.type === "mark_contested")
+			? "medium"
+			: (baseProposal.risk_score ?? "low"),
+		counts: {
+			...(parseStoredObject(baseProposal.counts) ?? {}),
+			semantic_slice_merges_added: addedMerges,
+			semantic_slice_contests_added: addedContests,
+		},
+	};
+
+	const redis = createRedisClient(env);
+	await redis.set(`${DREAM_RUN_PREFIX}${baseRunId}:proposal`, JSON.stringify(mergedProposal));
+	await redis.set(`${DREAM_RUN_PREFIX}${baseRunId}`, JSON.stringify(mergedProposal));
+	await redis.set(DREAM_LAST_PROPOSAL_KEY, JSON.stringify(mergedProposal));
+
+	return mergedProposal;
 }
 
 function getDreamGradeKey(proposalId: string, gradeId?: string | null): string {

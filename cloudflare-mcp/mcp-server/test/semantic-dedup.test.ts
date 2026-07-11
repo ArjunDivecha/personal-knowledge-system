@@ -218,4 +218,45 @@ describe("buildReplayPlansWithSemantic", () => {
 		expect(semantic.capped).toBe(true);
 		expect(semantic.queriesRun).toBe(4);
 	});
+
+	// PKS-SEMANTIC-CONSOLIDATION-001 INV2: "fail-open to lexical-only on
+	// vector-store degradation" — a neighbour function that fails its health
+	// probe (the first call) must never throw out of buildReplayPlansWithSemantic;
+	// it must fall back to lexical-only dedup (which still runs unconditionally)
+	// and report semantic.enabled === false with a disabled_reason.
+	it("fails open to lexical-only when the neighbour function's health probe rejects (degraded vector store)", async () => {
+		const entries = [
+			mk({ id: "ke_1", label: "same topic", view: "same topic" }),
+			mk({ id: "ke_2", label: "same topic", view: "same topic" }),
+			mk({ id: "ke_3", label: "unrelated topic" }),
+		];
+		const degradedNeighbor: NeighborFn = async () => {
+			throw new Error("vector store unavailable");
+		};
+
+		let result: Awaited<ReturnType<typeof buildReplayPlansWithSemantic>> | null = null;
+		await expect(
+			(async () => {
+				result = await buildReplayPlansWithSemantic(entries, degradedNeighbor, CONFIG);
+			})(),
+		).resolves.not.toThrow();
+
+		expect(result).not.toBeNull();
+		expect(result!.semantic.enabled).toBe(false);
+		expect(result!.semantic.queriesRun).toBe(0);
+		expect(result!.semantic.disabled_reason).toBeDefined();
+		// Lexical-exact dedup (ke_1/ke_2 share a fingerprint) still runs.
+		const merged = result!.duplicatePlans.flatMap((p) => [p.canonical.id, ...p.duplicates.map((d: any) => d.id)]);
+		expect(merged.sort()).toEqual(["ke_1", "ke_2"]);
+	});
+
+	it("never throws when neighborFn is null (no vector client configured) — pure lexical-only, same as degraded", async () => {
+		const entries = [
+			mk({ id: "ke_1", label: "same topic", view: "same topic" }),
+			mk({ id: "ke_2", label: "same topic", view: "same topic" }),
+		];
+		const result = await buildReplayPlansWithSemantic(entries, null, CONFIG);
+		expect(result.semantic.enabled).toBe(false);
+		expect(result.duplicatePlans).toHaveLength(1);
+	});
 });

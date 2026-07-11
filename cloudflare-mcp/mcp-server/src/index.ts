@@ -21,6 +21,8 @@ import {
 	consolidateEntries,
 	createEntry,
 	gradeDreamProposal,
+	loadEntriesByType,
+	mergeSemanticSliceIntoProposal,
 	restoreArchivedEntry,
 	restoreEntry,
 	rollbackDreamApply,
@@ -28,7 +30,10 @@ import {
 	runDreamProposal,
 	runScheduledRetierCycle,
 	updateEntry,
+	type LoadedEntry,
 } from "./dream";
+import { isProtectedContextType } from "./mergeGates";
+import { advanceSemanticCursor, loadSemanticCursor, selectCursorSlice } from "./semanticCursor";
 import { formatConsolidationNote } from "./consolidation";
 import { getCachedTweet, enqueueTweetRead, setCachedTweet } from "./tweets/cache";
 import { checkTweetUpstreams, fetchFxThread, fetchTweetWithFallback } from "./tweets/fetchers";
@@ -83,7 +88,24 @@ export const SCHEDULED_DREAM_MAX_ENTRIES_TOUCHED =
 		? ((MEMORY_POLICY.dream_thresholds as Record<string, unknown>).max_entries_touched_per_apply as number)
 		: SCHEDULED_DREAM_ARCHIVE_LIMIT * 4;
 export const SCHEDULED_DREAM_PROMOTION_LIMIT = 10;
-export const SCHEDULED_DREAM_DUPLICATE_MERGE_LIMIT = 10;
+// PKS-SEMANTIC-CONSOLIDATION-001 INV6: the scheduled duplicate_merge cap is
+// coupled to the merge hard gates (mergeGates.ts's collapseNearDuplicateInsights
+// + validateMergeConservation, unconditionally wired into applyDuplicateMergePlan)
+// by this RESOLVER, not merely by the checked-in policy value — if
+// merge_hard_gates_active is not literally true, the cap is clamped to 10
+// regardless of what scheduled_duplicate_merge_limit says, so a policy edit
+// alone can never raise nightly merge throughput without also flipping the
+// gate flag. Exported for direct unit coverage (mergeCapCoupling.test.ts).
+export function resolveScheduledDuplicateMergeLimit(thresholds: Record<string, unknown>): number {
+	const configured = typeof thresholds.scheduled_duplicate_merge_limit === "number"
+		? thresholds.scheduled_duplicate_merge_limit
+		: 10;
+	const gatesActive = thresholds.merge_hard_gates_active === true;
+	return gatesActive ? configured : Math.min(configured, 10);
+}
+export const SCHEDULED_DREAM_DUPLICATE_MERGE_LIMIT = resolveScheduledDuplicateMergeLimit(
+	MEMORY_POLICY.dream_thresholds as Record<string, unknown>,
+);
 export const SCHEDULED_DREAM_MARK_CONTESTED_LIMIT = 10;
 const RATE_LIMIT_WINDOW_SECONDS = 60 * 60;
 const WRITE_TOOL_RATE_LIMIT = 24;
@@ -1247,6 +1269,31 @@ export function buildScheduledGovernedDecision(
 			});
 			continue;
 		}
+		// PKS-SEMANTIC-CONSOLIDATION-001 INV1: a protected context type
+		// (professional_identity, stated_preference, explicit_save) may never be
+		// an automated merge loser. Checked ahead of the cap so a protected-type
+		// hold is never masked by "cap reached" — it always surfaces its own
+		// reason. archive_ids' context types are read from the operation's own
+		// evidence.duplicates (summarizeProposalEntry output, buildDreamProposalOperations
+		// in dream.ts) rather than an extra entry fetch, since that's already
+		// exactly what was loaded when the proposal was built.
+		if (type === "duplicate_merge") {
+			const evidence = parseStoredObject(operation.evidence);
+			const duplicates = evidence ? toObjectArray(evidence.duplicates) : [];
+			const protectedTypes = ((MEMORY_POLICY.dream_thresholds as Record<string, unknown>)
+				.archive_protected_context_types as string[] | undefined) ?? [];
+			const protectedLoser = duplicates.find((duplicate) =>
+				isProtectedContextType(duplicate.context_type, protectedTypes),
+			);
+			if (protectedLoser) {
+				heldOperations.push({
+					operation_id: operationId,
+					type,
+					reason: `protected_type_requires_approval:${String(protectedLoser.id)}:${String(protectedLoser.context_type)}`,
+				});
+				continue;
+			}
+		}
 		const limit = SCHEDULED_DREAM_OPERATION_LIMITS[type];
 		if (typeof limit !== "number") {
 			heldOperations.push({
@@ -1318,6 +1365,107 @@ export function verifyScheduledGovernedApply(
 		passed: checks.every((check) => check.passed),
 		checks,
 	};
+}
+
+export interface SemanticSlicePassResult {
+	mergedProposal: Record<string, unknown>;
+	summary: Record<string, unknown>;
+}
+
+// PKS-SEMANTIC-CONSOLIDATION-001 INV2/INV4: runs the bounded rolling-cursor
+// semantic slice as a SECOND, SEPARATE runDreamProposal call scoped to this
+// night's cursor slice (never narrows the primary corpus-wide lexical call's
+// candidate set — dream.ts's runDreamProposal uses candidateEntries for BOTH
+// lexical fingerprinting and semantic neighbour lookup in one call, so
+// passing a 200-entry candidateIds list to the PRIMARY call would also
+// narrow its existing full-corpus lexical dedup, which is a regression).
+// Its duplicate_merge/mark_contested operations are folded into baseProposal
+// via mergeSemanticSliceIntoProposal so grade/apply/the scheduled-governed
+// decision (including the INV6 duplicate_merge cap) operate on ONE combined
+// proposal rather than double-counting a separate cycle per pass.
+//
+// Fail-open (INV2): any error loading entries, running the slice proposal,
+// or merging is caught and logged; the cursor is NOT advanced on failure (so
+// the same slice is retried next run rather than silently skipped) and
+// baseProposal is returned unchanged so the primary lexical proposal can
+// still be graded/applied. A vector-store outage specifically is already
+// handled INSIDE buildReplayPlansWithSemantic without throwing (DEDUP_DEGRADED
+// fail-open to lexical-only, dream.ts) — the try/catch here is for anything
+// else (e.g. Redis errors while loading entries or the cursor).
+export async function runBoundedSemanticSlicePass(
+	env: Env,
+	redis: Redis,
+	baseProposal: Record<string, unknown>,
+	noteSuffix: string,
+): Promise<SemanticSlicePassResult> {
+	try {
+		const cursor = await loadSemanticCursor(redis);
+		const [knowledgeEntries, projectEntries] = await Promise.all([
+			loadEntriesByType(redis, "knowledge"),
+			loadEntriesByType(redis, "project"),
+		]);
+		// Sweep priority (contract Context: "tier-1 entries and largest known
+		// clusters first"): sort by injectionTier ascending, then id ascending.
+		// The ascending-id tiebreak is what makes selectCursorSlice's slice
+		// boundaries deterministic and stable night to night as the corpus
+		// grows/shrinks by a small amount (INV4 — no entry silently skipped).
+		const sortedEntries: LoadedEntry[] = [...knowledgeEntries, ...projectEntries].sort((a, b) =>
+			a.injectionTier !== b.injectionTier
+				? a.injectionTier - b.injectionTier
+				: a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+		);
+		const slice = selectCursorSlice(sortedEntries, cursor.position, 200);
+		if (slice.length === 0) {
+			return { mergedProposal: baseProposal, summary: { attempted: true, slice_size: 0 } };
+		}
+		const sliceProposal = await runDreamProposal(env, {
+			trigger: "manual",
+			actorId: "scheduled:dream-governance",
+			semantic: true,
+			candidateIds: slice.map((entry) => entry.id),
+			note: `Nightly Dream bounded semantic slice. ${noteSuffix}`,
+		});
+		if (sliceProposal.status !== "proposal_ready") {
+			console.warn(
+				"[scheduled-governed] semantic slice proposal did not reach proposal_ready; skipping merge and cursor advance",
+				sliceProposal.status,
+			);
+			return {
+				mergedProposal: baseProposal,
+				summary: {
+					attempted: true,
+					slice_size: slice.length,
+					skipped_reason: `slice_status:${String(sliceProposal.status)}`,
+				},
+			};
+		}
+		const mergedProposal = await mergeSemanticSliceIntoProposal(env, baseProposal, sliceProposal);
+		await advanceSemanticCursor(redis, cursor, slice.length, sortedEntries.length);
+		const mergedCounts = parseStoredObject(mergedProposal.counts) ?? {};
+		return {
+			mergedProposal,
+			summary: {
+				attempted: true,
+				slice_size: slice.length,
+				cursor_position_before: cursor.position,
+				slice_proposal_id: typeof sliceProposal.run_id === "string" ? sliceProposal.run_id : null,
+				merges_added: mergedCounts.semantic_slice_merges_added ?? 0,
+				contests_added: mergedCounts.semantic_slice_contests_added ?? 0,
+			},
+		};
+	} catch (semanticSliceError) {
+		console.error(
+			"[scheduled-governed] semantic slice pass threw, continuing with the lexical-only proposal",
+			semanticSliceError,
+		);
+		return {
+			mergedProposal: baseProposal,
+			summary: {
+				attempted: true,
+				error: semanticSliceError instanceof Error ? semanticSliceError.message : String(semanticSliceError),
+			},
+		};
+	}
 }
 
 async function runScheduledGovernedDream(
@@ -1408,12 +1556,20 @@ async function runScheduledGovernedDream(
 			return skippedRecord;
 		}
 
+		const { mergedProposal, summary: semanticSlice } = await runBoundedSemanticSlicePass(
+			env,
+			redis,
+			proposal,
+			`cron=${controller.cron} scheduled_time=${controller.scheduledTime}`,
+		);
+		const finalOperations = toObjectArray(mergedProposal.operations);
+
 		const grade = await gradeDreamProposal(env, {
 			proposalId,
 			actorId: "scheduled:dream-governance",
 			rubricVersion: "scheduled-governed-v1",
 		});
-		const decision = buildScheduledGovernedDecision(proposal, grade);
+		const decision = buildScheduledGovernedDecision(mergedProposal, grade);
 		let applyResult: Record<string, unknown> | null = null;
 		let verification = verifyScheduledGovernedApply(null, []);
 
@@ -1459,13 +1615,14 @@ async function runScheduledGovernedDream(
 			scheduled_time: controller.scheduledTime,
 			proposal_id: proposalId,
 			proposal_status: proposalStatus,
-			risk_score: typeof proposal.risk_score === "string" ? proposal.risk_score : null,
+			risk_score: typeof mergedProposal.risk_score === "string" ? mergedProposal.risk_score : null,
 			grade_id: typeof grade.grade_id === "string" ? grade.grade_id : null,
 			grade_status: typeof grade.status === "string" ? grade.status : null,
 			apply_run_id: typeof applyResult?.apply_run_id === "string" ? applyResult.apply_run_id : null,
 			mutation_id: typeof applyResult?.mutation_id === "string" ? applyResult.mutation_id : null,
+			semantic_slice: semanticSlice,
 			counts: {
-				operation_count: operations.length,
+				operation_count: finalOperations.length,
 				selected_operation_count: decision.selectedOperationIds.length,
 				held_operation_count: decision.heldOperations.length,
 				applied_count: appliedCount,

@@ -32,6 +32,7 @@ import {
 import {
 	buildScheduledGovernedDecision,
 	createRedisClient,
+	runBoundedSemanticSlicePass,
 	SCHEDULED_DREAM_ARCHIVE_LIMIT,
 	SCHEDULED_DREAM_DUPLICATE_MERGE_LIMIT,
 	SCHEDULED_DREAM_MARK_CONTESTED_LIMIT,
@@ -425,6 +426,26 @@ export async function executeScheduledGovernedDreamAsync(
 		doc.state = "proposal_ready";
 		await setStatus(redis, doc);
 
+		// PKS-SEMANTIC-CONSOLIDATION-001 INV2/INV4: same bounded rolling-cursor
+		// semantic slice as the sync scheduled-governed path (index.ts's
+		// runScheduledGovernedDream) — a separate runDreamProposal call scoped to
+		// this night's cursor slice, folded into `proposal` before grading so the
+		// duplicate_merge cap (INV6) governs combined throughput. See
+		// runBoundedSemanticSlicePass (index.ts) for the fail-open contract.
+		doc.state = "running_semantic_slice";
+		await setStatus(redis, doc);
+		const { mergedProposal, summary: semanticSlice } = await runBoundedSemanticSlicePass(
+			env,
+			redis,
+			proposal,
+			`cron=${request.cron} scheduled_time=${request.scheduled_time}`,
+		);
+		const finalOperations = Array.isArray(mergedProposal.operations)
+			? (mergedProposal.operations as Array<Record<string, unknown>>)
+			: [];
+		doc.semantic_slice = semanticSlice;
+		doc.risk_score = typeof mergedProposal.risk_score === "string" ? mergedProposal.risk_score : null;
+
 		doc.state = "running_grade";
 		await setStatus(redis, doc);
 		const grade = await gradeDreamProposal(env, {
@@ -435,14 +456,14 @@ export async function executeScheduledGovernedDreamAsync(
 		doc.grade_id = typeof grade.grade_id === "string" ? grade.grade_id : null;
 		doc.grade_status = typeof grade.status === "string" ? grade.status : null;
 
-		const decision = buildScheduledGovernedDecision(proposal, grade);
+		const decision = buildScheduledGovernedDecision(mergedProposal, grade);
 		doc.state = "decision_ready";
 		doc.decision = {
 			selected_operation_ids: decision.selectedOperationIds,
 			held_operations: decision.heldOperations,
 		};
 		doc.counts = {
-			operation_count: operations.length,
+			operation_count: finalOperations.length,
 			selected_operation_count: decision.selectedOperationIds.length,
 			held_operation_count: decision.heldOperations.length,
 			applied_count: 0,
