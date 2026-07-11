@@ -184,12 +184,20 @@ ledger:
   turns: 2
   consecutive_failures: 0
   blockers:
-  - 'G5 (production dry-run of the fossil sweep, requires_permission) not yet
-    run. Zero writes even when it runs (dry-run is the default and only mode
-    G5 exercises) but it does read production Redis, so it stays gated on
-    Arjun''s go-ahead per this program''s standing "ask before touching
-    production" convention. Apply mode (stage 5, separate from G5) requires
-    a second explicit approval of the reviewed candidate list.'
+  - 'RESOLVED 2026-07-11T04:33:34Z with Arjun''s go-ahead: G5 ran clean
+    against production (run_id fossil_sweep_fd92337e88d7), zero writes,
+    382 fossil contested entries found across the corpus. Spot-verified:
+    ke_4dbf732e757d (the Phase 0 flagship example) is present with exactly
+    the described shape — 6 archived counterparts + 1 self-referential link
+    to itself; a random second sample (ke_40b0a59c8e00, 3 archived
+    counterparts) checked out consistent. Every counterpart across all 382
+    candidates resolved to either "archived" (1223) or "self_referential"
+    (39) — zero "missing" statuses, consistent with the repo''s
+    archive-never-delete convention. Report:
+    scripts/reports/contested_fossil_sweep_2026-07-11T043334+0000.json
+    (gitignored, not durable — Arjun has been sent the file directly).
+    Apply mode (reverting these 382 to active with receipts) is a separate,
+    still-ungranted approval — stage 5 territory, not this graduation.'
   lessons:
   - 'Build was interrupted mid-flight: an Opus subagent implementing this
     contract hit its session usage limit after finishing the schema change,
