@@ -43,6 +43,14 @@ class _FakeStorage:
     def save_knowledge_entries_batch(self, entries: list[dict]):
         self.saved_batches.append(entries)
 
+    def save_knowledge_entry_with_dedup(self, entry: dict, embedding_text: Optional[str] = None):
+        # admission_dedup defaults to disabled, so the real method is a
+        # byte-identical passthrough to a single-entry save; record it the
+        # same way save_knowledge_entries_batch does (a one-entry batch) so
+        # existing saved_batches assertions keep working unmodified.
+        self.saved_batches.append([entry])
+        return {"action": "new", "entry_id": entry["id"]}
+
     def update_thin_index(self, entries: list[dict]):
         self.thin_index_updates.append(entries)
 

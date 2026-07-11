@@ -537,7 +537,7 @@ def save_entries(
         }
 
         try:
-            storage.save_knowledge_entry(entry)
+            storage.save_knowledge_entry_with_dedup(entry)
             saved += 1
             log.info(f"  Saved: [{entry_id}] {e['domain']}")
         except Exception as ex:

@@ -62,6 +62,23 @@ DEFAULT_INJECTION_TIER_BY_CONTEXT_TYPE = {
 }
 
 
+def _extract_candidate_evidence(entry: dict) -> dict:
+    """Evidence for an admission-dedup append (PKS-ADMISSION-DEDUP-001),
+    mirroring the pos_evidence fallback in distillation/pipeline/extract.py's
+    convert_to_knowledge_entry: prefer the first key_insight's evidence,
+    falling back to the first position's evidence, else empty. A plain
+    function (not a method) since it only reads the candidate dict — it must
+    work identically whether called on a real StorageClient or an injected
+    storage double."""
+    key_insights = entry.get("key_insights") or []
+    if key_insights and key_insights[0].get("evidence"):
+        return key_insights[0]["evidence"]
+    positions = entry.get("positions") or []
+    if positions and positions[0].get("evidence"):
+        return positions[0]["evidence"]
+    return {}
+
+
 class StorageClient:
     """
     Unified storage client for ingestion pipelines.
@@ -488,7 +505,79 @@ class StorageClient:
         if isinstance(data, str):
             return json.loads(data)
         return data
-    
+
+    # -------------------------------------------------------------------------
+    # ADMISSION DEDUP (PKS-ADMISSION-DEDUP-001)
+    # -------------------------------------------------------------------------
+    def query_top_neighbor(
+        self, embedding: list[float], entry_type: str = "knowledge", exclude_id: Optional[str] = None
+    ) -> Optional[dict]:
+        """Top-1 neighbor among active, non-archived, same-type entries, with
+        the cosine similarity attached as entry["_similarity_score"]. Returns
+        None if no such entry exists. Used exclusively by AdmissionRouter
+        (see core/admission_router.py, PKS-ADMISSION-DEDUP-001).
+
+        exclude_id: the candidate's own entry id, when already known (e.g. a
+        retried ingestion run re-processing a candidate whose id was minted
+        and saved on a prior partial attempt). Without this, a candidate
+        already present in the vector index could self-match at top-1
+        (cosine ~1.0) and be routed as an append-to-itself. top_k=2 is
+        requested so a genuine second neighbor is still available after the
+        self-match is filtered out.
+        """
+        top_k = 2 if exclude_id else 1
+        results = self.vector.query(
+            vector=embedding,
+            top_k=top_k,
+            include_metadata=False,
+            filter=f"type = '{entry_type}' AND state = 'active' AND archived = false",
+        )
+        for candidate in results:
+            if exclude_id and candidate.id == exclude_id:
+                continue
+            entry = self.get_knowledge_entry(candidate.id)
+            if entry is None:
+                continue
+            entry["_similarity_score"] = candidate.score
+            return entry
+        return None
+
+    def save_knowledge_entry_with_dedup(self, entry: dict, embedding_text: str = None) -> dict:
+        """Route a candidate entry through AdmissionRouter before saving.
+
+        When admission_dedup.enabled is False (the checked-in default), this
+        is a byte-identical no-op wrapper around save_knowledge_entry() — the
+        router is never constructed. When enabled and dry_run is True, the
+        decision is computed and logged but nothing is written. When enabled
+        and dry_run is False, the decision is applied (append/link/new).
+        """
+        from .admission_router import AdmissionRouter, load_admission_dedup_policy
+
+        policy = load_admission_dedup_policy()
+        if not policy.get("enabled"):
+            self.save_knowledge_entry(entry, embedding_text)
+            return {"action": "new", "entry_id": entry["id"]}
+
+        if embedding_text is None:
+            metadata = entry.get("metadata", {}) or {}
+            repo_hint = metadata.get("github_repo")
+            base_text = f"{entry['domain']}: {entry.get('current_view', '')}"
+            embedding_text = f"{repo_hint}: {base_text}" if repo_hint else base_text
+
+        router = AdmissionRouter(self, policy)
+        candidate_evidence = _extract_candidate_evidence(entry)
+        decision = router.route(entry, embedding_text)
+
+        if policy.get("dry_run"):
+            return {
+                "action": "dry_run",
+                "decision": decision.decision,
+                "entry_id": entry["id"],
+                "neighbor_id": decision.neighbor_id,
+            }
+
+        return router.apply_decision(decision, entry, candidate_evidence, embedding_text)
+
     # -------------------------------------------------------------------------
     # THIN INDEX OPERATIONS
     # -------------------------------------------------------------------------

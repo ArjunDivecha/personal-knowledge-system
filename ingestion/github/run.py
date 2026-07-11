@@ -246,9 +246,11 @@ def run_github_ingestion(
         if dry_run or not storage or not entries:
             return
         print(f"    ↳ Saving {len(entries)} {label} entries...", flush=True)
-        batch_size = 20
-        for start in range(0, len(entries), batch_size):
-            storage.save_knowledge_entries_batch(entries[start:start + batch_size])
+        # Per-entry so each candidate is routed through admission_dedup
+        # individually; batch-optimizing the embedding calls here is a
+        # future improvement, not required by PKS-ADMISSION-DEDUP-001.
+        for e in entries:
+            storage.save_knowledge_entry_with_dedup(e)
         storage.update_thin_index(entries)
         saved_live_entries += len(entries)
     
@@ -493,12 +495,14 @@ def run_github_ingestion(
     elif all_entries and saved_live_entries == 0:
         print(f"Saving {len(all_entries)} entries...")
 
-        # Batch save
+        # Per-entry so each candidate is routed through admission_dedup
+        # individually; batch-optimizing the embedding calls here is a
+        # future improvement, not required by PKS-ADMISSION-DEDUP-001.
         batch_size = 20
-        for i in range(0, len(all_entries), batch_size):
-            batch = all_entries[i:i + batch_size]
-            storage.save_knowledge_entries_batch(batch)
-            print(f"  Saved {min(i + batch_size, len(all_entries))}/{len(all_entries)}")
+        for i, entry in enumerate(all_entries, 1):
+            storage.save_knowledge_entry_with_dedup(entry)
+            if i % batch_size == 0 or i == len(all_entries):
+                print(f"  Saved {i}/{len(all_entries)}")
 
         # Update thin index
         print("Updating thin index...")

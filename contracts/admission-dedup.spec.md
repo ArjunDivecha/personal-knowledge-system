@@ -65,18 +65,33 @@ invariants:
   check_intent: git diff --name-only is a subset of scope.in and excludes every scope.forbid
     path
 gates:
+- id: G0
+  intent: 'premise gate: the mechanisms this contract builds on exist as diagnosed
+    (embedding client, vector query filter support, the two entry-save call sites)'
+  must_assert: StorageClient exposes generate_embedding and a filter-capable vector
+    query, and the two ingestion runners save knowledge entries via StorageClient;
+    exit nonzero if any premise has drifted
+  command: |
+    grep -q "def generate_embedding" ingestion/core/storage.py || { echo "G0 FAIL: generate_embedding missing"; exit 1; }
+    grep -q "def query_top_neighbor" ingestion/core/storage.py || { echo "G0 FAIL: query_top_neighbor missing"; exit 1; }
+    grep -q "save_knowledge_entry_with_dedup" ingestion/agent_sessions/run.py || { echo "G0 FAIL: agent_sessions wiring missing"; exit 1; }
+    grep -q "save_knowledge_entry_with_dedup" ingestion/github/run.py || { echo "G0 FAIL: github wiring missing"; exit 1; }
+    echo "G0 PASS: all premises hold"
+  requires_permission: false
 - id: G1
   intent: 'INV1 and INV4 hold: appends conserve evidence and non-duplicates are untouched
     by the feature'
   must_assert: INV1 field-level evidence equality and INV4 golden-file byte-identity
     pass in tests/python; exit nonzero naming the divergence otherwise
-  command: TODO
+  command: |
+    distillation/venv/bin/python -m unittest -v tests.python.test_admission_router.AppendEvidenceConservationTests tests.python.test_admission_router.SaveKnowledgeEntryWithDedupTests.test_disabled_policy_calls_save_knowledge_entry_with_identical_args
   requires_permission: false
 - id: G2
   intent: 'INV2 and INV5 hold: routing respects entry state and policy-driven thresholds'
   must_assert: INV2 archived/contested-neighbor cases route to new-entry and INV5
     policy-override cases pass; exit nonzero otherwise
-  command: TODO
+  command: |
+    distillation/venv/bin/python -m unittest -v tests.python.test_admission_router.QueryTopNeighborFilterTests tests.python.test_admission_router.PolicyOverrideNotHardcodedTests
   requires_permission: false
 - id: G3
   intent: 'INV3 holds: dry-run is write-free with a complete decision log, and the
@@ -84,13 +99,20 @@ gates:
   must_assert: 'INV3 passes: storage-spy write count is zero in dry-run, every fixture
     candidate appears in the decision log with a decision and neighbor score, and
     the default config value is off; exit nonzero otherwise'
-  command: TODO
+  command: |
+    distillation/venv/bin/python -m unittest -v tests.python.test_admission_router.SaveKnowledgeEntryWithDedupTests.test_dry_run_true_performs_zero_writes tests.python.test_admission_router.CheckedInPolicyDefaultsTests tests.python.test_memory_policy_admission_dedup
   requires_permission: false
 - id: G4
-  intent: INV6 scope discipline and the existing python suite stay green
-  must_assert: make test-python-checker exits 0 and INV6 holds (git diff subset of
-    scope.in, no forbid path); exit nonzero otherwise
-  command: TODO
+  intent: INV6 scope discipline and the existing python suite stays fully green (no
+    allowlist)
+  must_assert: tests/python suite exits 0 and INV6 holds (git diff subset of scope.in,
+    no forbid path); exit nonzero otherwise
+  command: |
+    distillation/venv/bin/python -m unittest discover -s tests/python -p 'test_*.py' > /tmp/pks_ad_g4.log 2>&1
+    RC=$?
+    tail -5 /tmp/pks_ad_g4.log
+    if [ $RC -ne 0 ]; then echo "G4 FAIL: tests/python suite not green"; exit 1; fi
+    echo "G4 PASS: tests/python suite fully green"
   requires_permission: false
 - id: G5
   intent: 'live shadow run: one real ingestion cycle in dry-run against production
@@ -100,11 +122,24 @@ gates:
     known duplicate clusters like the curate-my-world categoryMapping entries); zero
     entry writes attributable to the router; exit nonzero on any router-attributed
     write
-  command: TODO
+  command: |
+    echo "G5 requires flipping admission_dedup.enabled=true, dry_run=true in shared/memory_policy.json (a real, reviewed policy edit — not done automatically), then one real ingestion cycle, e.g.:"
+    echo "  cd ingestion && python github/run.py --repo ArjunDivecha/curate-my-world"
+    echo "Inspect scripts/reports/admission_dedup_decisions_<stamp>.json for the categoryMapping duplicate cluster and confirm append-rate is plausible."
   requires_permission: true
 review:
   mode: required
-  command: TODO
+  command: |
+    DIFF=$(git diff HEAD -- ingestion/core/storage.py ingestion/agent_sessions/run.py ingestion/github/run.py shared/memory_policy.json; git status --porcelain -- ingestion/core/admission_router.py tests/python/test_admission_router.py tests/python/test_memory_policy_admission_dedup.py)
+    PROMPT="Static code review only — do NOT execute shell commands or run any test suite. Review this diff against contract PKS-ADMISSION-DEDUP-001 for correctness bugs or violations of INV1-INV6 (evidence conservation, state-aware routing, write-free dry-run, byte-identical disabled path, policy-driven thresholds, scope). Respond with a single final line exactly 'REVIEW: PASS' or 'REVIEW: FAIL' plus the blocking issue. Nits do not block.
+
+    DIFF:
+    \$DIFF"
+    codex exec "\$PROMPT" --sandbox read-only --skip-git-repo-check -m gpt-5.5 -c model_reasoning_effort="high" > /tmp/pks_ad_review_gate.log 2>&1
+    tail -5 /tmp/pks_ad_review_gate.log
+    grep -q "REVIEW: PASS" /tmp/pks_ad_review_gate.log && exit 0
+    echo "REVIEW GATE FAIL — see /tmp/pks_ad_review_gate.log"
+    exit 1
   sees: &id001
   - diff
   - invariants
@@ -112,18 +147,52 @@ review:
 budget:
   max_turns: 30
   max_consecutive_failures: 3
-  preflight_estimate: required
+  preflight_estimate: complete
+  # Presented 2026-07-11 (Fable authoring + Sonnet implementation subagent):
+  # ~5 files — admission_router.py (AdmissionRouter: route/apply_decision/
+  # write_report), storage.py (+query_top_neighbor, +save_knowledge_entry_with_dedup),
+  # 2 runner call-site edits, memory_policy.json admission_dedup block
+  # (enabled:false, dry_run:true), 2 new test files (32+ cases). 1 build turn
+  # + Fable review/fix pass (self-match exclusion in query_top_neighbor;
+  # embedding_text threading to avoid a double OpenAI call).
 kill:
   after_turns: 10
-graduate: G1 through G4 exit 0, review verdict is pass, no scope.forbid path touched
+graduate: G0 through G4 exit 0, review verdict is pass, no scope.forbid path touched
 scale: graduated AND G5 decision log reviewed by Arjun AND live mode enabled AND over
   the next 7 days the nightly duplicate-merge candidate count trends down instead
   of up
 ledger:
-  turns: 0
+  turns: 1
   consecutive_failures: 0
-  blockers: []
-  lessons: []
+  blockers:
+  - 'G5 (live shadow ingestion run) not yet run: requires flipping
+    admission_dedup.enabled=true (dry_run stays true) in shared/memory_policy.json
+    and running a real ingestion cycle. Deferred to the deploy step.'
+  lessons:
+  - 'Adversarial review caught a real correctness bug: query_top_neighbor had
+    no self-exclusion, so a candidate already present in the vector index
+    (e.g. a retried ingestion run re-processing a candidate whose id was
+    minted and saved on a prior partial attempt) could self-match at top-1
+    (cosine ~1.0) and be routed as an append-to-itself. Fixed:
+    query_top_neighbor now accepts exclude_id, widens top_k to 2 when set,
+    filters the self-match, and falls through to a genuine second neighbor.
+    AdmissionRouter.route() threads candidate_entry["id"] through. 4 new
+    regression tests, including one proving the fallback to a real second
+    neighbor works, not just "returns None".'
+  - 'A second review finding (apply_decision re-derives embedding_text from
+    scratch for the "new"/"link" paths, wasting the embedding already
+    computed once in route() as a second OpenAI call) was a real efficiency
+    issue, not a correctness one — fixed by threading the already-computed
+    embedding_text through apply_decision rather than re-deriving it.'
+  - 'A third review round (round 2 of this contract''s own dialogue) flagged
+    that tests patch admission_router.load_admission_dedup_policy while
+    storage.py imports it via a function-local import, and speculated this
+    could mean patches don''t take effect in tests. Verified false: Python
+    resolves "from X import Y" against X''s current namespace at the time
+    the import statement executes, and a function-local import re-executes
+    every call — confirmed empirically by a test that asserts patched values
+    only reachable if the patch took effect, which passes. Documented here
+    so a future reviewer doesn''t re-raise the same false lead.'
 legacy:
   goal_condition: all non-permissioned gates exit 0 AND git diff --name-only is a
     subset of scope.in AND no scope.forbid path is modified
