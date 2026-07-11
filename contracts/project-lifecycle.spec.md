@@ -207,15 +207,48 @@ ledger:
       to the review.command prompt itself so future re-runs of the gate get
       the same accurate answer. Review round 4 (with the added context):
       REVIEW PASS, no further findings.'
-  deploy_records: []
+  deploy_records:
+  - environment: staging
+    when: '2026-07-11T06:24Z-06:27Z'
+    what: 'Deployed via `make deploy-staging` (Version ID 0e1739d4-5805-492a-b820-a047892889bb).
+      Seeded a 2024-dated stale active project (pe_g4_stale_2024, last_touched
+      2024-08-25) into staging Redis/Vector via scripts/seed_staging_env.py
+      (STAGING_* credentials, a distinct Upstash instance from production —
+      confirmed by URL comparison before seeding). Triggered
+      POST /ops/dream/run_scheduled_governed with a scheduled_time 45 days in
+      the future (needed two attempts: the first future date collided with a
+      boundary already cached by an earlier stage-4 staging verification run
+      and returned boundary_deduped:true; the second, further-out date got a
+      genuinely fresh run). Result: proposed, graded (passed), and
+      auto-applied 3 operations including project_status_transition for both
+      pe_g4_stale_2024 and the canonical fixture pe_fixture_project_001 (which
+      turned out to independently qualify as stale too). Verified directly
+      against staging Redis: pe_g4_stale_2024 status=dormant with a receipted
+      consolidation_notes entry (run apply_dpr_2026-07-11T06-24-35-582Z_...).
+      Verified via the real get_index MCP tool (OAuth dynamic-client flow,
+      scripts/run_e2e_staging.py helpers): projects=[] (0 active), 
+      dormant_projects=[pe_fixture_project_001, pe_g4_stale_2024] — INV4
+      holds on live staging data. Verified INV3 reversibility via the real
+      rollback_dream_apply MCP tool (not restore_entry, which only reverses
+      archive_entry snapshots): pe_g4_stale_2024 reverted to status=active,
+      revision 1->2, and get_index confirmed it moved back into `projects`.
+      Cleanup: rolled back pe_fixture_project_001''s transition too and
+      restored ke_fixture_archive_001 (archived as an unrelated side effect
+      of the same governed run, via the pre-existing archive_entry
+      candidacy logic) via restore_entry, so scripts/run_e2e_staging.py''s
+      own archive-lifecycle drill and future staging-smoke runs start from
+      the canonical fixture bundle''s checked-in state. G4: PASS.'
+  - environment: production
+    when: TODO
+    what: TODO
   flagged_live_behavior_changes:
   - 'This contract introduces a NEW project status value ("dormant") that Dream''s
     nightly governed run can assign automatically to active projects stale beyond
     the policy window (default 90 days + 30-day grace), capped at 10 per run. This
     is a live behavior change once deployed and cut over: it did not exist before
-    this contract. Requires explicit staging verification (G4) and a reviewed
-    production one-time sweep before scale is considered met — not yet deployed
-    as of this ledger entry.'
+    this contract. G4 (staging) passed 2026-07-11 — see deploy_records above.
+    Production deploy and the reviewed one-time production sweep are still
+    pending as of this ledger entry.'
 legacy:
   goal_condition: all non-permissioned gates exit 0 AND git diff --name-only is a
     subset of scope.in AND no scope.forbid path is modified
