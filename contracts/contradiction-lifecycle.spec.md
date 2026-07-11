@@ -1,7 +1,7 @@
 ---
 schema_version: 1
 spec_id: PKS-CONTRADICTION-LIFECYCLE-001
-status: draft
+status: in_progress
 target_agent: either
 scope:
   in:
@@ -250,6 +250,20 @@ ledger:
     though the counterpart summary implied the same information — fixed to
     include basis= explicitly. Both fixes shipped with regression tests
     before the review passed. Three review rounds total; PASS on the third.'
+  deploy_records:
+  - environment: production
+    when: '2026-07-11 (exact deploy timestamp not separately captured for this
+      contract; confirmed via `wrangler deployments list` that the production
+      Worker''s last two deploys, at 2026-07-11T05:15:26Z and 2026-07-11T05:47:32Z,
+      both postdate this contract''s code commit 5d9d77f at 2026-07-10T23:17:24Z,
+      so precedence.ts and the schema/extraction changes are live)'
+    what: 'precedence.ts (authority-then-durability lattice, deriveAssertedBy)
+      shipped to production as part of the stage 2-3 and stage 4 Worker deploys
+      that followed this contract''s commit; no dedicated deploy was run for
+      this contract alone since the Worker ships as one bundle. The one-time
+      production fossil sweep (382 entries, script-based, no Worker deploy
+      required) was run and applied separately — see the blockers entries
+      above for the dry-run and apply run ids.'
 legacy:
   goal_condition: all non-permissioned gates exit 0 AND git diff --name-only is a
     subset of scope.in AND no scope.forbid path is modified
