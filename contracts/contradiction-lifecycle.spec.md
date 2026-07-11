@@ -198,6 +198,23 @@ ledger:
     (gitignored, not durable — Arjun has been sent the file directly).
     Apply mode (reverting these 382 to active with receipts) is a separate,
     still-ungranted approval — stage 5 territory, not this graduation.'
+  - 'RESOLVED (apply) 2026-07-11T05:53:14Z with Arjun''s go-ahead ("continue,
+    don''t stop until every step is completed"): ran
+    `sweep_contested_fossils.py --apply --i-reviewed-the-dry-run`
+    (run_id fossil_sweep_cb98be1f3dc1) against production. All 382 candidates
+    from the reviewed dry-run list reverted contested->active, each with a
+    consolidation-note receipt naming the run id, basis, and counterpart
+    statuses, and a bumped revision (reversible per-entry via that receipt +
+    revision history). Verified the flagship example directly in the applied
+    report: ke_4dbf732e757d prior_revision=1, new_revision=2, receipt names
+    all 6 archived counterparts plus the self-referential link. Report:
+    scripts/reports/contested_fossil_sweep_2026-07-11T055314+0000.json
+    (gitignored). This clears the entire known April-heuristic fossil
+    backlog in one pass — the contract''s "scale" bar (apply run clears the
+    fossil contested set with receipts) is now met for this one-time sweep;
+    ongoing contradiction detection going forward is a live-system property
+    this contract''s detection/lifecycle code (not this one-time script)
+    is responsible for.'
   lessons:
   - 'Build was interrupted mid-flight: an Opus subagent implementing this
     contract hit its session usage limit after finishing the schema change,
