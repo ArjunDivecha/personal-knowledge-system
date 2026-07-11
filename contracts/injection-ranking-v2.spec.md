@@ -175,11 +175,20 @@ ledger:
   turns: 1
   consecutive_failures: 0
   blockers:
-  - 'G5 (staging shadow pass + flag-on probe replay) not yet run: requires a
-    staging deploy and a live nightly Dream trigger to populate real
-    salience_v2 shadow data before the distribution report is meaningful on
-    real data. Deferred to the deploy step alongside admission-dedup and the
-    merge-gate foundation.'
+  - 'RESOLVED (shadow half) 2026-07-11 with Arjun''s go-ahead: deployed to
+    staging (version 777a264a), triggered a real governed nightly Dream run
+    via POST /ops/dream/run_scheduled_governed (archive_entry applied,
+    retier_cycle touched 2 entries — the same loadEntryBatchByType path that
+    now also computes salience_v2). Verified directly via get_deep on
+    ke_fixture_identity_001: salience_v2=0.581 with all 5 components
+    populated, salience_score (v1) unchanged at 0.7052 — INV1 write-isolation
+    confirmed on real data, not just fixtures. Production deployed (version
+    9fcc50f8) and verified healthy (search returns normal results). The
+    flag-on half of G5 (RANKING_V2=on probe replay) was NOT run — flipping
+    the flag anywhere is deliberately deferred; "scale" requires 7
+    consecutive nights green after cutover, a multi-day commitment out of
+    scope for a single session. RANKING_V2 stays unset (off) in both
+    staging and production.'
   lessons:
   - 'Adversarial review caught a real efficiency issue outside the formal
     invariant list: includeVectors: true was requested unconditionally on
