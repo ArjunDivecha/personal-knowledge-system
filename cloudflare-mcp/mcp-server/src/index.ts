@@ -107,6 +107,10 @@ export const SCHEDULED_DREAM_DUPLICATE_MERGE_LIMIT = resolveScheduledDuplicateMe
 	MEMORY_POLICY.dream_thresholds as Record<string, unknown>,
 );
 export const SCHEDULED_DREAM_MARK_CONTESTED_LIMIT = 10;
+// PKS-PROJECT-LIFECYCLE-001 INV1: per-run cap on automated active->dormant
+// project status transitions, enforced by the same generic per-type cap loop
+// in buildScheduledGovernedDecision below (SCHEDULED_DREAM_OPERATION_LIMITS).
+export const SCHEDULED_DREAM_PROJECT_TRANSITION_LIMIT = 10;
 const RATE_LIMIT_WINDOW_SECONDS = 60 * 60;
 const WRITE_TOOL_RATE_LIMIT = 24;
 const OPERATOR_WRITE_RATE_LIMIT = 12;
@@ -164,6 +168,7 @@ const SCHEDULED_DREAM_OPERATION_LIMITS: Record<string, number> = {
 	duplicate_merge: SCHEDULED_DREAM_DUPLICATE_MERGE_LIMIT,
 	mark_contested: SCHEDULED_DREAM_MARK_CONTESTED_LIMIT,
 	promote_context_type: SCHEDULED_DREAM_PROMOTION_LIMIT,
+	project_status_transition: SCHEDULED_DREAM_PROJECT_TRANSITION_LIMIT,
 };
 const DEFAULT_TWEET_TIMEOUT_MS = 4000;
 const DEFAULT_TWEET_CACHE_TTL_SECONDS = 300;
@@ -1201,6 +1206,32 @@ async function releaseScheduledGovernedDreamLock(redis: Redis, runId: string): P
 	}
 }
 
+// PKS-PROJECT-LIFECYCLE-001 INV4: get_index must present dormant projects
+// distinctly and never let them read as live work. The status field already
+// passes through unchanged (compactProjects mapping below); this comparator
+// adds the ordering half — dormant-status projects sort after every
+// non-dormant one, ahead of the existing tier/salience/touched chain, so they
+// fall out of the top-50 cut once there's enough non-dormant work. Factored
+// out as a pure, exported function so INV4 is directly unit-testable without
+// standing up the get_index tool's Redis/MCP plumbing.
+export function compareProjectIndexOrder(
+	a: { status?: string; injection_tier?: number; salience_score?: number; last_touched?: string | null },
+	b: { status?: string; injection_tier?: number; salience_score?: number; last_touched?: string | null },
+): number {
+	const dormantA = a.status === "dormant" ? 1 : 0;
+	const dormantB = b.status === "dormant" ? 1 : 0;
+	if (dormantA !== dormantB) return dormantA - dormantB;
+	const tierA = typeof a.injection_tier === "number" ? a.injection_tier : 3;
+	const tierB = typeof b.injection_tier === "number" ? b.injection_tier : 3;
+	if (tierA !== tierB) return tierA - tierB;
+	const salienceA = typeof a.salience_score === "number" ? a.salience_score : 0;
+	const salienceB = typeof b.salience_score === "number" ? b.salience_score : 0;
+	if (salienceA !== salienceB) return salienceB - salienceA;
+	const dateA = a.last_touched ? new Date(a.last_touched).getTime() : 0;
+	const dateB = b.last_touched ? new Date(b.last_touched).getTime() : 0;
+	return dateB - dateA;
+}
+
 type ScheduledGovernedDecision = {
 	selectedOperationIds: string[];
 	heldOperations: Array<{ operation_id: string | null; type: string | null; reason: string }>;
@@ -2021,19 +2052,20 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 					top_repo: t.top_repo || null,
 				}));
 
-				const sortedProjects = [...projects].sort((a, b) => {
-					const tierA = typeof a.injection_tier === "number" ? a.injection_tier : 3;
-					const tierB = typeof b.injection_tier === "number" ? b.injection_tier : 3;
-					if (tierA !== tierB) return tierA - tierB;
-					const salienceA = typeof a.salience_score === "number" ? a.salience_score : 0;
-					const salienceB = typeof b.salience_score === "number" ? b.salience_score : 0;
-					if (salienceA !== salienceB) return salienceB - salienceA;
-					const dateA = a.last_touched ? new Date(a.last_touched).getTime() : 0;
-					const dateB = b.last_touched ? new Date(b.last_touched).getTime() : 0;
-					return dateB - dateA;
-				});
+				// PKS-PROJECT-LIFECYCLE-001 INV4: "its active-project list contains no
+				// project whose status is dormant" is a structural exclusion, not just
+				// a sort demotion — with this corpus's project count well under the
+				// 50-item cap, sort order alone would never actually crowd a dormant
+				// project out of the default view. Dormant projects are therefore
+				// split into their own distinctly-labeled section (the "separates"
+				// half of INV4's check_intent "separates or labels") rather than
+				// merely being sorted last within one combined list.
+				const nonDormantProjects = projects.filter((p) => p.status !== "dormant");
+				const dormantProjects = projects.filter((p) => p.status === "dormant");
+				const sortedProjects = [...nonDormantProjects].sort(compareProjectIndexOrder);
+				const sortedDormantProjects = [...dormantProjects].sort(compareProjectIndexOrder);
 
-				const compactProjects = sortedProjects.slice(0, 50).map(p => ({
+				const toCompactProject = (p: (typeof projects)[number]) => ({
 					id: p.id,
 					name: p.name,
 					goal: (p.goal_summary || "").substring(0, 80),
@@ -2044,7 +2076,10 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 					context_type: p.context_type || null,
 					salience_score: typeof p.salience_score === "number" ? p.salience_score : null,
 					mention_count: typeof p.mention_count === "number" ? p.mention_count : null,
-				}));
+				});
+
+				const compactProjects = sortedProjects.slice(0, 50).map(toCompactProject);
+				const compactDormantProjects = sortedDormantProjects.slice(0, 50).map(toCompactProject);
 
 				const compactIndex = {
 					total_topics: typeof rawIndex.total_topic_count === "number" ? rawIndex.total_topic_count : topics.length,
@@ -2053,12 +2088,18 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 					tier_2_count: typeof rawIndex.tier_2_count === "number" ? rawIndex.tier_2_count : null,
 					tier_3_count: typeof rawIndex.tier_3_count === "number" ? rawIndex.tier_3_count : null,
 					archived_count: typeof rawIndex.archived_count === "number" ? rawIndex.archived_count : 0,
+					dormant_project_count: dormantProjects.length,
 					last_dream_run: typeof dreamSummary?.run_at === "string" ? dreamSummary.run_at : null,
 					generated_at: rawIndex.generated_at || null,
-					showing_recent: { topics: compactTopics.length, projects: compactProjects.length },
+					showing_recent: { topics: compactTopics.length, projects: compactProjects.length, dormant_projects: compactDormantProjects.length },
 					topics: compactTopics,
 					projects: compactProjects,
-					note: "Showing the thin-index subset ordered by tier then salience. Use 'search' for query-specific retrieval or 'get_context' for the full entry."
+					// PKS-PROJECT-LIFECYCLE-001 INV4: dormant projects are presented
+					// distinctly in their own section rather than mixed into `projects`
+					// (which now contains no dormant entries at all) — a caller has to
+					// explicitly look here to see stale work, not stumble into it.
+					dormant_projects: compactDormantProjects,
+					note: "Showing the thin-index subset ordered by tier then salience. Dormant projects are listed separately in dormant_projects, not in projects. Use 'search' for query-specific retrieval or 'get_context' for the full entry."
 				};
 
 				return {

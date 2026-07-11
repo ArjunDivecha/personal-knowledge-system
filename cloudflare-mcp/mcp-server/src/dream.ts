@@ -1940,6 +1940,73 @@ function comparePromotionPriority(left: LoadedEntry, right: LoadedEntry): number
 	return left.id.localeCompare(right.id);
 }
 
+// PKS-PROJECT-LIFECYCLE-001: last activity = max of last_touched/last_seen/
+// updated_at/last_accessed, mirroring compute_m9_project_lifecycle's
+// activity_candidates list (scripts/audit_memory_quality.py:833-840) so the
+// Worker's candidate detection and the Python audit agree on what "stale"
+// means. Returns null when none of those timestamps parse, which the caller
+// treats as "missing activity timestamp" (itself a staleness signal, same as
+// the Python function).
+function getProjectLastActivityMs(entry: LoadedEntry): number | null {
+	const activityCandidates = [
+		entry.metadata.last_touched,
+		entry.metadata.last_seen,
+		entry.metadata.updated_at,
+		entry.metadata.last_accessed,
+	]
+		.filter((value): value is string => typeof value === "string")
+		.map((value) => new Date(value).getTime())
+		.filter((ms) => !Number.isNaN(ms));
+	if (activityCandidates.length === 0) return null;
+	return Math.max(...activityCandidates);
+}
+
+// PKS-PROJECT-LIFECYCLE-001: candidate detection for the active->dormant
+// project_status_transition operation. Ports compute_m9_project_lifecycle's
+// logic (scripts/audit_memory_quality.py:809-878) into the Worker rather than
+// calling Python from TypeScript. Only "active" project entries are ever
+// candidates; explicit_save/professional_identity/stated_preference-typed
+// projects (the same archive_protected_context_types list isArchiveCandidate
+// uses) and explicitly pinned projects are exempt regardless of staleness
+// (INV2). Staleness and the recent-access grace window are read from
+// shared/memory_policy.json's project_lifecycle block, never hardcoded
+// (INV5).
+export function isProjectTransitionCandidate(entry: LoadedEntry): boolean {
+	if (entry.type !== "project") return false;
+	if (typeof entry.entry.status !== "string" || entry.entry.status !== "active") return false;
+	const thresholds = MEMORY_POLICY.dream_thresholds as Record<string, unknown>;
+	const protectedTypes: string[] = (thresholds.archive_protected_context_types as string[]) ?? [];
+	if (protectedTypes.includes(entry.contextType)) return false;
+	// "Explicitly pinned" (contract wording) has no dedicated field in this
+	// schema yet; metadata.pinned === true is a forward-compatible exemption —
+	// no UI/tool sets it today, so this is a no-op until one does.
+	if (entry.metadata.pinned === true) return false;
+
+	// shared/memory_policy.json's checked-in project_lifecycle block always
+	// carries both fields (see G0's premise check) — read directly, no JS-side
+	// fallback, so an override in that file is the only source of truth.
+	const staleAfterDays = MEMORY_POLICY.project_lifecycle.active_stale_after_days;
+	const graceDays = MEMORY_POLICY.project_lifecycle.active_recent_access_grace_days;
+
+	const lastActivityMs = getProjectLastActivityMs(entry);
+	if (lastActivityMs === null) return true; // missing activity timestamp = stale (matches Python)
+	const daysSinceActivity = (Date.now() - lastActivityMs) / 86400000;
+	if (daysSinceActivity <= staleAfterDays) return false;
+
+	const lastAccessedMs = typeof entry.metadata.last_accessed === "string" ? new Date(entry.metadata.last_accessed).getTime() : NaN;
+	const accessedRecently = !Number.isNaN(lastAccessedMs) && (Date.now() - lastAccessedMs) / 86400000 <= graceDays;
+	return !accessedRecently;
+}
+
+// Most-stale-first: projects with the oldest (or missing) last activity sort
+// first, so when the per-run cap holds the tail (buildScheduledGovernedDecision,
+// index.ts), the entries held back are the ones with the most recent activity.
+function compareProjectTransitionPriority(left: LoadedEntry, right: LoadedEntry): number {
+	const leftMs = getProjectLastActivityMs(left) ?? 0;
+	const rightMs = getProjectLastActivityMs(right) ?? 0;
+	return leftMs - rightMs;
+}
+
 function classifyBucket(entry: LoadedEntry): DreamBucket {
 	const immortal =
 		MEMORY_POLICY.half_lives_days[
@@ -2905,6 +2972,7 @@ function buildDreamProposalOperations(
 	entriesById: Map<string, LoadedEntry>,
 	promotionCandidates: LoadedEntry[],
 	archiveCandidates: LoadedEntry[],
+	projectTransitionCandidates: LoadedEntry[],
 ): Array<Record<string, unknown>> {
 	const operations: Array<Record<string, unknown>> = [];
 
@@ -3010,6 +3078,33 @@ function buildDreamProposalOperations(
 		});
 	}
 
+	// PKS-PROJECT-LIFECYCLE-001: dormant is additive — the existing four status
+	// values (active|paused|completed|abandoned, distillation/models/entries.py:579)
+	// stay parseable, and only "active" projects are ever proposed here
+	// (isProjectTransitionCandidate). The Python ProjectEntry.status Literal does
+	// not enumerate "dormant" (distillation/** is scope.out for this contract);
+	// this is accepted, pre-existing drift between Worker-written fields and the
+	// Python dataclasses, not a new type-safety hole.
+	for (const entry of projectTransitionCandidates) {
+		const lastActivityMs = getProjectLastActivityMs(entry);
+		const daysSinceActivity = lastActivityMs !== null ? Math.round((Date.now() - lastActivityMs) / 86400000) : null;
+		operations.push({
+			operation_id: `dop_project_transition_${entry.id}`,
+			type: "project_status_transition",
+			entry_id: entry.id,
+			expected_revision: getExpectedRevision(entry),
+			target_status: "dormant",
+			reason: daysSinceActivity !== null
+				? `Dream found this active project stale for ${daysSinceActivity} days with no access within the grace window.`
+				: "Dream found this active project has no recorded activity timestamp.",
+			evidence: summarizeProposalEntry(entry),
+			rollback: {
+				method: "restore_snapshot",
+				entry_id: entry.id,
+			},
+		});
+	}
+
 	// 2.9 — Sort deterministically by operation_id so identical corpora produce identical
 	// proposals regardless of Redis SCAN order; the per-type cap then selects the same
 	// operations on every run, making the proposal reproducible.
@@ -3085,6 +3180,13 @@ export async function runDreamProposal(
 	const archiveCandidates = candidateEntries
 		.filter(isArchiveCandidate)
 		.sort(compareArchivePriority);
+	// No proposal-time slicing here (unlike promotion/archive): the per-run cap
+	// (default 10, SCHEDULED_DREAM_PROJECT_TRANSITION_LIMIT) is enforced generically
+	// by buildScheduledGovernedDecision (index.ts), the same layer that caps
+	// mark_contested/duplicate_merge — see SCHEDULED_DREAM_OPERATION_LIMITS.
+	const projectTransitionCandidates = candidateEntries
+		.filter(isProjectTransitionCandidate)
+		.sort(compareProjectTransitionPriority);
 	const promotionCandidatesLimited =
 		typeof options.promotionLimit === "number" && options.promotionLimit >= 0
 			? promotionCandidates.slice(0, options.promotionLimit)
@@ -3110,6 +3212,7 @@ export async function runDreamProposal(
 		entriesById,
 		promotionCandidatesLimited,
 		archiveCandidatesLimited,
+		projectTransitionCandidates,
 	);
 	const candidateRevisions = Object.fromEntries(
 		candidateEntries.map((entry) => [entry.id, getExpectedRevision(entry)]),
@@ -3157,6 +3260,7 @@ export async function runDreamProposal(
 			promotion_limit: options.promotionLimit ?? null,
 			archive_candidates: archiveCandidates.length,
 			archive_limit: options.archiveLimit ?? null,
+			project_transition_candidates: projectTransitionCandidates.length,
 			stable: bucketCounts.stable,
 			active: bucketCounts.active,
 			weak: bucketCounts.weak,
@@ -3327,6 +3431,7 @@ function gradeDreamProposalRecord(
 		"promote_context_type",
 		"mark_contested",
 		"duplicate_merge",
+		"project_status_transition",
 	]);
 
 	if (proposal.status !== "proposal_ready") {
@@ -3701,6 +3806,23 @@ async function applyDreamProposalOperation(
 			timestamp,
 			getOperationReason(operation, "applied Dream proposal archive operation"),
 		);
+		return { ok: true, operation_id: operationId, type: operationType, result };
+	}
+
+	if (operationType === "project_status_transition") {
+		const entryId = typeof operation.entry_id === "string" ? operation.entry_id : null;
+		const entry = entryId ? entriesById.get(entryId) : null;
+		if (!entry) {
+			return { ok: false, operation_id: operationId, error: "entry_not_found", id: entryId };
+		}
+		const targetStatus = typeof operation.target_status === "string" ? operation.target_status : null;
+		// The only value this contract ever proposes automatically (INV1: governed-only
+		// transitions through this exact path). Reject anything else rather than silently
+		// coercing it.
+		if (targetStatus !== "dormant") {
+			return { ok: false, operation_id: operationId, error: "unsupported_target_status", target_status: targetStatus };
+		}
+		const result = await transitionProjectStatus(redis, vector, entry, targetStatus, applyRunId, timestamp);
 		return { ok: true, operation_id: operationId, type: operationType, result };
 	}
 
@@ -4083,7 +4205,13 @@ export async function applyDreamProposal(
 }
 
 function getRollbackSupportedOperationTypes(): Set<string> {
-	return new Set(["duplicate_merge", "mark_contested", "promote_context_type", "archive_entry"]);
+	return new Set([
+		"duplicate_merge",
+		"mark_contested",
+		"promote_context_type",
+		"archive_entry",
+		"project_status_transition",
+	]);
 }
 
 function getApplyAuditKey(proposalId: string, applyMutationId: string): string {
@@ -5157,6 +5285,51 @@ async function promoteEntry(
 		context_type: entry.contextType,
 		injection_tier: entry.injectionTier,
 		salience_score: entry.salienceScore,
+	};
+}
+
+// PKS-PROJECT-LIFECYCLE-001: a pure field-set-and-save operation, mirroring
+// promoteEntry above — no vector deletion, no archive-snapshot side effects.
+// This is what makes generic snapshot rollback (restoreEntryFromApplySnapshot)
+// sufficient for INV3 with zero project_status_transition-specific rollback
+// code: the operation only ever touches this one entry's own JSON.
+// "dormant" is additive to distillation/models/entries.py's ProjectEntry.status
+// Literal (active|paused|completed|abandoned) — that Python type is not
+// updated here (distillation/** is scope.out for this contract); the Worker
+// writing a status value the Python dataclass doesn't enumerate is existing,
+// accepted drift in this codebase, not a new hole.
+async function transitionProjectStatus(
+	redis: Redis,
+	vector: Index,
+	entry: LoadedEntry,
+	targetStatus: string,
+	runId: string,
+	timestamp: string,
+): Promise<Record<string, unknown>> {
+	const priorStatus = typeof entry.entry.status === "string" ? entry.entry.status : "active";
+	entry.entry.status = targetStatus;
+	entry.metadata.last_consolidated = timestamp;
+	// Bump revision so conflict detection and rollback validation see this write.
+	entry.metadata.revision = (toOptionalInteger(entry.metadata.revision) ?? 0) + 1;
+	appendConsolidationNote(
+		entry.metadata,
+		formatConsolidationNote({
+			timestamp,
+			source: "dream",
+			action: "project_status_transition",
+			detail: `${priorStatus} -> ${targetStatus} (run ${runId}): stale beyond project_lifecycle window, no access within grace`,
+		}),
+	);
+	entry.entry.metadata = entry.metadata;
+	await persistEntry(redis, vector, entry);
+
+	return {
+		id: entry.id,
+		type: entry.type,
+		label: entry.label,
+		prior_status: priorStatus,
+		status: targetStatus,
+		run_id: runId,
 	};
 }
 

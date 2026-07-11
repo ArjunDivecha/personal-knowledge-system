@@ -236,6 +236,22 @@ beforeEach(() => {
 					mention_count: 8,
 					archived: false,
 				},
+				// PKS-PROJECT-LIFECYCLE-001 INV4 fixture: a dormant project must
+				// never appear in `projects`, only in the distinct `dormant_projects`
+				// section — see the get_index assertions below.
+				{
+					id: "pe_stale_2024",
+					name: "SPX MA200 Strategy Backtest",
+					goal_summary: "One-shot 2024 backtest session.",
+					status: "dormant",
+					current_phase: "abandoned",
+					last_touched: "2024-08-25T00:00:00.000Z",
+					injection_tier: 2,
+					context_type: "active_project",
+					salience_score: 0.05,
+					mention_count: 1,
+					archived: false,
+				},
 			],
 		}),
 		"dream:last_run": {
@@ -631,6 +647,15 @@ describe("OAuth and MCP integration", () => {
 		expect(thinIndex.total_topics).toBe(573);
 		expect(thinIndex.total_projects).toBe(36);
 		expect(thinIndex.tier_1_count).toBe(500);
+		// PKS-PROJECT-LIFECYCLE-001 INV4: the dormant fixture project must be
+		// distinctly separated, never mixed into the default `projects` list.
+		const indexProjects = thinIndex.projects as Array<Record<string, unknown>>;
+		const indexDormantProjects = thinIndex.dormant_projects as Array<Record<string, unknown>>;
+		expect(indexProjects.some((p) => p.id === "pe_stale_2024")).toBe(false);
+		expect(indexProjects.some((p) => p.id === "pe_memory")).toBe(true);
+		expect(indexDormantProjects.some((p) => p.id === "pe_stale_2024")).toBe(true);
+		expect(indexDormantProjects.find((p) => p.id === "pe_stale_2024")?.status).toBe("dormant");
+		expect(thinIndex.dormant_project_count).toBe(1);
 
 		const dreamSummaryResponse = await dispatch(
 			new IncomingRequest(`${baseUrl}/mcp`, {
