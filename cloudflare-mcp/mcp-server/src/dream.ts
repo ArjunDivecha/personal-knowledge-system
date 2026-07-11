@@ -8,7 +8,9 @@ import {
 	MEMORY_POLICY,
 	resolveStoredInjectionTier,
 } from "./salience";
+import { computeSalienceV2 } from "./salience_v2";
 import { formatConsolidationNote } from "./consolidation";
+import { collapseNearDuplicateInsights, validateMergeConservation } from "./mergeGates";
 import { recordDestructiveAction } from "./tripwires";
 import {
 	type JudgeQueueItem,
@@ -1815,6 +1817,14 @@ async function loadEntryBatchByType(
 		metadata.salience_score = salienceScore;
 		metadata.injection_tier = resolveStoredInjectionTier(metadata);
 
+		// Phase A shadow write (contract PKS-INJECTION-RANKING-002): additive
+		// only, computed unconditionally every night. Never read by live
+		// ranking/tiering until the RANKING_V2 flag is on (Phase B) — must not
+		// alter salience_score, injection_tier, or any other existing field.
+		const { score: salienceV2Score, components: salienceV2Components } = computeSalienceV2(entry);
+		metadata.salience_v2 = salienceV2Score;
+		metadata.salience_v2_components = salienceV2Components;
+
 		loadedEntries.push({
 			id: entryId,
 			type: entryType,
@@ -3468,21 +3478,33 @@ async function applyDreamProposalOperation(
 		if (!canonical || duplicates.length !== archiveIds.length) {
 			return { ok: false, operation_id: operationId, error: "entry_not_found" };
 		}
-		const result = await applyDuplicateMergePlan(
-			redis,
-			vector,
-			{
-				fingerprint:
-					typeof parseStoredObject(operation.evidence)?.fingerprint === "string"
-						? String(parseStoredObject(operation.evidence)?.fingerprint)
-						: canonical.id,
-				canonical,
-				duplicates,
-			},
-			applyRunId,
-			timestamp,
-		);
-		return { ok: true, operation_id: operationId, type: operationType, result };
+		try {
+			const result = await applyDuplicateMergePlan(
+				redis,
+				vector,
+				{
+					fingerprint:
+						typeof parseStoredObject(operation.evidence)?.fingerprint === "string"
+							? String(parseStoredObject(operation.evidence)?.fingerprint)
+							: canonical.id,
+					canonical,
+					duplicates,
+				},
+				applyRunId,
+				timestamp,
+			);
+			return { ok: true, operation_id: operationId, type: operationType, result };
+		} catch (error) {
+			// PKS-SEMANTIC-CONSOLIDATION-001: a merge-conservation gate violation
+			// throws (see applyDuplicateMergePlan) rather than writing a corrupted
+			// merge. Converted here to the same {ok:false,...} shape every other
+			// branch in this dispatch function already uses, so a blocked merge
+			// fails this one operation cleanly (the surrounding apply-loop error
+			// handling in applyDreamProposal already treats any ok:false result as
+			// a whole-apply failure with before_snapshots preserved for rollback).
+			const message = error instanceof Error ? error.message : String(error);
+			return { ok: false, operation_id: operationId, error: "merge_gate_blocked", detail: message };
+		}
 	}
 
 	if (operationType === "mark_contested") {
@@ -4523,6 +4545,19 @@ function mergeCanonicalEntry(
 	return canonical;
 }
 
+// PKS-SEMANTIC-CONSOLIDATION-001 Ring 1 hard gates. mergeCanonicalEntry
+// mutates its `canonical` argument in place, so the pre-merge parent
+// snapshots (needed for the independent post-hoc conservation check) must be
+// captured before it runs. A gate failure throws rather than returning
+// ok:false, matching this file's existing "cannot proceed safely" idiom
+// (see the entries_no_longer_available throw a few hundred lines below) —
+// callers that need a graceful {ok:false,...} result (the governed
+// applyDreamProposalOperation dispatch) catch it at their call site; the
+// legacy operator-path callers already wrap their calls in try/catch.
+function snapshotForConservationCheck(entry: LoadedEntry): { entry: Record<string, unknown>; metadata: Record<string, unknown> } {
+	return JSON.parse(JSON.stringify({ entry: entry.entry, metadata: entry.metadata }));
+}
+
 async function applyDuplicateMergePlan(
 	redis: Redis,
 	vector: Index,
@@ -4530,7 +4565,44 @@ async function applyDuplicateMergePlan(
 	runId: string,
 	timestamp: string,
 ): Promise<Record<string, unknown>> {
+	const parentSnapshots = [plan.canonical, ...plan.duplicates].map(snapshotForConservationCheck);
+
 	const canonical = mergeCanonicalEntry(plan.canonical, plan.duplicates, runId, timestamp);
+
+	let insightDrops: ReturnType<typeof collapseNearDuplicateInsights>["drops"] = [];
+	if (canonical.type === "knowledge" && Array.isArray(canonical.entry.key_insights)) {
+		const collapseResult = collapseNearDuplicateInsights(
+			canonical.entry.key_insights as Array<Record<string, unknown>>,
+		);
+		canonical.entry.key_insights = collapseResult.kept;
+		insightDrops = collapseResult.drops;
+	}
+
+	const conservation = validateMergeConservation({
+		parents: parentSnapshots,
+		merged: { entry: canonical.entry, metadata: canonical.metadata },
+		insightDrops,
+	});
+	if (!conservation.ok) {
+		throw new Error(
+			`duplicate_merge_conservation_violation: ${conservation.violations.join("; ")} ` +
+				`(canonical=${plan.canonical.id}, duplicates=${plan.duplicates.map((d) => d.id).join(",")})`,
+		);
+	}
+
+	if (insightDrops.length > 0) {
+		appendConsolidationNote(
+			canonical.metadata,
+			formatConsolidationNote({
+				timestamp,
+				source: "dream",
+				action: "collapse_near_duplicate_insights",
+				detail: `dropped ${insightDrops.length} near-duplicate insight(s) during merge (run ${runId}): ` +
+					insightDrops.map((d) => `"${d.droppedInsight}" -> retained "${d.retainedInsight}" (sim=${d.similarity})`).join("; "),
+			}),
+		);
+	}
+
 	await persistEntry(redis, vector, canonical);
 	await syncEntryAccessSignals(redis, canonical);
 

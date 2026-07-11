@@ -16,6 +16,10 @@ declare global {
 		DREAM_AUTO_APPLY_MODE?: "off" | "governed" | "full";
 		DREAM_OPUS_MODE?: "off" | "on";
 		RETRIEVAL_POLICY_MODE?: "off" | "on";
+		// Contract PKS-INJECTION-RANKING-002 Phase B cutover: query-time
+		// selection switches from sort-and-slice to greedy MMR diversity
+		// selection (mmr.ts). Default off/unset -> byte-identical to today.
+		RANKING_V2?: "off" | "on";
 		// Insight synthesis (CMA-dreaming parity). "on" enables nightly cluster
 		// detection + judge enqueue; verdicts apply additively next cycle.
 		// See docs/pks-dream-insight-synthesis-prd-2026-07-02.md.

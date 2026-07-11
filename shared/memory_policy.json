@@ -100,6 +100,12 @@
     "archive_protected_context_types": ["professional_identity", "stated_preference", "explicit_save"],
     "_phase4_note": "R4.1 scheduled_archive_limit ramped 10->50 (tripwire guards spikes; raise toward 100 as M5 confirms prune>=intake). R4.2 isArchiveCandidate broadened to any zero-access single-source low-salience entry EXCEPT archive_protected_context_types. R4.3 layer2_quarantine_salience now policy-driven. Phase fix 2.8: archive_candidate_min_age_days=14 prevents fresh low-salience entries from being archived on night one. Phase fix 2.5: max_entries_touched_per_apply caps total distinct entry IDs across all ops so duplicate_merge archive_ids cannot bypass the per-op archive cap."
   },
+  "admission_dedup": {
+    "enabled": false,
+    "dry_run": true,
+    "append_threshold": 0.85,
+    "link_threshold": 0.70
+  },
   "dedup": {
     "COSINE_DUP_THRESHOLD": 0.95,
     "COSINE_CONTEST_BAND": [0.90, 0.95],
@@ -123,6 +129,26 @@
   "project_lifecycle": {
     "active_stale_after_days": 90,
     "active_recent_access_grace_days": 30
+  },
+  "salience_v2": {
+    "_note": "Contract PKS-INJECTION-RANKING-002, Phase A (shadow). Additive five-component score, separate from and NOT replacing v1's half_lives_days above (v1 keeps its infinities untouched for the live scalar; v2 has its own finite recency table, infinite only for explicit_save). Computed into metadata.salience_v2 / metadata.salience_v2_components during the nightly Dream pass; not consulted by live ranking/tiering until RANKING_V2 is on (Phase B).",
+    "weights": {"usage": 0.30, "evidence": 0.25, "recency": 0.20, "authority": 0.15, "corroboration": 0.10},
+    "usage_half_life_days": 60,
+    "recency_half_lives_days": {
+      "professional_identity": 365,
+      "stated_preference": 365,
+      "explicit_save": "infinity",
+      "active_project": 180,
+      "recurring_pattern": 90,
+      "task_query": 30,
+      "passing_reference": 14
+    },
+    "evidence_saturation": {"source_conversations": 6, "key_insights": 8, "distinct_days_seen": 10},
+    "evidence_component_weights": {"source_conversations": 0.5, "key_insights": 0.3, "distinct_days_seen": 0.2},
+    "corroboration_saturation_mention_count": 20,
+    "mmr_lambda": 0.30,
+    "mmr_max_per_domain": 2,
+    "mmr_default_token_budget": 3000
   },
   "quality_gate": {
     "_note": "threshold_tier1 is a Dream audit absolute-salience floor (used by test_audit_memory_quality). It is NOT the same as tier_percentiles.tier_1_top_pct, which is the corpus-relative percentile cutoff used by assignTierByPercentile / assign_tiers_by_percentile at runtime. These are separate gates: threshold_tier1 checks raw salience after scoring; tier_1_top_pct controls what fraction of the live corpus earns Tier-1.",

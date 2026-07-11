@@ -1,0 +1,282 @@
+[
+  {
+    "id": "ke_healthy_000",
+    "metadata": {
+      "salience_v2": 0.0125,
+      "context_type": "task_query"
+    }
+  },
+  {
+    "id": "ke_healthy_001",
+    "metadata": {
+      "salience_v2": 0.0375,
+      "context_type": "recurring_pattern"
+    }
+  },
+  {
+    "id": "ke_healthy_002",
+    "metadata": {
+      "salience_v2": 0.0625,
+      "context_type": "active_project"
+    }
+  },
+  {
+    "id": "ke_healthy_003",
+    "metadata": {
+      "salience_v2": 0.0875,
+      "context_type": "stated_preference"
+    }
+  },
+  {
+    "id": "ke_healthy_004",
+    "metadata": {
+      "salience_v2": 0.1125,
+      "context_type": "task_query"
+    }
+  },
+  {
+    "id": "ke_healthy_005",
+    "metadata": {
+      "salience_v2": 0.1375,
+      "context_type": "recurring_pattern"
+    }
+  },
+  {
+    "id": "ke_healthy_006",
+    "metadata": {
+      "salience_v2": 0.1625,
+      "context_type": "active_project"
+    }
+  },
+  {
+    "id": "ke_healthy_007",
+    "metadata": {
+      "salience_v2": 0.1875,
+      "context_type": "stated_preference"
+    }
+  },
+  {
+    "id": "ke_healthy_008",
+    "metadata": {
+      "salience_v2": 0.2125,
+      "context_type": "task_query"
+    }
+  },
+  {
+    "id": "ke_healthy_009",
+    "metadata": {
+      "salience_v2": 0.2375,
+      "context_type": "recurring_pattern"
+    }
+  },
+  {
+    "id": "ke_healthy_010",
+    "metadata": {
+      "salience_v2": 0.2625,
+      "context_type": "active_project"
+    }
+  },
+  {
+    "id": "ke_healthy_011",
+    "metadata": {
+      "salience_v2": 0.2875,
+      "context_type": "stated_preference"
+    }
+  },
+  {
+    "id": "ke_healthy_012",
+    "metadata": {
+      "salience_v2": 0.3125,
+      "context_type": "task_query"
+    }
+  },
+  {
+    "id": "ke_healthy_013",
+    "metadata": {
+      "salience_v2": 0.3375,
+      "context_type": "recurring_pattern"
+    }
+  },
+  {
+    "id": "ke_healthy_014",
+    "metadata": {
+      "salience_v2": 0.3625,
+      "context_type": "active_project"
+    }
+  },
+  {
+    "id": "ke_healthy_015",
+    "metadata": {
+      "salience_v2": 0.3875,
+      "context_type": "stated_preference"
+    }
+  },
+  {
+    "id": "ke_healthy_016",
+    "metadata": {
+      "salience_v2": 0.4125,
+      "context_type": "task_query"
+    }
+  },
+  {
+    "id": "ke_healthy_017",
+    "metadata": {
+      "salience_v2": 0.4375,
+      "context_type": "recurring_pattern"
+    }
+  },
+  {
+    "id": "ke_healthy_018",
+    "metadata": {
+      "salience_v2": 0.4625,
+      "context_type": "active_project"
+    }
+  },
+  {
+    "id": "ke_healthy_019",
+    "metadata": {
+      "salience_v2": 0.4875,
+      "context_type": "stated_preference"
+    }
+  },
+  {
+    "id": "ke_healthy_020",
+    "metadata": {
+      "salience_v2": 0.5125,
+      "context_type": "task_query"
+    }
+  },
+  {
+    "id": "ke_healthy_021",
+    "metadata": {
+      "salience_v2": 0.5375,
+      "context_type": "recurring_pattern"
+    }
+  },
+  {
+    "id": "ke_healthy_022",
+    "metadata": {
+      "salience_v2": 0.5625,
+      "context_type": "active_project"
+    }
+  },
+  {
+    "id": "ke_healthy_023",
+    "metadata": {
+      "salience_v2": 0.5875,
+      "context_type": "stated_preference"
+    }
+  },
+  {
+    "id": "ke_healthy_024",
+    "metadata": {
+      "salience_v2": 0.6125,
+      "context_type": "task_query"
+    }
+  },
+  {
+    "id": "ke_healthy_025",
+    "metadata": {
+      "salience_v2": 0.6375,
+      "context_type": "recurring_pattern"
+    }
+  },
+  {
+    "id": "ke_healthy_026",
+    "metadata": {
+      "salience_v2": 0.6625,
+      "context_type": "active_project"
+    }
+  },
+  {
+    "id": "ke_healthy_027",
+    "metadata": {
+      "salience_v2": 0.6875,
+      "context_type": "stated_preference"
+    }
+  },
+  {
+    "id": "ke_healthy_028",
+    "metadata": {
+      "salience_v2": 0.7125,
+      "context_type": "task_query"
+    }
+  },
+  {
+    "id": "ke_healthy_029",
+    "metadata": {
+      "salience_v2": 0.7375,
+      "context_type": "recurring_pattern"
+    }
+  },
+  {
+    "id": "ke_healthy_030",
+    "metadata": {
+      "salience_v2": 0.7625,
+      "context_type": "active_project"
+    }
+  },
+  {
+    "id": "ke_healthy_031",
+    "metadata": {
+      "salience_v2": 0.7875,
+      "context_type": "stated_preference"
+    }
+  },
+  {
+    "id": "ke_healthy_032",
+    "metadata": {
+      "salience_v2": 0.8125,
+      "context_type": "task_query"
+    }
+  },
+  {
+    "id": "ke_healthy_033",
+    "metadata": {
+      "salience_v2": 0.8375,
+      "context_type": "recurring_pattern"
+    }
+  },
+  {
+    "id": "ke_healthy_034",
+    "metadata": {
+      "salience_v2": 0.8625,
+      "context_type": "active_project"
+    }
+  },
+  {
+    "id": "ke_healthy_035",
+    "metadata": {
+      "salience_v2": 0.8875,
+      "context_type": "stated_preference"
+    }
+  },
+  {
+    "id": "ke_healthy_036",
+    "metadata": {
+      "salience_v2": 0.9125,
+      "context_type": "task_query"
+    }
+  },
+  {
+    "id": "ke_healthy_037",
+    "metadata": {
+      "salience_v2": 0.9375,
+      "context_type": "recurring_pattern"
+    }
+  },
+  {
+    "id": "ke_healthy_038",
+    "metadata": {
+      "salience_v2": 0.9625,
+      "context_type": "active_project"
+    }
+  },
+  {
+    "id": "ke_healthy_039",
+    "metadata": {
+      "salience_v2": 0.9875,
+      "context_type": "stated_preference"
+    }
+  }
+]

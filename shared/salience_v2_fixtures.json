@@ -1,0 +1,328 @@
+[
+  {
+    "name": "fresh_usage_task_query",
+    "now": "2026-07-10T00:00:00Z",
+    "entry": {
+      "id": "ke_fresh_usage",
+      "metadata": {
+        "context_type": "task_query",
+        "mention_count": 2,
+        "last_seen": "2026-07-09T00:00:00Z",
+        "updated_at": "2026-07-09T00:00:00Z",
+        "last_accessed": "2026-07-10T00:00:00Z",
+        "source_conversations": [
+          "c1"
+        ]
+      },
+      "key_insights": []
+    },
+    "expected": {
+      "salience_v2": 0.5688,
+      "components": {
+        "usage": 1.0,
+        "evidence": 0.1033,
+        "recency": 0.9772,
+        "authority": 0.25,
+        "corroboration": 0.1
+      }
+    }
+  },
+  {
+    "name": "never_accessed_task_query",
+    "now": "2026-07-10T00:00:00Z",
+    "entry": {
+      "id": "ke_never_accessed",
+      "metadata": {
+        "context_type": "task_query",
+        "mention_count": 2,
+        "last_seen": "2026-07-09T00:00:00Z",
+        "updated_at": "2026-07-09T00:00:00Z",
+        "last_accessed": null,
+        "source_conversations": [
+          "c1"
+        ]
+      },
+      "key_insights": []
+    },
+    "expected": {
+      "salience_v2": 0.2688,
+      "components": {
+        "usage": 0.0,
+        "evidence": 0.1033,
+        "recency": 0.9772,
+        "authority": 0.25,
+        "corroboration": 0.1
+      }
+    }
+  },
+  {
+    "name": "explicit_save_infinite_recency",
+    "now": "2026-07-10T00:00:00Z",
+    "entry": {
+      "id": "ke_explicit_save",
+      "metadata": {
+        "context_type": "explicit_save",
+        "mention_count": 1,
+        "last_seen": "2024-01-01T00:00:00Z",
+        "updated_at": "2024-01-01T00:00:00Z",
+        "last_accessed": null,
+        "source_conversations": [
+          "c1"
+        ]
+      },
+      "key_insights": []
+    },
+    "expected": {
+      "salience_v2": 0.2683,
+      "components": {
+        "usage": 0.0,
+        "evidence": 0.1033,
+        "recency": 1.0,
+        "authority": 0.25,
+        "corroboration": 0.05
+      }
+    }
+  },
+  {
+    "name": "active_project_180d_recency_decay",
+    "now": "2026-07-10T00:00:00Z",
+    "entry": {
+      "id": "ke_active_project",
+      "metadata": {
+        "context_type": "active_project",
+        "mention_count": 1,
+        "last_seen": "2026-01-11T00:00:00Z",
+        "updated_at": "2026-01-11T00:00:00Z",
+        "last_accessed": null,
+        "source_conversations": [
+          "c1"
+        ]
+      },
+      "key_insights": []
+    },
+    "expected": {
+      "salience_v2": 0.1683,
+      "components": {
+        "usage": 0.0,
+        "evidence": 0.1033,
+        "recency": 0.5,
+        "authority": 0.25,
+        "corroboration": 0.05
+      }
+    }
+  },
+  {
+    "name": "high_authority_user_asserted",
+    "now": "2026-07-10T00:00:00Z",
+    "entry": {
+      "id": "ke_high_authority",
+      "metadata": {
+        "context_type": "stated_preference",
+        "mention_count": 1,
+        "last_seen": "2026-07-01T00:00:00Z",
+        "updated_at": "2026-07-01T00:00:00Z",
+        "last_accessed": null,
+        "source_conversations": [
+          "c1"
+        ]
+      },
+      "key_insights": [
+        {
+          "text": "Arjun prefers light mode always.",
+          "evidence": {
+            "asserted_by": "user",
+            "assertion_kind": "decision"
+          }
+        }
+      ]
+    },
+    "expected": {
+      "salience_v2": 0.3868,
+      "components": {
+        "usage": 0.0,
+        "evidence": 0.1408,
+        "recency": 0.9831,
+        "authority": 1.0,
+        "corroboration": 0.05
+      }
+    }
+  },
+  {
+    "name": "low_authority_inferred",
+    "now": "2026-07-10T00:00:00Z",
+    "entry": {
+      "id": "ke_low_authority",
+      "metadata": {
+        "context_type": "stated_preference",
+        "mention_count": 1,
+        "last_seen": "2026-07-01T00:00:00Z",
+        "updated_at": "2026-07-01T00:00:00Z",
+        "last_accessed": null,
+        "source_conversations": [
+          "c1"
+        ]
+      },
+      "key_insights": [
+        {
+          "text": "Arjun might prefer light mode.",
+          "evidence": {}
+        }
+      ]
+    },
+    "expected": {
+      "salience_v2": 0.2743,
+      "components": {
+        "usage": 0.0,
+        "evidence": 0.1408,
+        "recency": 0.9831,
+        "authority": 0.25,
+        "corroboration": 0.05
+      }
+    }
+  },
+  {
+    "name": "evidence_saturation_hit",
+    "now": "2026-07-10T00:00:00Z",
+    "entry": {
+      "id": "ke_evidence_saturated",
+      "metadata": {
+        "context_type": "recurring_pattern",
+        "mention_count": 1,
+        "last_seen": "2026-07-09T00:00:00Z",
+        "updated_at": "2026-07-09T00:00:00Z",
+        "last_accessed": null,
+        "source_conversations": [
+          "c1",
+          "c2",
+          "c3",
+          "c4",
+          "c5",
+          "c6",
+          "c7",
+          "c8"
+        ],
+        "first_seen": "2026-01-01T00:00:00Z",
+        "consolidation_notes": [
+          "2026-02-01T00:00:00Z | source=dream | action=merge | detail=x",
+          "2026-03-01T00:00:00Z | source=dream | action=merge | detail=x",
+          "2026-04-01T00:00:00Z | source=dream | action=merge | detail=x",
+          "2026-05-01T00:00:00Z | source=dream | action=merge | detail=x",
+          "2026-06-01T00:00:00Z | source=dream | action=merge | detail=x",
+          "2026-06-15T00:00:00Z | source=dream | action=merge | detail=x",
+          "2026-07-01T00:00:00Z | source=dream | action=merge | detail=x",
+          "2026-07-05T00:00:00Z | source=dream | action=merge | detail=x"
+        ]
+      },
+      "key_insights": [
+        {
+          "text": "insight 1",
+          "evidence": {}
+        },
+        {
+          "text": "insight 2",
+          "evidence": {}
+        },
+        {
+          "text": "insight 3",
+          "evidence": {}
+        },
+        {
+          "text": "insight 4",
+          "evidence": {}
+        },
+        {
+          "text": "insight 5",
+          "evidence": {}
+        },
+        {
+          "text": "insight 6",
+          "evidence": {}
+        },
+        {
+          "text": "insight 7",
+          "evidence": {}
+        },
+        {
+          "text": "insight 8",
+          "evidence": {}
+        },
+        {
+          "text": "insight 9",
+          "evidence": {}
+        }
+      ]
+    },
+    "expected": {
+      "salience_v2": 0.491,
+      "components": {
+        "usage": 0.0,
+        "evidence": 1.0,
+        "recency": 0.9923,
+        "authority": 0.25,
+        "corroboration": 0.05
+      }
+    }
+  },
+  {
+    "name": "rounding_four_decimals",
+    "now": "2026-07-10T00:00:00Z",
+    "entry": {
+      "id": "ke_rounding",
+      "metadata": {
+        "context_type": "passing_reference",
+        "mention_count": 3,
+        "last_seen": "2026-07-03T00:00:00Z",
+        "updated_at": "2026-07-03T00:00:00Z",
+        "last_accessed": "2026-07-06T00:00:00Z",
+        "source_conversations": [
+          "c1",
+          "c2"
+        ]
+      },
+      "key_insights": [
+        {
+          "text": "insight 1",
+          "evidence": {}
+        }
+      ]
+    },
+    "expected": {
+      "salience_v2": 0.5364,
+      "components": {
+        "usage": 0.9548,
+        "evidence": 0.2242,
+        "recency": 0.7071,
+        "authority": 0.25,
+        "corroboration": 0.15
+      }
+    }
+  },
+  {
+    "name": "corroboration_saturation_hit",
+    "now": "2026-07-10T00:00:00Z",
+    "entry": {
+      "id": "ke_corroboration_saturated",
+      "metadata": {
+        "context_type": "professional_identity",
+        "mention_count": 45,
+        "last_seen": "2026-06-01T00:00:00Z",
+        "updated_at": "2026-06-01T00:00:00Z",
+        "last_accessed": null,
+        "source_conversations": [
+          "c1"
+        ]
+      },
+      "key_insights": []
+    },
+    "expected": {
+      "salience_v2": 0.3491,
+      "components": {
+        "usage": 0.0,
+        "evidence": 0.1033,
+        "recency": 0.9286,
+        "authority": 0.25,
+        "corroboration": 1.0
+      }
+    }
+  }
+]

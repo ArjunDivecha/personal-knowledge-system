@@ -41,7 +41,7 @@ export function killFlagKey(modeName: KillSwitchName): string {
 	return `${COUNTER_PREFIX}:kill:${modeName}`;
 }
 
-export type KillSwitchName = "DREAM_AUTO_APPLY_MODE" | "RETRIEVAL_POLICY_MODE";
+export type KillSwitchName = "DREAM_AUTO_APPLY_MODE" | "RETRIEVAL_POLICY_MODE" | "RANKING_V2";
 
 // ---------------------------------------------------------------------------
 // Thresholds — chosen per the design doc (Section "Anomaly tripwires").

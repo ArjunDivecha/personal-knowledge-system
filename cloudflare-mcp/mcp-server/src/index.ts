@@ -13,6 +13,7 @@ import {
 	getSourceWeightFromMetadata,
 	resolveStoredInjectionTier,
 } from "./salience";
+import { selectWithDiversity, type MmrCandidate } from "./mmr";
 import {
 	addInsight,
 	applyDreamProposal,
@@ -720,6 +721,53 @@ export function selectReconsolidationTargets<T>(
 ): T[] {
 	if (suppressAccessSignals === true) return [];
 	return topResults.slice(0, MAX_RECONSOLIDATION_SEARCH_RESULTS);
+}
+
+// No tokenizer is wired into the Worker; estimate tokens as chars/4 per the
+// contract (PKS-INJECTION-RANKING-002 §2.2).
+export function estimateTokensFromText(text: string): number {
+	return Math.max(0, Math.ceil(text.length / 4));
+}
+
+export interface SearchRankingCandidate {
+	id: string;
+	final_score: number;
+	topic_bucket: string;
+	label: string;
+	summary: string;
+}
+
+// RANKING_V2 wiring (contract PKS-INJECTION-RANKING-002 Phase B). Flag off
+// (default): byte-identical to the pre-existing "sort, slice top-K"
+// behavior — this branch is untouched. Flag on: greedy MMR diversity
+// selection (mmr.ts) over the same filteredResults pool, respecting
+// requestedLimit as an upper bound. Extracted as a pure, exported function
+// (mirrors selectReconsolidationTargets above) so INV1 byte-identity and the
+// MMR wiring are both directly unit-testable without a full DO/HTTP mock.
+export function selectSearchTopResults<T extends SearchRankingCandidate>(
+	filteredResults: T[],
+	requestedLimit: number,
+	rankingV2Enabled: boolean,
+	embeddingById: Map<string, number[]>,
+): T[] {
+	if (!rankingV2Enabled) {
+		return filteredResults.slice(0, requestedLimit);
+	}
+	const candidates: MmrCandidate[] = filteredResults.map((result) => ({
+		id: result.id,
+		finalScore: result.final_score,
+		domainCluster: result.topic_bucket,
+		embedding: embeddingById.get(result.id) ?? [],
+		estTokens: estimateTokensFromText(`${result.label} ${result.summary}`),
+	}));
+	const selected = selectWithDiversity(candidates, { limit: requestedLimit });
+	const byId = new Map(filteredResults.map((result) => [result.id, result]));
+	const selectedResults: T[] = [];
+	for (const candidate of selected) {
+		const result = byId.get(candidate.id);
+		if (result) selectedResults.push(result);
+	}
+	return selectedResults;
 }
 
 // GitHub API helper
@@ -2582,11 +2630,33 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 
 					const requestedLimit = Math.max(1, Math.min(limit || 5, 20));
 					const fetchLimit = Math.min(requestedLimit * 8, 60);
+
+					// RANKING_V2: query-time selection cutover (mmr.ts). Off by default
+					// (unset env var) -> selectSearchTopResults falls through to the
+					// pre-existing plain slice, byte-identical to today (INV1). Read
+					// BEFORE the vector query so includeVectors can stay conditional —
+					// MMR needs each candidate's embedding for cosine similarity, but
+					// requesting up to 60 x 3072-dim vectors on every search call when
+					// the flag is off (the default, in production, today) would add
+					// real payload cost for a feature nobody is using yet.
+					const rankingV2Effective = await getEffectiveMode(
+						redis,
+						this.env.RANKING_V2,
+						"RANKING_V2",
+					);
+					const rankingV2Enabled = rankingV2Effective.effective === "on";
+
 					const results = await vector.query({
 						vector: queryEmbedding,
 						topK: fetchLimit,
 						includeMetadata: true,
+						includeVectors: rankingV2Enabled,
 					});
+					const embeddingById = new Map<string, number[]>(
+						rankingV2Enabled
+							? results.map((result) => [String(result.id), Array.isArray(result.vector) ? result.vector : []])
+							: [],
+					);
 
 					// Layer 0: classify query intent once for use across all candidates.
 					// The effective mode combines operator intent (env var) with any
@@ -2732,7 +2802,12 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 						if (a.final_score !== b.final_score) return b.final_score - a.final_score;
 						return b.similarity_score - a.similarity_score;
 					});
-					const topResults = filteredResults.slice(0, requestedLimit);
+					const topResults = selectSearchTopResults(
+						filteredResults,
+						requestedLimit,
+						rankingV2Enabled,
+						embeddingById,
+					);
 					for (const result of selectReconsolidationTargets(topResults, suppress_access_signals)) {
 						const entryType: EntryType = result.type === "project" ? "project" : "knowledge";
 						this.scheduleReconsolidation(entryType, result.id);
