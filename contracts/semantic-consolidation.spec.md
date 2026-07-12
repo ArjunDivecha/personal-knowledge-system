@@ -209,11 +209,29 @@ ledger:
     an explicit scheduled_time on a different calendar day. Noting this
     here because it is a reusable gotcha for any future manual
     verification against this endpoint.'
-  - 'G5''s full bar (seeded paraphrase duplicates producing an actual
-    semantic_only_merges > 0 result, applied and rolled back) not yet met
-    — the staging fixture corpus is too small/homogeneous to contain a
-    real semantic duplicate pair. Seeding one is a separate, small task
-    (add 2 near-duplicate fixture entries to staging) not attempted here.'
+  - 'RESOLVED 2026-07-12 with Arjun''s go-ahead ("continue and don''t stop
+    until every step is completed"): G5''s full bar (seeded paraphrase
+    duplicates producing an actual semantic merge > 0, applied AND rolled
+    back) is now met on staging. Calibrated a paraphrase pair against the
+    real text-embedding-3-large@3072 model until cosine landed at ~0.972
+    (well above the semantic band, safely below the 0.95 lexical-dup path)
+    with DIFFERENT normalized lexical fingerprints (reordered domain
+    tokens), guaranteeing the match could only come from the semantic path,
+    not lexical. Seeded the pair into staging (ke_g5_semfix_a created
+    2026-05-01, ke_g5_semfix_b created 2026-06-01) and triggered a real
+    governed nightly run (scheduled_time +90d to dodge the boundary cache).
+    Result: semantic_slice.merges_added=1, slice_size=6, the merge
+    (dop_merge_ke_g5_semfix_b_ke_g5_semfix_a) graded passed and auto-applied
+    within the 50-cap. Verified: ke_g5_semfix_b (more recent → canonical by
+    compareCanonicalPriority) stayed active; ke_g5_semfix_a was archived
+    with a "merged duplicate into ke_g5_semfix_b" receipt. Then rolled the
+    merge back via rollback_dream_apply — both entries returned to active
+    (revision 2), proving the semantic merge is fully reversible. Cleaned up
+    the archive_entry + project_status_transition side-effects of the same
+    governed run so the canonical fixture bundle is restored for future
+    staging-smoke runs. (Two orphan test entries, ke_g5_semfix_a/b, remain
+    in the throwaway staging store; harmless, and the next staging-smoke
+    re-seed from sample_memory_fixture.json does not reference them.)'
   - 'The production backlog drain (~459 known semantic clusters from the
     2026-06-08 one-off run, 200-entry batches, verify-after-each-batch,
     stop-on-fail per the "scale" bar) has NOT been attempted. That is a

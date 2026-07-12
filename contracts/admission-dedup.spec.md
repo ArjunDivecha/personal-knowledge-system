@@ -162,12 +162,56 @@ scale: graduated AND G5 decision log reviewed by Arjun AND live mode enabled AND
   the next 7 days the nightly duplicate-merge candidate count trends down instead
   of up
 ledger:
-  turns: 1
+  turns: 2
   consecutive_failures: 0
   blockers:
-  - 'G5 (live shadow ingestion run) not yet run: requires flipping
-    admission_dedup.enabled=true (dry_run stays true) in shared/memory_policy.json
-    and running a real ingestion cycle. Deferred to the deploy step.'
+  - 'RESOLVED 2026-07-11/12 with Arjun''s explicit approval ("Fix it, then run
+    shadow G5"): before flipping the flag, a pre-flight audit of the shadow
+    path found TWO defects that would have made the G5 run destructive and
+    useless respectively. (1) DATA LOSS: save_knowledge_entry_with_dedup''s
+    dry_run branch returned WITHOUT saving the candidate — every entry
+    ingested in shadow mode would have been silently dropped. INV3''s "zero
+    writes" had been implemented literally when the intent (per INV4''s
+    "byte-identical to current behavior") was zero DEDUP-DRIVEN writes;
+    shadow mode must be observationally additive, never subtractive. The
+    existing test suite actively pinned the wrong behavior
+    (test_dry_run_true_performs_zero_writes asserted save_calls == []).
+    (2) NO ARTIFACT: decisions lived only on per-entry AdmissionRouter
+    instances that storage.py immediately discarded, so a shadow run would
+    have produced NO reviewable decision log — the scale bar''s "decision
+    log reviewed by Arjun" was unsatisfiable as built. Both fixed (commit
+    ecc747b): dry_run now persists via save_knowledge_entry exactly as
+    disabled mode, and _record durably appends JSONL to
+    ingestion/logs/admission_decisions.jsonl (env-overridable, gitignored
+    via ingestion/logs/.gitignore since the repo-root .gitignore is outside
+    scope.in). Regression tests pin both; the checked-in-policy test now
+    pins the real safety invariant (dry_run stays true — live mode never
+    checked in) instead of enabled=false. Python suite 374/374. Codex
+    review round 2 PASS (round-1 finding about import placement was a
+    false positive — the placement is pre-existing per git show HEAD, and
+    the import is required to read the enabled flag at all).
+
+    G5 shadow run executed: flipped admission_dedup.enabled=true (dry_run
+    true) in shared/memory_policy.json, ran real scoped GitHub ingestion
+    locally against production storage (distillation/venv python,
+    ingestion/.env credentials — same store the self-hosted runner writes).
+    ww2-history: baseline unchanged, 0 candidates (checkpoint working as
+    designed). ASADO+Triptych (both pushed within the hour, genuinely new
+    material): real decisions streamed into the JSONL log, including
+    append-band verdicts at cosine 0.949-0.985 against pre-existing ASADO
+    entries — production evidence of the near-duplicate re-extraction
+    problem this contract exists to fix. Verified the data-loss fix live:
+    candidate ke_d3a9f58805e3 (decision=append against ke_b7f652186ecb at
+    0.985) EXISTS in production Redis — shadow mode saved it exactly as
+    disabled mode would. Deliberately did NOT use --no-resume to force
+    candidates: re-scanning unchanged repos would have minted real
+    duplicates into production purely to generate log lines.
+
+    NOTE: nightly ingestion runs on a self-hosted runner that checks out
+    from GitHub, so the shadow flag reaches the scheduled pipeline only
+    once this commit is pushed — push requires Arjun''s go-ahead per repo
+    convention. The 7-day candidate-count trend in the scale bar starts
+    from that push, not from this local run.'
   lessons:
   - 'Adversarial review caught a real correctness bug: query_top_neighbor had
     no self-exclusion, so a candidate already present in the vector index
