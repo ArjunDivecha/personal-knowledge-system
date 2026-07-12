@@ -239,16 +239,75 @@ ledger:
       own archive-lifecycle drill and future staging-smoke runs start from
       the canonical fixture bundle''s checked-in state. G4: PASS.'
   - environment: production
-    when: TODO
-    what: TODO
+    when: '2026-07-11T06:31Z deploy; 2026-07-12T02:02Z-02:04Z sweep'
+    what: 'Deployed via `npm run deploy` (Version ID 8f9b368c-dbc8-4cd5-a2d3-9df531846963,
+      mcp.dancing-ganesh.com). Verified healthy via mcp__claude_ai_PM__health
+      (status ok) and a live semantic search query returning real production
+      results. Verified get_index immediately post-deploy showed the new
+      dormant_project_count/dormant_projects fields present and correctly
+      empty (0) before any transition had been applied — confirms the flag-off/
+      no-op path is byte-correct on real production data.
+
+      One-time production sweep (contract''s scale bar): generated a real
+      no-write dry-run proposal via run_dream_proposal (run_id
+      dpr_2026-07-11T06-29-20-646Z) against the live 26-project corpus. It
+      surfaced 12 project_status_transition candidates (all real one-shot
+      explorations from Mar-Apr 2026 with no recent access; see the list
+      below) plus 169 unrelated duplicate_merge and 1 mark_contested
+      operation from the same nightly-equivalent proposal, which were
+      deliberately NOT applied (out of scope for this contract). Presented
+      the 12-item dry-run list to Arjun for review per this contract''s own
+      scale bar ("dry-run list reviewed by Arjun first") — approved
+      ("Apply now"). Graded (dpg_2026-07-12T02-02-21-766Z, passed, 0 hard
+      fails) and applied only the 12 project_status_transition operation_ids
+      via apply_dream_proposal (mutation_id
+      projlife-prod-sweep-2026-07-11-001, apply_run_id
+      apply_dpr_2026-07-11T06-29-20-646Z_2026-07-12T02-02-33-102Z). All 12
+      succeeded, each receipted with prior_status/status/run_id and a
+      revision bump (0->1). Verified via get_index immediately after:
+      dormant_project_count=12, all 12 correctly present under
+      dormant_projects and absent from projects; the remaining 14 genuinely
+      active projects unaffected. Each transition is individually reversible
+      via rollback_dream_apply against this same proposal_id/mutation_id, per
+      INV3 (already proven end-to-end on staging in G4).
+
+      The 12 transitioned: pe_197f89fc5953 (Systematic Trading Strategy
+      Backtesting System), pe_292591ce2c2c (Top-5 Factor Return Optimization
+      System), pe_2f4a5308b989 (Resilient Asset Allocation Strategy),
+      pe_348684d2232e (HAA Strategy Backtesting Extension), pe_8b926d8aeece
+      (autoresearch), pe_9bf1689685de (RD-Agent exploration), pe_c235d69a36b0
+      (PE Analysis React Application), pe_c28c26df0d9c (AI-powered web
+      research tool), pe_d3f9c905ff4a (AI Company Financial Viability
+      Analysis), pe_e0d3be733c1d (Factor return forecasting),
+      pe_e5803c1bba1b (Asset Class Momentum Rotational System),
+      pe_e71bf603fb47 (Country Equity Index Momentum Strategy).
+
+      Note: several older (2024-2025) projects with even staler last_touched
+      dates (e.g. the original diagnosis example, pe_1f700e9c3133 "SPX MA200
+      Strategy Backtest", touched 2024-08-25) did NOT appear as candidates —
+      their last_accessed timestamps fall inside the 30-day grace window,
+      most likely because they surface near the top of get_index/search
+      results in routine use and something in that path refreshes
+      last_accessed on read. This is the grace-window mechanism working
+      exactly as specified (INV5/M9''s own design: recent access exempts
+      even very stale content), not a bug — but it is a real product-level
+      property worth Arjun''s awareness: a project can be perpetually
+      display-refreshed without ever being worked on again, and would never
+      go dormant under this logic alone. Flagging for future awareness, not
+      fixing here (out of this contract''s scope; the M9 semantics were
+      ported faithfully as designed).'
   flagged_live_behavior_changes:
   - 'This contract introduces a NEW project status value ("dormant") that Dream''s
     nightly governed run can assign automatically to active projects stale beyond
     the policy window (default 90 days + 30-day grace), capped at 10 per run. This
-    is a live behavior change once deployed and cut over: it did not exist before
-    this contract. G4 (staging) passed 2026-07-11 — see deploy_records above.
-    Production deploy and the reviewed one-time production sweep are still
-    pending as of this ledger entry.'
+    is a live behavior change: it did not exist before this contract. Fully
+    deployed and exercised: G4 passed on staging 2026-07-11, production deploy
+    completed 2026-07-11T06:31Z, and the reviewed one-time production sweep
+    (12 projects, Arjun-approved dry-run) applied 2026-07-12T02:02Z-02:04Z —
+    see deploy_records above for the full account, including a noted
+    grace-window edge case (perpetually-displayed-but-unworked projects can
+    dodge staleness detection) that is by-design, not a bug, but worth
+    Arjun''s awareness.'
 legacy:
   goal_condition: all non-permissioned gates exit 0 AND git diff --name-only is a
     subset of scope.in AND no scope.forbid path is modified
