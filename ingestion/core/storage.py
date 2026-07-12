@@ -547,9 +547,19 @@ class StorageClient:
 
         When admission_dedup.enabled is False (the checked-in default), this
         is a byte-identical no-op wrapper around save_knowledge_entry() — the
-        router is never constructed. When enabled and dry_run is True, the
-        decision is computed and logged but nothing is written. When enabled
-        and dry_run is False, the decision is applied (append/link/new).
+        router is never constructed. When enabled and dry_run is True (shadow
+        mode), the decision is computed and durably logged AND the entry is
+        saved exactly as in disabled mode — shadow mode is observationally
+        additive (today's writes + a decision log), never subtractive. Only
+        the dedup-specific writes (append-to-neighbor, link) are withheld in
+        dry_run. When enabled and dry_run is False, the decision is applied
+        (append/link/new).
+
+        HISTORY: an earlier version of this method returned from the dry_run
+        branch WITHOUT saving the entry, which would have silently dropped
+        every newly ingested entry while in shadow mode (caught 2026-07-11
+        before the flag was ever enabled; regression test
+        test_dry_run_true_saves_entry_like_disabled_mode pins the fix).
         """
         from .admission_router import AdmissionRouter, load_admission_dedup_policy
 
@@ -569,8 +579,15 @@ class StorageClient:
         decision = router.route(entry, embedding_text)
 
         if policy.get("dry_run"):
+            # Shadow mode: persist the entry exactly as disabled mode would
+            # (the decision above was already durably logged by route()).
+            # Known cost: route() embedded once for the neighbor query and
+            # save_knowledge_entry embeds again — one extra embedding call
+            # per entry, accepted for the temporary shadow phase.
+            self.save_knowledge_entry(entry, embedding_text)
             return {
                 "action": "dry_run",
+                "saved": True,
                 "decision": decision.decision,
                 "entry_id": entry["id"],
                 "neighbor_id": decision.neighbor_id,

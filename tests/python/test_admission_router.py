@@ -7,9 +7,13 @@ INPUT FILES: None. All storage/vector interactions go through in-memory fake
 doubles (FakeStorage); no network, no real Redis/Vector/OpenAI credentials.
 One test reads the real, checked-in
 /Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system/shared/memory_policy.json
-to confirm the default policy loaded from disk is dry_run=true.
+to confirm the checked-in policy is never in live mode (dry_run stays true).
 
-OUTPUT FILES: None.
+OUTPUT FILES: None durable. setUpModule points PKS_ADMISSION_DECISION_LOG at
+a per-run tempdir so the router's JSONL decision log (which _record appends
+on every route() call) never touches the real
+ingestion/logs/admission_decisions.jsonl during unit runs; the tempdir is
+deleted in tearDownModule.
 
 VERSION: 1.0
 LAST UPDATED: 2026-07-10
@@ -30,9 +34,16 @@ INV2 - append targets are only active, non-archived, same-type entries.
        separately documents, via a route()-level test, that AdmissionRouter
        trusts its storage's filtering rather than re-checking state/archived
        itself (the filter is the single enforcement point by design).
-INV3 - dry-run mode performs zero writes while the router's decision log
-       (AdmissionRouter.decisions) contains the full decision; the config
-       default is off (enabled=false, dry_run=true).
+INV3 - dry-run (shadow) mode performs zero DEDUP-DRIVEN writes (no
+       append-to-neighbor, no link mutation) while emitting the full
+       decision log — but it MUST still persist the candidate entry itself
+       exactly as disabled mode does. Shadow mode is observationally
+       additive (today's writes + a decision log), never subtractive: an
+       earlier implementation returned from the dry_run branch without
+       saving, silently dropping every entry ingested in shadow mode
+       (caught 2026-07-11 before the flag was ever enabled; pinned by
+       test_dry_run_true_saves_entry_like_disabled_mode). Decisions are
+       durably appended as JSONL via admission_router.decision_log_path().
 INV4 - below-threshold / disabled admission is byte-identical to current
        behavior: with admission_dedup.enabled=False,
        StorageClient.save_knowledge_entry_with_dedup() calls
@@ -49,7 +60,9 @@ USAGE:
 from __future__ import annotations
 
 import json
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -64,6 +77,30 @@ if str(INGESTION_DIR) not in sys.path:
 from core import admission_router as admission_router_module  # noqa: E402
 from core.admission_router import AdmissionDecision, AdmissionRouter  # noqa: E402
 from core.storage import StorageClient  # noqa: E402
+
+# Redirect the durable JSONL decision log to a tempdir for the whole module:
+# every route() call appends a line via _record, and unit runs must never
+# touch the real ingestion/logs/admission_decisions.jsonl.
+_LOG_TEMPDIR: tempfile.TemporaryDirectory | None = None
+_SAVED_LOG_ENV: str | None = None
+
+
+def setUpModule() -> None:
+    global _LOG_TEMPDIR, _SAVED_LOG_ENV
+    _LOG_TEMPDIR = tempfile.TemporaryDirectory(prefix="pks_admission_log_")
+    _SAVED_LOG_ENV = os.environ.get("PKS_ADMISSION_DECISION_LOG")
+    os.environ["PKS_ADMISSION_DECISION_LOG"] = str(
+        Path(_LOG_TEMPDIR.name) / "admission_decisions.jsonl"
+    )
+
+
+def tearDownModule() -> None:
+    if _SAVED_LOG_ENV is None:
+        os.environ.pop("PKS_ADMISSION_DECISION_LOG", None)
+    else:
+        os.environ["PKS_ADMISSION_DECISION_LOG"] = _SAVED_LOG_ENV
+    if _LOG_TEMPDIR is not None:
+        _LOG_TEMPDIR.cleanup()
 
 
 DEFAULT_POLICY = {
@@ -216,7 +253,8 @@ class PolicyOverrideNotHardcodedTests(unittest.TestCase):
 
 
 class DecisionLogTests(unittest.TestCase):
-    """INV3 (decision-log half): every route() call is recorded."""
+    """INV3 (decision-log half): every route() call is recorded, both
+    in-memory and durably."""
 
     def test_decisions_accumulate_across_multiple_routes(self):
         storage = FakeStorage(neighbor=_neighbor("ke_n", 0.90))
@@ -231,6 +269,37 @@ class DecisionLogTests(unittest.TestCase):
             self.assertIn("neighbor_score", record)
             self.assertIn("reason", record)
             self.assertIn("timestamp", record)
+
+    def test_decision_log_survives_router_instances_being_discarded(self):
+        # REGRESSION (observability gap, caught 2026-07-11): production
+        # constructs a fresh AdmissionRouter per candidate and discards it
+        # (storage.save_knowledge_entry_with_dedup), so the in-memory
+        # self.decisions list alone leaves NO reviewable artifact from a
+        # shadow run. _record must durably append each decision as a JSONL
+        # line, across instances, to the path from decision_log_path().
+        log_path = admission_router_module.decision_log_path()
+        before = log_path.read_text().splitlines() if log_path.exists() else []
+
+        for entry_id in ("ke_first", "ke_second"):
+            storage = FakeStorage(neighbor=_neighbor("ke_n", 0.90))
+            router = AdmissionRouter(storage, DEFAULT_POLICY)  # discarded each loop
+            router.route(_candidate(entry_id), "text")
+
+        lines = log_path.read_text().splitlines()
+        new_records = [json.loads(line) for line in lines[len(before):]]
+        self.assertEqual([r["candidate_id"] for r in new_records], ["ke_first", "ke_second"])
+        for record in new_records:
+            self.assertEqual(record["decision"], "append")
+            self.assertEqual(record["neighbor_id"], "ke_n")
+            self.assertIn("timestamp", record)
+
+    def test_decision_log_path_honors_env_override(self):
+        # setUpModule already set the override; confirm resolution honors it
+        # (this is also what keeps unit runs off the real log file).
+        self.assertEqual(
+            str(admission_router_module.decision_log_path()),
+            os.environ["PKS_ADMISSION_DECISION_LOG"],
+        )
 
 
 class RouteTrustsFilteringByDesignTests(unittest.TestCase):
@@ -499,8 +568,12 @@ class SaveKnowledgeEntryWithDedupTests(unittest.TestCase):
         self.assertEqual(fake_via_dedup.embed_calls, [], "disabled path must not embed for routing")
         self.assertEqual(fake_via_dedup.query_calls, [], "disabled path must not query for routing")
 
-    def test_dry_run_true_performs_zero_writes(self):
-        # INV3: dry-run is write-free.
+    def test_dry_run_true_saves_entry_like_disabled_mode(self):
+        # INV3 REGRESSION (data-loss bug, caught 2026-07-11 before the flag
+        # was ever enabled): an earlier implementation returned from the
+        # dry_run branch WITHOUT saving, so every entry ingested in shadow
+        # mode would have been silently dropped. Shadow mode must persist
+        # the candidate exactly as disabled mode does.
         entry = _candidate("ke_candidate")
         with mock.patch.object(
             admission_router_module,
@@ -510,10 +583,42 @@ class SaveKnowledgeEntryWithDedupTests(unittest.TestCase):
             fake = FakeStorage(neighbor=_neighbor("ke_neighbor", 0.95))
             result = StorageClient.save_knowledge_entry_with_dedup(fake, entry)
 
-        self.assertEqual(fake.save_calls, [])
-        self.assertEqual(fake.batch_save_calls, [])
+        self.assertEqual(len(fake.save_calls), 1, "shadow mode must persist the entry")
+        self.assertEqual(fake.entries["ke_candidate"], entry)
         self.assertEqual(result["action"], "dry_run")
+        self.assertIs(result["saved"], True)
         self.assertEqual(result["decision"], "append")
+
+    def test_dry_run_true_performs_zero_dedup_writes(self):
+        # INV3 (corrected semantics): dry-run withholds only the
+        # DEDUP-DRIVEN writes — the append-scoring neighbor is never
+        # mutated, no link field is written to the candidate, and no batch
+        # write happens. The single save is the candidate's own baseline
+        # persistence (asserted in the companion regression test above).
+        entry = _candidate("ke_candidate")
+        neighbor_stub = _neighbor("ke_neighbor", 0.95)
+        with mock.patch.object(
+            admission_router_module,
+            "load_admission_dedup_policy",
+            return_value={**DEFAULT_POLICY, "enabled": True, "dry_run": True},
+        ):
+            fake = FakeStorage(neighbor=neighbor_stub)
+            fake.entries["ke_neighbor"] = {
+                "id": "ke_neighbor",
+                "domain": "Python",
+                "key_insights": [],
+                "metadata": {"mention_count": 1, "source_conversations": []},
+            }
+            StorageClient.save_knowledge_entry_with_dedup(fake, entry)
+
+        self.assertEqual(fake.batch_save_calls, [])
+        # The neighbor was never touched: no appended insight, no bumped count.
+        self.assertEqual(fake.entries["ke_neighbor"]["key_insights"], [])
+        self.assertEqual(fake.entries["ke_neighbor"]["metadata"]["mention_count"], 1)
+        # The candidate was saved as-is, with no link field injected.
+        self.assertNotIn("related_knowledge", fake.entries["ke_candidate"])
+        # Exactly one save: the candidate's own baseline persistence.
+        self.assertEqual([call[0]["id"] for call in fake.save_calls], ["ke_candidate"])
 
     def test_live_mode_applies_the_decision(self):
         entry = _candidate("ke_candidate")
@@ -530,14 +635,22 @@ class SaveKnowledgeEntryWithDedupTests(unittest.TestCase):
 
 
 class CheckedInPolicyDefaultsTests(unittest.TestCase):
-    """The real, on-disk shared/memory_policy.json defaults must be safe."""
+    """The real, on-disk shared/memory_policy.json must be safe: live mode
+    (enabled=true AND dry_run=false) may never be checked in without an
+    explicit, human-approved commit that also updates this test. Both
+    enabled=false (pre-shadow) and enabled=true + dry_run=true (shadow
+    phase) are legitimate checked-in states."""
 
-    def test_real_policy_file_defaults_off(self):
+    def test_real_policy_file_is_never_in_live_mode(self):
         with POLICY_PATH.open() as handle:
             full_policy = json.load(handle)
         block = full_policy["admission_dedup"]
-        self.assertIs(block["enabled"], False)
-        self.assertIs(block["dry_run"], True)
+        self.assertIs(
+            block["dry_run"], True,
+            "live mode must never be enabled by a checked-in default; "
+            "flipping dry_run to false requires explicit human sign-off "
+            "and a deliberate update to this test",
+        )
 
 
 if __name__ == "__main__":

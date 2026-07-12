@@ -9,10 +9,17 @@ INPUT FILES:
   append_threshold, link_threshold) when no policy dict is injected.
 
 OUTPUT FILES:
+- /Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system/ingestion/logs/admission_decisions.jsonl
+  : append-only decision log, one JSON line per routing decision, written by
+  _record() on every route() call (so shadow/dry-run runs leave a durable,
+  reviewable artifact even though storage.py constructs a fresh router per
+  candidate and discards it). Path overridable via the
+  PKS_ADMISSION_DECISION_LOG environment variable (tests point it at a
+  tempdir). Gitignored via ingestion/logs/.gitignore.
 - /Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system/scripts/reports/admission_dedup_decisions_<UTCSTAMP>.json
   : optional, only written when AdmissionRouter.write_report() is called
-  explicitly (e.g. by a shadow-run entry point); never written automatically
-  by route() or apply_decision().
+  explicitly (e.g. by a batch shadow-run entry point); never written
+  automatically by route() or apply_decision().
 - (network, production Redis + Vector, write — ONLY when apply_decision() is
   called by a caller in live, non-dry-run mode) updates or creates knowledge
   entries via the injected storage's save_knowledge_entry(). This module
@@ -77,6 +84,7 @@ NOTES:
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -86,6 +94,17 @@ from typing import Any, Optional
 REPO_ROOT = Path(__file__).resolve().parents[2]
 POLICY_PATH = REPO_ROOT / "shared" / "memory_policy.json"
 REPORTS_DIR = REPO_ROOT / "scripts" / "reports"
+DEFAULT_DECISION_LOG_PATH = REPO_ROOT / "ingestion" / "logs" / "admission_decisions.jsonl"
+
+
+def decision_log_path() -> Path:
+    """Resolve the durable decision-log path.
+
+    PKS_ADMISSION_DECISION_LOG overrides the default (tests point it at a
+    tempdir so unit runs never append to the real log; CI could point it
+    into a run-artifacts dir)."""
+    override = os.environ.get("PKS_ADMISSION_DECISION_LOG")
+    return Path(override) if override else DEFAULT_DECISION_LOG_PATH
 
 _ADMISSION_POLICY_CACHE: Optional[dict[str, Any]] = None
 
@@ -141,6 +160,17 @@ class AdmissionRouter:
         record["candidate_id"] = candidate_entry.get("id")
         record["timestamp"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
         self.decisions.append(record)
+        # Durable decision log (contract scale bar: "G5 decision log reviewed
+        # by Arjun"). The in-memory list alone is useless in production —
+        # save_knowledge_entry_with_dedup constructs a fresh router per entry
+        # and discards it, so without this append a shadow run leaves no
+        # reviewable artifact. One JSON line per decision; a write failure
+        # raises rather than passing silently, because in shadow mode the log
+        # IS the deliverable.
+        log_path = decision_log_path()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a") as handle:
+            handle.write(json.dumps(record) + "\n")
 
     def route(self, candidate_entry: dict, embedding_text: str) -> AdmissionDecision:
         """Decide append/link/new for a not-yet-saved candidate. Pure

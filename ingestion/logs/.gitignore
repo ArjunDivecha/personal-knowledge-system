@@ -1,0 +1,6 @@
+# Runtime artifacts in this directory are never committed. *.log files are
+# already covered by the repo-root .gitignore; the admission decision log is
+# JSONL (PKS-ADMISSION-DEDUP-001 shadow-mode artifact, appended by
+# ingestion/core/admission_router.py::_record) and needs its own rule here
+# because the repo-root .gitignore is outside that contract's scope.in.
+admission_decisions.jsonl
