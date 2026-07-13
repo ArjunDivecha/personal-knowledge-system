@@ -344,6 +344,18 @@ def main() -> int:
     ap.add_argument("--max-batches", type=int, default=None, help="Stop after N batches (pilot mode)")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--base-url", default=PROD_BASE_URL)
+    ap.add_argument(
+        "--clusters-from",
+        default=None,
+        help=(
+            "Path to an audit_memory_quality report JSON; reuse its "
+            "m4_duplicates.all_tight_clusters instead of re-deriving clusters. "
+            "STRONGLY PREFERRED: the NN scan is the expensive step (~12k vector "
+            "queries) and the audit already does it. Re-deriving it here against "
+            "an index already under load measured ~15x slower. Reusing the audit "
+            "also guarantees the drain's scope matches the audited number exactly."
+        ),
+    )
     args = ap.parse_args()
 
     if args.apply and not args.i_reviewed_the_dry_run:
@@ -377,7 +389,24 @@ def main() -> int:
     print(f"run_id: {run_id}   protected types (never merge-losers): {protected}")
     print("=" * 72)
 
-    clusters = discover_clusters(storage, policy, args.workers)
+    if args.clusters_from:
+        src = Path(args.clusters_from)
+        m4 = json.loads(src.read_text())["m4_duplicates"]
+        if m4.get("query_capped"):
+            raise SystemExit(
+                f"❌ {src.name} was produced by a CAPPED scan (query_capped=true) — "
+                "its cluster list is incomplete and the drain would silently miss "
+                "duplicates. Re-run the audit with --max-dup-queries above the "
+                "corpus size."
+            )
+        clusters = [sorted(c) for c in m4["all_tight_clusters"]]
+        clusters.sort(key=len, reverse=True)
+        print(f"[drain] clusters loaded from {src.name}: {len(clusters)} "
+              f"covering {sum(len(c) for c in clusters)} entries "
+              f"(cosine >= {m4.get('cosine_threshold')}, uncapped scan)")
+    else:
+        clusters = discover_clusters(storage, policy, args.workers)
+
     batches = pack_batches(clusters, MAX_CANDIDATES_PER_PROPOSAL)
     if args.max_batches:
         batches = batches[: args.max_batches]

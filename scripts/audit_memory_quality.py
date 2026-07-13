@@ -507,6 +507,14 @@ def compute_m4_duplicates(
             "max_pairwise_cosine": round(max_cos, 4),
         })
 
+    # PKS-SEMANTIC-CONSOLIDATION-001: emit FULL cluster membership (not just the
+    # 10-cluster sample above) so scripts/drain_semantic_backlog.py can batch
+    # clusters intact without re-deriving them — the NN scan is the expensive
+    # step and re-running it in the drain was ~15x slower against a loaded index.
+    # Only tight (2..SEMANTIC_MAX_CLUSTER_SIZE) clusters are emitted: oversized
+    # components are the chaining pathology the 0.95 threshold exists to avoid.
+    base["all_tight_clusters"] = [c for c in multi if 2 <= len(c) <= 6]
+
     base.update({
         "multi_member_clusters": len(multi),
         "entries_in_clusters": entries_in_clusters,
