@@ -162,6 +162,32 @@ ledger:
   turns: 3
   consecutive_failures: 1
   blockers:
+  - 'SCALE BAR MET 2026-07-13. The bar asked for (a) G5 run against a real
+    report confirming the regression semantics, and (b) the committed baseline
+    refreshed from a clean green run. Both satisfied — and the gate proved
+    itself in BOTH directions on real production data, not a fixture.
+
+    DETECTION: the admission-dedup shadow ingestion run
+    (PKS-ADMISSION-DEDUP-001) polluted production with 263 near-duplicate
+    entries. This gate caught it independently, without being told to look:
+    paraphrase_consistency fell 0.667 -> 0.333, reproducible across two clean
+    zero-error runs, and --fail-on-regression exited nonzero naming both the
+    degraded axis and the flipped probe. The per-probe top_ids diff then
+    root-caused it precisely to ONE new near-dup entry (ke_21d2aae376bc,
+    cosine 0.949 to its neighbour) displacing the entry that two paraphrased
+    query variants had previously shared in top-k. An axis-only gate would
+    have said "something got worse"; probe-level ids made it a fast diagnosis.
+
+    CONFIRMATION: after 185 near-dups were archived, the SAME compare against
+    the SAME committed baseline exited 0 — every axis identical to the
+    2026-07-09 numbers, zero probe flips.
+
+    (b) needed no refresh: the corpus was restored to match the committed
+    baseline exactly, so tests/baselines/retrieval_baseline.json already IS
+    the clean-green-run baseline. Refreshing it here would have been the WRONG
+    move — it would have papered over a real regression by redefining the
+    target. LESSON: refresh a baseline only when the new numbers are
+    understood and intended, never merely to turn a red gate green.'
   - 'RESOLVED 2026-07-09T14:25Z with Arjun''s go-ahead: G5 ran once against
     PRODUCTION (mcp.dancing-ganesh.com is the default base URL when
     STAGING_WORKER_BASE_URL is unset \u2014 read-only, 52 probes, 0 errors) and
