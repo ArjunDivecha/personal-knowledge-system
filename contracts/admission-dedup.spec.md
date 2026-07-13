@@ -1,7 +1,7 @@
 ---
 schema_version: 1
 spec_id: PKS-ADMISSION-DEDUP-001
-status: draft
+status: in_progress
 target_agent: either
 scope:
   in:
@@ -44,11 +44,18 @@ invariants:
   check_intent: unit tests with archived and contested top-1 neighbors above threshold
     asserting the decision is new-entry, not append
 - id: INV3
-  holds: dry-run mode performs zero writes while emitting the full decision log; live
-    mode is reachable only via an explicit flag that defaults off
-  check_intent: run the fixture batch in dry-run against a storage spy and assert
-    write-call count is zero while the decision log contains every candidate; assert
-    the flag default is off in config
+  holds: "dry-run (shadow) mode performs zero DEDUP-DRIVEN writes (no append-to-neighbour,\
+    \ no link mutation) while emitting the full decision log \u2014 but it MUST still\
+    \ persist the candidate entry itself exactly as disabled mode does. Shadow mode is\
+    \ observationally additive (today's writes + a decision log), never subtractive.\
+    \ Live mode is reachable only via an explicit flag. CORRECTED 2026-07-11: the\
+    \ original wording ('zero writes') was implemented literally, so the dry_run branch\
+    \ returned WITHOUT saving \u2014 silently dropping every entry ingested in shadow\
+    \ mode. Caught before the flag was ever enabled."
+  check_intent: assert shadow mode saves the candidate exactly as disabled mode does,
+    AND that it performs no dedup-driven writes (neighbour untouched, no link field,
+    no batch write); assert decisions are durably logged across discarded router
+    instances, since production builds a fresh router per entry
 - id: INV4
   holds: 'below-threshold admission is byte-identical to current behavior: candidates
     with no neighbor at or above 0.70 produce exactly the entry they produce today'
@@ -96,11 +103,12 @@ gates:
 - id: G3
   intent: 'INV3 holds: dry-run is write-free with a complete decision log, and the
     live flag defaults off'
-  must_assert: 'INV3 passes: storage-spy write count is zero in dry-run, every fixture
-    candidate appears in the decision log with a decision and neighbor score, and
-    the default config value is off; exit nonzero otherwise'
+  must_assert: 'INV3 passes: shadow mode persists the candidate exactly as disabled
+    mode does (regression guard on the silent-data-loss bug), performs no dedup-driven
+    writes, durably logs every decision across discarded router instances, and the
+    checked-in policy matches its signed-off state; exit nonzero otherwise'
   command: |
-    distillation/venv/bin/python -m unittest -v tests.python.test_admission_router.SaveKnowledgeEntryWithDedupTests.test_dry_run_true_performs_zero_writes tests.python.test_admission_router.CheckedInPolicyDefaultsTests tests.python.test_memory_policy_admission_dedup
+    distillation/venv/bin/python -m unittest -v tests.python.test_admission_router.SaveKnowledgeEntryWithDedupTests.test_dry_run_true_saves_entry_like_disabled_mode tests.python.test_admission_router.SaveKnowledgeEntryWithDedupTests.test_dry_run_true_performs_zero_dedup_writes tests.python.test_admission_router.DecisionLogTests tests.python.test_admission_router.CheckedInPolicyDefaultsTests tests.python.test_memory_policy_admission_dedup
   requires_permission: false
 - id: G4
   intent: INV6 scope discipline and the existing python suite stays fully green (no
@@ -208,10 +216,49 @@ ledger:
     duplicates into production purely to generate log lines.
 
     NOTE: nightly ingestion runs on a self-hosted runner that checks out
-    from GitHub, so the shadow flag reaches the scheduled pipeline only
-    once this commit is pushed — push requires Arjun''s go-ahead per repo
-    convention. The 7-day candidate-count trend in the scale bar starts
-    from that push, not from this local run.'
+    from GitHub, so the flag reaches the scheduled pipeline only once this
+    commit is pushed — push requires Arjun''s go-ahead per repo convention.
+    The 7-day candidate-count trend in the scale bar starts from that push,
+    not from this local run.'
+  - 'RESOLVED (live cutover + pollution cleanup) 2026-07-12/13 with Arjun''s
+    explicit sign-off on both decisions. THE SHADOW RUN ITSELF POLLUTED
+    PRODUCTION, and that is the central lesson of this contract. Shadow mode
+    is DEFINED as "behave exactly like today, but log what dedup would have
+    done" — so it faithfully reproduced today''s create-everything behavior.
+    Ingesting ASADO+Triptych (both already ingested before, so "recently
+    pushed" forced a full baseline RE-extraction) produced 316 entries of
+    which 263 were near-duplicates of entries that already existed (median
+    cosine 0.951, 132 at >=0.95). The retrieval-regression gate from stage 0
+    caught the damage independently: paraphrase_consistency fell 0.667 ->
+    0.333, stable across two clean runs, root-caused to a new near-dup
+    Bloomberg entry (ke_21d2aae376bc, cos 0.949) displacing the entry that
+    two paraphrased query variants previously shared in top-k.
+
+    CLEANUP: scripts/archive_shadow_run_neardups.py archived 185 of the 263.
+    Critically NOT all of them. The 0.85 append_threshold governs APPEND,
+    which CONSERVES the candidate''s evidence into the neighbour; ARCHIVING
+    does not conserve, it hides. So 0.85 is the right line for merging and
+    the WRONG line for archiving. Inspecting the band showed 0.85-0.93
+    contains genuinely distinct facts (one ASADO entry''s nearest neighbour
+    was a Triptych entry — different projects). Arjun set the archive line at
+    >=0.93; the 78 entries below it stay ACTIVE for the nightly semantic
+    consolidation, whose merge-conservation gates preserve evidence instead
+    of hiding it. Every archive is reversible via POST /ops/dream/restore.
+    An anchor-chain check refused to archive anything whose neighbour chain
+    did not terminate at a surviving active entry (it caught one real case).
+    Verified after: paraphrase recovered to 0.667 and the regression gate
+    PASSES against the committed baseline with zero probe flips.
+
+    LIVE CUTOVER: admission_dedup.dry_run=false. The shadow evidence was
+    decisive — 263/316 (83%) of extracted entries were near-dups, so shadow
+    mode was watching the leak while the leak kept running. Only live mode
+    prevents the near-dup entry from being created at all. Note the append
+    path is safe at 0.85 precisely BECAUSE it conserves: the candidate''s
+    evidence is appended to the neighbour as a key_insight (INV1), not
+    discarded — which is exactly why the same threshold that is right for
+    append was wrong for archive. Both checked-in-policy guard tests fired on
+    the flip (working as designed, forcing a conscious decision) and were
+    deliberately updated to pin the signed-off live config. 374/374 green.'
   lessons:
   - 'Adversarial review caught a real correctness bug: query_top_neighbor had
     no self-exclusion, so a candidate already present in the vector index
