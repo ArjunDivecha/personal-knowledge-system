@@ -66,7 +66,7 @@ When changing code, start in the subsystem that owns the behavior:
 - **Dream mutation logic:** `cloudflare-mcp/mcp-server/src/dream.ts`, `judgeQueue.ts`, `phase9OutcomeGate.ts`
 - **Nightly scheduling and run control:** `orchestrator/engine.py`, `orchestrator/stages.py`, `orchestrator/dream.py`
 - **Launchd behavior:** `scripts/run_orchestrator_launchd.sh`, `scripts/install_orchestrator_launchd_shadow.sh`
-- **Validation and regression checks:** `tests/python/`, `cloudflare-mcp/mcp-server/test/`, `orchestrator/tests/`
+- **Validation and regression checks:** `tests/python/`, `tests/probes/`, `cloudflare-mcp/mcp-server/test/`, `orchestrator/tests/`, `scripts/run_eval.py`
 
 ## Important cautions
 

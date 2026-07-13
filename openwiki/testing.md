@@ -54,6 +54,19 @@ If you change the live MCP server or Dream logic, this suite is the first regres
 
 These tests are especially important if you touch date handling, resume semantics, or the launchd sidecar path.
 
+### Retrieval-quality eval suite
+
+`tests/probes/` contains an 8-axis probe suite (recall, project, explicit-save, exact-lexical, stale-fact, supersession, negative, paraphrase) and `scripts/run_eval.py` is the read-only runner that issues each probe's query against the MCP `search` tool and scores the results.
+
+Key behavior from the code and `tests/probes/README.md`:
+
+- scoring is deterministic string/id matching — no LLM judge needed in retrieval mode
+- axes with zero enabled probes are reported as UNMEASURED, never silently omitted
+- `--compare OLD.json NEW.json` diffs two prior reports with no network — this is the shadow A/B safety rail for retrieval changes
+- reports land in `scripts/reports/eval_baseline_<UTC>.json`
+
+The README mandates: no ranking, forgetting, or admission change ships without a before/after eval diff. If you change retrieval policy, salience weighting, or Dream consolidation behavior, run the eval before and after.
+
 ## What the matrix cares about
 
 `docs/testing-matrix.md` makes an important distinction:
@@ -70,7 +83,7 @@ That distinction matters because many failures in this repo are environment or s
 When changing code, check the relevant test family first:
 
 - **Ingestion env/config changes:** Python tests around the affected source and config validation
-- **Retrieval/scoring changes:** Worker tests for salience, retrieval policy, and phase 8 retrieval
+- **Retrieval/scoring changes:** Worker tests for salience, retrieval policy, and phase 8 retrieval; then run `scripts/run_eval.py` before and after to produce an eval diff
 - **Dream mutation changes:** Worker Dream tests, judge queue tests, phase 9 outcome gate tests
 - **Orchestrator changes:** `orchestrator/tests/`
 - **Launchd or schedule changes:** orchestrator supervise-window tests and shell wrapper behavior
@@ -80,6 +93,9 @@ When changing code, check the relevant test family first:
 - `docs/testing-matrix.md`
 - `tests/python/README.md`
 - `tests/python/`
+- `tests/probes/README.md`
+- `tests/probes/`
+- `scripts/run_eval.py`
 - `cloudflare-mcp/mcp-server/test/README.md`
 - `cloudflare-mcp/mcp-server/test/`
 - `orchestrator/tests/`

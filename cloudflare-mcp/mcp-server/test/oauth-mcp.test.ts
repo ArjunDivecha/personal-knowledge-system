@@ -6,6 +6,10 @@ import fxSimple from "./fixtures/fxtwitter-simple.json";
 const redisMock = vi.hoisted(() => ({
 	get: vi.fn(),
 	set: vi.fn(),
+	// setnx: createEntry -> generateEntryId claims ids atomically via SET NX.
+	// The mock must implement it faithfully (set-if-absent, returns 1/0) or
+	// createEntry throws "redis.setnx is not a function" and returns an error
+	// envelope. Declared exactly once — a duplicate key here is a merge artifact.
 	setnx: vi.fn(),
 	rename: vi.fn(),
 	del: vi.fn(),
@@ -471,6 +475,13 @@ beforeEach(() => {
 	redisMock.scard.mockResolvedValue(0);
 	redisMock.llen.mockResolvedValue(0);
 	redisMock.incr.mockResolvedValue(1);
+	redisMock.setnx.mockImplementation(async (key: string, value: unknown) => {
+		if (key in redisStore) {
+			return 0;
+		}
+		redisStore[key] = value;
+		return 1;
+	});
 	vectorMock.update.mockResolvedValue(undefined);
 	vectorMock.upsert.mockResolvedValue(undefined);
 	vectorMock.delete.mockResolvedValue(undefined);
@@ -1201,6 +1212,8 @@ describe("OAuth and MCP integration", () => {
 			expect(payload.created).toBe(true);
 			expect(payload.type).toBe("knowledge");
 			// 4.1 — entry ids are 16 hex chars (64 bits), allocated atomically via SET NX.
+			// (Widened from 12 to avoid birthday collisions across the four ingestion
+			// generators; the mock must therefore implement setnx faithfully.)
 			expect(String(payload.id)).toMatch(/^ke_[a-f0-9]{16}$/);
 			expect(payload.revision).toBe(1);
 			expect((((payload.entry as Record<string, unknown>).metadata as Record<string, unknown>).revision)).toBe(1);

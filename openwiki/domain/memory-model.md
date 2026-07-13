@@ -59,6 +59,20 @@ Across the README, PRDs, and Worker code, Dream now serves several business func
 
 This makes Dream the main governance layer for what becomes durable, what gets demoted, and what gets removed from active visibility.
 
+## Entry identity and revision semantics
+
+Two production behaviors in `cloudflare-mcp/mcp-server/src/dream.ts` are important for anyone touching entry creation or Dream apply/rollback logic.
+
+### Atomic entry ID allocation
+
+`generateEntryId` claims IDs atomically using `redis.setnx` with a sentinel placeholder, then the caller overwrites with the real entry. This closes a TOCTOU window that existed across the four ingestion generators. Entry IDs use 16 hex characters (64 bits), widened from an earlier 12-char (48-bit) scheme to avoid birthday collisions. Knowledge entries are prefixed `ke_` and pattern entries `pe_`.
+
+### Revision is a monotonic concurrency counter
+
+Every Dream apply — including `markEntryContested` — bumps the entry's `revision` field before persisting. Rollback is itself a forward write: it restores content and state from the before-snapshot but never rewinds revision. This means the post-rollback revision is always higher than the pre-apply revision (typically +2 for a single apply+rollback pair). This design ensures conflict detection and rollback validation always see the intervening write.
+
+Tests that assert specific revision values after an apply-then-rollback sequence must account for this monotonic behavior.
+
 ## Insight synthesis
 
 Recent history added `insight_synthesis` as a new judge operation type.
