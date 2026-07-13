@@ -635,22 +635,42 @@ class SaveKnowledgeEntryWithDedupTests(unittest.TestCase):
 
 
 class CheckedInPolicyDefaultsTests(unittest.TestCase):
-    """The real, on-disk shared/memory_policy.json must be safe: live mode
-    (enabled=true AND dry_run=false) may never be checked in without an
-    explicit, human-approved commit that also updates this test. Both
-    enabled=false (pre-shadow) and enabled=true + dry_run=true (shadow
-    phase) are legitimate checked-in states."""
+    """Pins the checked-in admission_dedup policy to its DELIBERATE state, so
+    any future change to it has to be a conscious edit to this test rather
+    than a silent config drift.
 
-    def test_real_policy_file_is_never_in_live_mode(self):
+    History of this guard:
+      * It originally asserted dry_run is True — i.e. "live mode may never be
+        checked in without explicit human sign-off". That guard did its job:
+        it failed when live mode was first flipped, forcing this conversation.
+      * 2026-07-12: Arjun explicitly signed off on LIVE mode ("go straight to
+        live mode") after the shadow run proved the case — 263 of 316 entries
+        extracted from two already-ingested repos were near-duplicates of
+        existing entries (median cosine 0.951). Shadow mode observes the
+        problem but does not prevent it, so it was polluting the corpus on
+        every ingestion while merely logging what it would have merged.
+    """
+
+    def test_real_policy_file_matches_the_signed_off_live_configuration(self):
         with POLICY_PATH.open() as handle:
             full_policy = json.load(handle)
         block = full_policy["admission_dedup"]
         self.assertIs(
-            block["dry_run"], True,
-            "live mode must never be enabled by a checked-in default; "
-            "flipping dry_run to false requires explicit human sign-off "
-            "and a deliberate update to this test",
+            block["enabled"], True,
+            "admission_dedup was signed off as ENABLED on 2026-07-12; "
+            "disabling it re-opens the near-duplicate ingestion leak",
         )
+        self.assertIs(
+            block["dry_run"], False,
+            "LIVE mode (dry_run=false) was explicitly signed off by Arjun on "
+            "2026-07-12. Changing this — in either direction — requires a "
+            "deliberate decision and a deliberate edit to this test.",
+        )
+        # Thresholds are load-bearing: append absorbs a candidate into its
+        # neighbour, so raising append_threshold makes dedup less aggressive
+        # and lowering it risks absorbing genuinely distinct facts.
+        self.assertEqual(block["append_threshold"], 0.85)
+        self.assertEqual(block["link_threshold"], 0.70)
 
 
 if __name__ == "__main__":

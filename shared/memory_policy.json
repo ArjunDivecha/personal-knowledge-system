@@ -104,8 +104,8 @@
     "_semantic_consolidation_note": "PKS-SEMANTIC-CONSOLIDATION-001 INV6: scheduled_duplicate_merge_limit is coupled to merge_hard_gates_active by the running code (resolveScheduledDuplicateMergeLimit, index.ts), not merely by convention -- if merge_hard_gates_active is not literally true, the cap is clamped to 10 regardless of this value. merge_hard_gates_active=true is accurate as of this change: mergeGates.ts's collapseNearDuplicateInsights/validateMergeConservation are unconditionally wired into applyDuplicateMergePlan (INV3/INV5 hard gates), so raising the cap 10->50 here happens in the SAME change that activates those gates, per the contract. LIVE BEHAVIOR CHANGE: up to 5x more automated duplicate_merge operations may be auto-applied per scheduled night once this deploys -- flagged for explicit human sign-off before deploy."
   },
   "admission_dedup": {
-    "enabled": false,
-    "dry_run": true,
+    "enabled": true,
+    "dry_run": false,
     "append_threshold": 0.85,
     "link_threshold": 0.70
   },
