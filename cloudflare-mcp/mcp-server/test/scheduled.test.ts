@@ -4,7 +4,7 @@ import {
 	waitOnExecutionContext,
 } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const dreamMock = vi.hoisted(() => ({
 	applyDreamProposal: vi.fn(),
@@ -56,6 +56,18 @@ const tripwireMock = vi.hoisted(() => ({
 vi.mock("../src/tripwires", () => tripwireMock);
 
 import worker from "../src/index";
+import { MEMORY_POLICY } from "../src/salience";
+
+// These tests exercise the bounded semantic slice MECHANISM, so they must set
+// the slice size themselves rather than inherit the production default.
+// dedup.SEMANTIC_SLICE_SIZE ships as 0 (DISABLED) because the pass loads the
+// whole corpus just to pick its slice ids, which blew Cloudflare's
+// ~1000-subrequest-per-invocation cap and killed the nightly Dream for four
+// days (2026-07-11..14). A test of the mechanism must not silently depend on
+// that production kill-switch — and if the switch is ever flipped back on, this
+// override keeps these tests testing the same thing.
+const DEDUP_POLICY = (MEMORY_POLICY as Record<string, unknown>).dedup as Record<string, unknown>;
+const ORIGINAL_SLICE_SIZE = DEDUP_POLICY.SEMANTIC_SLICE_SIZE;
 
 function getTestEnv(): Env {
 	return {
@@ -72,6 +84,7 @@ function getTestEnv(): Env {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	DEDUP_POLICY.SEMANTIC_SLICE_SIZE = 200; // exercise the slice regardless of the shipped default
 	redisMock.del.mockResolvedValue(1);
 	redisMock.get.mockResolvedValue(null);
 	redisMock.set.mockResolvedValue("OK");
@@ -528,4 +541,8 @@ describe("Scheduled Dream runner", () => {
 		expect(dreamMock.runDreamProposal).toHaveBeenCalledTimes(1);
 		expect(dreamMock.gradeDreamProposal).toHaveBeenCalledTimes(1);
 	});
+});
+
+afterAll(() => {
+	DEDUP_POLICY.SEMANTIC_SLICE_SIZE = ORIGINAL_SLICE_SIZE;
 });
