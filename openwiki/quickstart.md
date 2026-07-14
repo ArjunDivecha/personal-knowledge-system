@@ -85,3 +85,7 @@ Use the page that matches the subsystem:
 - Tests and checks: [Testing guidance](testing.md)
 
 If you are unsure, read the architecture overview first, then jump to the subsystem page that owns the code you plan to touch.
+
+## Backlog
+
+- **Semantic consolidation modules** — `cloudflare-mcp/mcp-server/src/mergeGates.ts` (hard merge conservation gates: evidence conservation, metadata monotonicity, near-duplicate insight collapse) and `cloudflare-mcp/mcp-server/src/semanticCursor.ts` (rolling cursor for bounded semantic dedup slices) are not yet documented in [MCP and Dream control plane](architecture/mcp-and-dream.md). The nightly semantic slice is currently SHIPPED BUT DISABLED per the HEAD commit; the contract lives in `contracts/semantic-consolidation.spec.md`. Deferred because these modules are in HEAD, not in the working-tree diff for this update run.
