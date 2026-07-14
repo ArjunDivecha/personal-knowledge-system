@@ -284,7 +284,7 @@ scale: Graduated, then G9 passes; the 1,160-cluster baseline drains in verified 
   stale journals/outbox items beyond SLO, zero DLQ backlog, and no monolithic cron
   execution.
 ledger:
-  turns: 36
+  turns: 39
   consecutive_failures: 0
   blockers: []
   lessons:
@@ -330,6 +330,13 @@ ledger:
   - 'The initial recurring production budget is five successful merges in one verified
     cohort with four audit query workers. Scale only from observed clean nightly records;
     do not start at the larger manual ceiling.'
+  - 'G9 one-merge production canary passed in GitHub run 29370313379 and durable run
+    nsm-20260714T214000Z-1320d5c1: seven candidates were held as incomplete, one
+    applied, strict consistency stayed at zero issues, and the uncapped backlog fell
+    from 1322 clusters/5192 entries to 1321/5190.'
+  - Persist the verified cohort record before starting the slower read-only post-audit;
+    otherwise a healthy run looks stuck in applying during that scan and an interrupted
+    runner loses useful barrier telemetry.
 ---
 
 ## Context

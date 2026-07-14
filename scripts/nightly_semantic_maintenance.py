@@ -481,6 +481,12 @@ def run_night(
         if clusters and applied == 0:
             raise RuntimeError("semantic_maintenance_stalled:no_candidate_applied")
 
+        # Persist the verified mutation state before the slower uncapped post-audit.
+        # If the runner is interrupted during that read-only scan, operators can see
+        # that the cohort barrier passed and exactly which effects were verified.
+        report["status"] = "verified"
+        store.save(report)
+
         post_audit, post_audit_path = audit_runner(
             max_queries=options.max_queries,
             workers=options.audit_workers,

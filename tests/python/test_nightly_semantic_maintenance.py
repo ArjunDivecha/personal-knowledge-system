@@ -186,6 +186,7 @@ class NightlySemanticMaintenanceTests(unittest.TestCase):
         self.assertEqual(report["applied_count"], 2)
         self.assertEqual(len(report["barriers"]), 2)
         self.assertGreaterEqual(len(verifier_calls), 3)  # preflight plus one per cohort
+        self.assertTrue(any(saved.get("status") == "verified" for saved in store.saved))
         self.assertFalse(store.locked)
 
     def test_failure_rolls_back_current_unverified_cohort(self) -> None:
