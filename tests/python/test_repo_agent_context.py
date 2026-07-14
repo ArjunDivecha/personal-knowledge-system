@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -129,6 +130,54 @@ class RepoAgentContextExporterTests(unittest.TestCase):
             transcript.write_text("\n".join(json.dumps(event) for event in events) + "\n")
 
             self.assertTrue(exporter.cursor_jsonl_mentions_repo(transcript, repo_root))
+
+    @staticmethod
+    def _make_git_repo(repo_root: Path) -> None:
+        repo_root.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=repo_root, check=True)
+
+    def test_stage_artifact_skips_gitignored_output_without_error(self) -> None:
+        # Regression: a repo that gitignores .pks/ made the hook's `git add`
+        # exit 1 and crash the whole export mid-commit.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir) / "repo"
+            self._make_git_repo(repo_root)
+            (repo_root / ".gitignore").write_text(".pks/\n")
+            output_path = repo_root / ".pks" / "agent-context" / "claude-code-test.md"
+            output_path.parent.mkdir(parents=True)
+            output_path.write_text("# context\n")
+
+            staged = exporter.stage_artifact(repo_root, output_path)
+
+            self.assertFalse(staged)
+            porcelain = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+            self.assertNotIn(".pks", porcelain.replace("?? .gitignore", ""))
+
+    def test_stage_artifact_stages_non_ignored_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir) / "repo"
+            self._make_git_repo(repo_root)
+            output_path = repo_root / ".pks" / "agent-context" / "claude-code-test.md"
+            output_path.parent.mkdir(parents=True)
+            output_path.write_text("# context\n")
+
+            staged = exporter.stage_artifact(repo_root, output_path)
+
+            self.assertTrue(staged)
+            staged_files = subprocess.run(
+                ["git", "diff", "--cached", "--name-only"],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+            self.assertIn(".pks/agent-context/claude-code-test.md", staged_files)
 
 
 class RepoAgentContextThinIndexTests(unittest.TestCase):

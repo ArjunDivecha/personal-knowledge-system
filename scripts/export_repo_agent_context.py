@@ -587,11 +587,41 @@ def export_surface(repo_root: Path, output_dir: Path, surface: str, stage: bool)
     if changed:
         print(f"[agent-context] Wrote {output_path}")
         if stage:
-            subprocess.run(["git", "-C", str(repo_root), "add", str(output_path)], check=True)
-            print(f"[agent-context] Staged {output_path.relative_to(repo_root)}")
+            stage_artifact(repo_root, output_path)
     else:
         print(f"[agent-context] No changes for {output_path.relative_to(repo_root)}")
     return changed
+
+
+def stage_artifact(repo_root: Path, output_path: Path) -> bool:
+    """Stage an exported artifact, respecting the repo's .gitignore.
+
+    A repo that ignores .pks/ has opted out of committing context artifacts,
+    so the file is written but not forced into the index (a plain `git add`
+    on an ignored path exits 1, which used to crash the pre-commit hook).
+    Returns True only when the artifact was actually staged.
+    """
+    ignored = (
+        subprocess.run(
+            ["git", "-C", str(repo_root), "check-ignore", "-q", str(output_path)],
+        ).returncode
+        == 0
+    )
+    if ignored:
+        print(
+            f"[agent-context] {output_path.relative_to(repo_root)} is gitignored "
+            "in this repo; wrote it without staging."
+        )
+        return False
+    add = subprocess.run(["git", "-C", str(repo_root), "add", str(output_path)])
+    if add.returncode == 0:
+        print(f"[agent-context] Staged {output_path.relative_to(repo_root)}")
+        return True
+    print(
+        f"[agent-context] git add exited {add.returncode} for "
+        f"{output_path.relative_to(repo_root)}; continuing without staging."
+    )
+    return False
 
 
 def has_github_origin(repo_root: Path) -> bool:
