@@ -1430,6 +1430,30 @@ export async function runBoundedSemanticSlicePass(
 	noteSuffix: string,
 ): Promise<SemanticSlicePassResult> {
 	try {
+		// KILL-SWITCH, and it must come BEFORE any loading (2026-07-14).
+		//
+		// This pass loads the ENTIRE corpus (loadEntriesByType x2, below) purely to
+		// sort it and pick a handful of cursor-slice ids — a third full-corpus load
+		// on top of the retier cycle's and the main proposal's. With ~19.7k Redis
+		// keys that is a large slab of Cloudflare's ~1000-subrequest-per-invocation
+		// budget, and it is what kept the nightly Dream dying with "Too many
+		// subrequests" even after the per-entry vector fetches were batched.
+		//
+		// Setting dedup.SEMANTIC_SLICE_SIZE to 0 returns here immediately, WITHOUT
+		// loading anything, restoring the nightly to exactly its proven pre-2026-07-11
+		// (lexical-only) behaviour. Checking the size after the load would be
+		// useless — the load is the cost.
+		const dedupPolicy = (MEMORY_POLICY as Record<string, unknown>).dedup as Record<string, unknown> | undefined;
+		const sliceSize = typeof dedupPolicy?.SEMANTIC_SLICE_SIZE === "number"
+			? dedupPolicy.SEMANTIC_SLICE_SIZE
+			: 50;
+		if (sliceSize <= 0) {
+			return {
+				mergedProposal: baseProposal,
+				summary: { attempted: false, skipped_reason: "semantic_slice_disabled:SEMANTIC_SLICE_SIZE=0" },
+			};
+		}
+
 		const cursor = await loadSemanticCursor(redis);
 		const [knowledgeEntries, projectEntries] = await Promise.all([
 			loadEntriesByType(redis, "knowledge"),
@@ -1445,17 +1469,8 @@ export async function runBoundedSemanticSlicePass(
 				? a.injectionTier - b.injectionTier
 				: a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
 		);
-		// SUBREQUEST BUDGET (2026-07-14): the slice size directly sets how many
-		// vector query subrequests the nightly spends (~1 per sliced entry, now
-		// that the fetch half is batched). Cloudflare caps a Worker invocation at
-		// ~1000 subrequests, and the cap is GLOBAL — once exhausted, the grade,
-		// apply and index-rebuild that follow all fail too. A hardcoded 200 cost
-		// ~400 subrequests and killed the nightly Dream for four days. Read it
-		// from policy so it can be retuned without a deploy.
-		const dedupPolicy = (MEMORY_POLICY as Record<string, unknown>).dedup as Record<string, unknown> | undefined;
-		const sliceSize = typeof dedupPolicy?.SEMANTIC_SLICE_SIZE === "number"
-			? dedupPolicy.SEMANTIC_SLICE_SIZE
-			: 50;
+		// sliceSize is read (and zero-checked) at the top of this function — the
+		// check has to precede the corpus load, because the load IS the cost.
 		const slice = selectCursorSlice(sortedEntries, cursor.position, sliceSize);
 		if (slice.length === 0) {
 			return { mergedProposal: baseProposal, summary: { attempted: true, slice_size: 0 } };
