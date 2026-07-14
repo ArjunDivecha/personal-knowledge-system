@@ -34,14 +34,22 @@ def gate(gate_id: str) -> int:
         run(["python3", "scripts/maintenance_cost_harness.py"])
     elif gate_id == "G5":
         run(["python3", "tests/python/test_semantic_candidate_planner.py"])
+        run(["python3", "tests/python/test_nightly_semantic_maintenance.py"])
     elif gate_id == "G6":
         source = (WORKER / "src" / "index.ts").read_text()
         if 'env.DREAM_QUEUE_MODE === "live"' not in source or "runScheduledGovernedDream" not in source:
             raise SystemExit("G6 trigger-only guard missing")
+        workflow = (ROOT / ".github" / "workflows" / "nightly-semantic-maintenance.yml").read_text()
+        sleep_report = (ROOT / ".github" / "workflows" / "nightly-sleep-report.yml").read_text()
+        if "nightly_semantic_maintenance.py" not in workflow or "--live" not in workflow:
+            raise SystemExit("G6 automatic semantic-maintenance workflow missing")
+        if "ensure_overnight_dream_run.py" in sleep_report:
+            raise SystemExit("G6 legacy scheduled-governed repair remains reachable from nightly workflow")
         run(["npm", "run", "type-check"], WORKER)
     elif gate_id == "G7":
         run(["npm", "run", "type-check"], WORKER)
         run(["python3", "tests/python/test_semantic_candidate_planner.py"])
+        run(["python3", "tests/python/test_nightly_semantic_maintenance.py"])
         run(["git", "diff", "--check"])
         config = json.loads((WORKER / "wrangler.json").read_text())
         if not config.get("queues", {}).get("consumers"):

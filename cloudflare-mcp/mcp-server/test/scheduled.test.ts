@@ -79,6 +79,10 @@ function getTestEnv(): Env {
 		OPENAI_API_KEY: "test-openai-key",
 		GITHUB_TOKEN: "test-github-token",
 		DREAM_OPERATOR_TOKEN: "test-dream-operator-token",
+		// Keep this mechanism-focused suite on the governed mock path. The
+		// production wrangler vars intentionally ship live queue mode; the
+		// dedicated cutover tests cover that branch explicitly.
+		DREAM_QUEUE_MODE: "off",
 	};
 }
 

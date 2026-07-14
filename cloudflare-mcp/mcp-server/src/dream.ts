@@ -2821,6 +2821,7 @@ async function patchThinIndexEntry(
 	redis: Redis,
 	entry: LoadedEntry,
 	generatedAt: string,
+	adjustCounts = false,
 ): Promise<void> {
 	const rawIndex = parseStoredObject(await redis.get("index:current"));
 	if (!rawIndex) {
@@ -2834,6 +2835,7 @@ async function patchThinIndexEntry(
 					Boolean(topic) && typeof topic === "object" && !Array.isArray(topic),
 			)
 			: [];
+		const previousTopic = existingTopics.find((topic) => topic.id === entry.id);
 		const thinEntry = buildThinIndexTopicEntry(entry, generatedAt);
 		let found = false;
 		const nextTopics = existingTopics
@@ -2859,10 +2861,9 @@ async function patchThinIndexEntry(
 			);
 		});
 		rawIndex.topics = nextTopics.slice(0, THIN_INDEX_TOPIC_LIMIT);
-	if (entry.metadata.archived === true) {
-		rawIndex.topic_count = nextTopics.filter((topic) => topic.archived !== true).length;
-		rawIndex.total_topic_count = rawIndex.topic_count;
-	}
+		const priorTotalTopics = Number(rawIndex.total_topic_count ?? rawIndex.topic_count ?? 0);
+		if (adjustCounts && entry.metadata.archived === true && previousTopic?.archived !== true) rawIndex.total_topic_count = Math.max(0, priorTotalTopics - 1);
+		if (adjustCounts && entry.metadata.archived !== true && (previousTopic?.archived === true || !previousTopic)) rawIndex.total_topic_count = priorTotalTopics + 1;
 	} else {
 		const existingProjects = Array.isArray(rawIndex.projects)
 			? rawIndex.projects.filter(
@@ -2870,6 +2871,7 @@ async function patchThinIndexEntry(
 					Boolean(project) && typeof project === "object" && !Array.isArray(project),
 			)
 			: [];
+		const previousProject = existingProjects.find((project) => project.id === entry.id);
 		const thinEntry = buildThinIndexProjectEntry(entry, generatedAt);
 		let found = false;
 		const nextProjects = existingProjects
@@ -2895,10 +2897,9 @@ async function patchThinIndexEntry(
 			);
 		});
 		rawIndex.projects = nextProjects.slice(0, THIN_INDEX_PROJECT_LIMIT);
-	if (entry.metadata.archived === true) {
-		rawIndex.project_count = nextProjects.filter((project) => project.archived !== true).length;
-		rawIndex.total_project_count = rawIndex.project_count;
-	}
+		const priorTotalProjects = Number(rawIndex.total_project_count ?? rawIndex.project_count ?? 0);
+		if (adjustCounts && entry.metadata.archived === true && previousProject?.archived !== true) rawIndex.total_project_count = Math.max(0, priorTotalProjects - 1);
+		if (adjustCounts && entry.metadata.archived !== true && (previousProject?.archived === true || !previousProject)) rawIndex.total_project_count = priorTotalProjects + 1;
 	}
 
 	rawIndex.generated_at = generatedAt;
@@ -3845,7 +3846,7 @@ export async function rollbackSemanticCandidateTask(env: Env, taskId: string): P
 		const loaded = buildLoadedEntry(snapshot.entry.id, entryType, restoredEntry);
 		const embedding = await getEmbedding(env, buildEntryEmbeddingText(loaded));
 		await persistEntry(redis, vector, loaded, { embedding });
-		await patchThinIndexEntry(redis, loaded, new Date().toISOString());
+		await patchThinIndexEntry(redis, loaded, new Date().toISOString(), true);
 		restoredIds.push(loaded.id);
 	}
 	const rolledBack = { status: "rolled_back", task_id: taskId, restored_ids: restoredIds, journal_key: journalKey };
@@ -5143,7 +5144,7 @@ async function applyDuplicateMergePlan(
 				`merged duplicate into ${canonical.id}`,
 			),
 		);
-		await patchThinIndexEntry(redis, duplicate, timestamp);
+		await patchThinIndexEntry(redis, duplicate, timestamp, true);
 		await redis.del(getEntryAccessKey(duplicate.id), getEntryLastAccessedKey(duplicate.id));
 	}
 	const preparedJournal = parseStoredObject(await redis.get(journalKey));

@@ -1,8 +1,9 @@
-name: Nightly Dream Sleep Report
+name: Nightly Semantic Maintenance Report
 
 on:
   schedule:
-    # Dream runs at 07:10 UTC; report after the governed apply window.
+    # Automatic semantic maintenance starts at 07:20 UTC; verify its durable
+    # completion record after the bounded cohort window.
     - cron: "45 8 * * *"
   workflow_dispatch:
 
@@ -10,16 +11,15 @@ permissions:
   contents: read
 
 concurrency:
-  group: nightly-dream-sleep-report
+  group: nightly-semantic-maintenance-report
   cancel-in-progress: false
 
 jobs:
-  nightly-dream-sleep-report:
+  nightly-semantic-maintenance-report:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     env:
-      DREAM_OPERATOR_TOKEN: ${{ secrets.DREAM_OPERATOR_TOKEN }}
       UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
       UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
       PYTHONUNBUFFERED: "1"
@@ -40,22 +40,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r distillation/requirements.txt
 
-      - name: Ensure scheduled Dream run
+      - name: Verify latest automatic semantic-maintenance run
         run: |
-          python scripts/ensure_overnight_dream_run.py
-
-      - name: Generate sleep report
-        if: always()
-        run: |
-          python scripts/check_overnight_dream_run.py --allow-on-demand
+          python scripts/nightly_semantic_maintenance.py --check-latest --max-age-hours 4
 
       - name: Upload sleep report artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: nightly-dream-sleep-report
+          name: nightly-semantic-maintenance-report
           path: |
-            scripts/reports/ensure_overnight_dream_run_*.json
-            scripts/reports/check_overnight_dream_run_*.json
-            scripts/reports/dream-sleep-*.md
+            scripts/reports/nightly_semantic_maintenance_*.json
           if-no-files-found: warn

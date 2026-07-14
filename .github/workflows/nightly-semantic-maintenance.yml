@@ -1,0 +1,94 @@
+name: Nightly Semantic Maintenance
+
+on:
+  schedule:
+    # The Cloudflare cron at 07:10 UTC is trigger-only. The external planner
+    # starts afterward and feeds bounded candidate clusters to the Worker queue.
+    - cron: "20 7 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Plan only or apply bounded live cohorts"
+        required: true
+        default: plan
+        type: choice
+        options:
+          - plan
+          - live
+      max_applied:
+        description: "Maximum successful semantic merges for this run"
+        required: true
+        default: "5"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-semantic-maintenance
+  cancel-in-progress: false
+
+jobs:
+  semantic-maintenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    env:
+      DREAM_OPERATOR_TOKEN: ${{ secrets.DREAM_OPERATOR_TOKEN }}
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+      UPSTASH_VECTOR_REST_URL: ${{ secrets.UPSTASH_VECTOR_REST_URL }}
+      UPSTASH_VECTOR_REST_TOKEN: ${{ secrets.UPSTASH_VECTOR_REST_TOKEN }}
+      DREAM_WORKER_BASE_URL: https://mcp.dancing-ganesh.com
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: distillation/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r distillation/requirements.txt
+
+      - name: Guard the retired Worker semantic slice
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          policy = json.loads(Path("shared/memory_policy.json").read_text())
+          assert policy["dedup"]["SEMANTIC_SLICE_SIZE"] == 0
+          print("Legacy Worker semantic slice remains disabled")
+          PY
+
+      - name: Run automatic semantic maintenance
+        env:
+          REQUESTED_MODE: ${{ github.event_name == 'schedule' && 'live' || inputs.mode }}
+          REQUESTED_MAX_APPLIED: ${{ github.event_name == 'schedule' && '5' || inputs.max_applied }}
+        run: |
+          args=(--max-applied "$REQUESTED_MAX_APPLIED" --max-candidates 100 --cohort-size 5 --max-queries 20000 --audit-workers 4)
+          if [ "$REQUESTED_MODE" = "live" ]; then
+            args+=(--live)
+          else
+            args+=(--plan-only)
+          fi
+          python scripts/nightly_semantic_maintenance.py "${args[@]}"
+
+      - name: Upload maintenance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-semantic-maintenance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            scripts/reports/nightly_semantic_maintenance_*.json
+            scripts/reports/audit_memory_quality_*.json
+            scripts/reports/verify_memory_consistency_*.json
+          if-no-files-found: error
+          retention-days: 30
