@@ -652,7 +652,7 @@ describe("Dream replay logic", () => {
 		const canonicalMetadata = canonical.metadata as Record<string, unknown>;
 		expect(canonicalMetadata.mention_count).toBe(3);
 		expect(canonicalMetadata.injection_tier).toBe(2);
-		expect(mockState.vectorUpdates).toEqual(
+		expect(mockState.vectorUpserts).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({
 					id: "ke_dup_primary",
@@ -670,11 +670,12 @@ describe("Dream replay logic", () => {
 	it("refuses mutating proposal apply until deterministic grade passes", async () => {
 		const proposal = await runDreamProposal(
 			{
-				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
-				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
-				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
-				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
-			} as Env,
+			UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+			UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+			UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+			UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			OPENAI_API_KEY: "test-openai-key",
+		} as Env,
 			{
 				trigger: "local_test",
 				actorId: "test-operator",
@@ -797,6 +798,7 @@ describe("Dream replay logic", () => {
 				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
 				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
 				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+				OPENAI_API_KEY: "test-openai-key",
 			} as Env,
 			{
 				proposalId: String(proposal.run_id),
@@ -876,6 +878,7 @@ describe("Dream replay logic", () => {
 				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
 				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
 				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+				OPENAI_API_KEY: "test-openai-key",
 			} as Env,
 			{
 				proposalId: String(proposal.run_id),

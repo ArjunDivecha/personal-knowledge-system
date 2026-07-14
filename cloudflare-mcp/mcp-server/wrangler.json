@@ -14,6 +14,14 @@
 	"limits": {
 		"cpu_ms": 30000
 	},
+	"queues": {
+		"producers": [
+			{ "binding": "DREAM_MAINTENANCE_QUEUE", "queue": "pks-dream-maintenance" }
+		],
+		"consumers": [
+			{ "queue": "pks-dream-maintenance", "max_batch_size": 1, "max_batch_timeout": 5, "max_retries": 5, "dead_letter_queue": "pks-dream-maintenance-dlq" }
+		]
+	},
 	"migrations": [
 		{
 			"new_sqlite_classes": [
@@ -50,6 +58,9 @@
 		"enabled": true
 	},
 	"workers_dev": true,
+	"vars": {
+		"DREAM_QUEUE_MODE": "live"
+	},
 	"routes": [
 		{
 			"pattern": "mcp.dancing-ganesh.com",
@@ -60,9 +71,20 @@
 		"staging": {
 			"name": "arjun-knowledge-mcp-staging",
 			"workers_dev": true,
+			"vars": {
+				"DREAM_QUEUE_MODE": "live"
+			},
 			"routes": [],
 			"triggers": {
 				"crons": []
+			},
+			"queues": {
+				"producers": [
+					{ "binding": "DREAM_MAINTENANCE_QUEUE", "queue": "pks-dream-maintenance-staging" }
+				],
+				"consumers": [
+					{ "queue": "pks-dream-maintenance-staging", "max_batch_size": 1, "max_batch_timeout": 5, "max_retries": 5, "dead_letter_queue": "pks-dream-maintenance-staging-dlq" }
+				]
 			},
 			"durable_objects": {
 				"bindings": [

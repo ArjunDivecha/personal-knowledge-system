@@ -32,6 +32,10 @@ declare global {
 		// unless this is exactly "1". Kept absent in production through Phase 2.
 		// See docs/pks-nightly-orchestrator-phase-2-dream-worker-prd-2026-06-16.md.
 		PKS_ORCH_DREAM_LIVE_ENABLED?: string;
+		// Durable semantic consolidation queue. Unset/off preserves the legacy
+		// trigger path; live mode is fail-closed and only enqueues bounded work.
+		DREAM_QUEUE_MODE?: "off" | "shadow" | "live";
+		DREAM_MAINTENANCE_QUEUE?: Queue<import("./maintenanceQueue").MaintenanceMessage>;
 		// Optional anomaly-tripwire knobs (have safe defaults).
 		DREAM_HARD_DELETE_DAILY_CAP?: string;
 		// Optional override for Opus judge model used by Mac-side script.

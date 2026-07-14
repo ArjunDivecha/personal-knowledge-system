@@ -30,8 +30,15 @@ import {
 	runDreamProposal,
 	runScheduledRetierCycle,
 	updateEntry,
+	processSemanticCandidateTask,
+	rollbackSemanticCandidateTask,
 	type LoadedEntry,
 } from "./dream";
+import {
+	maintenanceRetryDelaySeconds,
+	validateMaintenanceMessage,
+	type MaintenanceMessage,
+} from "./maintenanceQueue";
 import { isProtectedContextType } from "./mergeGates";
 import { advanceSemanticCursor, loadSemanticCursor, selectCursorSlice } from "./semanticCursor";
 import { formatConsolidationNote } from "./consolidation";
@@ -3334,6 +3341,53 @@ const defaultHandler = {
 			}
 		}
 
+		if (url.pathname === "/ops/maintenance/enqueue" && request.method === "POST") {
+			if (!isAuthorizedOperatorRequest(request, env)) return Response.json({ error: "Unauthorized" }, { status: 401 });
+			if (!env.DREAM_MAINTENANCE_QUEUE) return Response.json({ error: "maintenance_queue_unconfigured" }, { status: 503 });
+			try {
+				const body = await request.json();
+				const parsed = z.object({
+					task_id: z.string().min(1).max(160),
+					candidate_ids: z.array(z.string().min(1)).min(2).max(6),
+					plan_id: z.string().min(1).max(160).optional(),
+				}).parse(body);
+				const task: MaintenanceMessage = {
+					schema_version: 1,
+					task_id: parsed.task_id,
+					kind: "semantic_candidate",
+					candidate_ids: [...new Set(parsed.candidate_ids)],
+					plan_id: parsed.plan_id,
+					created_at: new Date().toISOString(),
+				};
+				const validated = validateMaintenanceMessage(task);
+				if (!validated.ok) return Response.json({ error: validated.reason }, { status: 400 });
+				await env.DREAM_MAINTENANCE_QUEUE.send(validated.value);
+				return Response.json({ accepted: true, task_id: task.task_id, mode: env.DREAM_QUEUE_MODE ?? "off" }, { status: 202 });
+			} catch (error) {
+				return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
+			}
+		}
+
+		if (url.pathname === "/ops/maintenance/task" && request.method === "GET") {
+			if (!isAuthorizedOperatorRequest(request, env)) return Response.json({ error: "Unauthorized" }, { status: 401 });
+			const taskId = url.searchParams.get("task_id");
+			if (!taskId) return Response.json({ error: "task_id_required" }, { status: 400 });
+			const redis = createRedisClient(env);
+			const status = await redis.get(`maintenance:task:${taskId}`);
+			return Response.json({ task_id: taskId, status: parseStoredObject(status) ?? status ?? null });
+		}
+
+		if (url.pathname === "/ops/maintenance/rollback" && request.method === "POST") {
+			if (!isAuthorizedOperatorRequest(request, env)) return Response.json({ error: "Unauthorized" }, { status: 401 });
+			try {
+				const body = await request.json();
+				const taskId = z.object({ task_id: z.string().min(1).max(160) }).parse(body).task_id;
+				return Response.json(await rollbackSemanticCandidateTask(env, taskId));
+			} catch (error) {
+				return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
+			}
+		}
+
 		if (url.pathname === "/ops/dream/run" && request.method === "POST") {
 			if (!isAuthorizedOperatorRequest(request, env)) {
 				return Response.json({ error: "Unauthorized" }, { status: 401 });
@@ -3891,7 +3945,36 @@ export default {
 		}
 		return withCors(request, response);
 	},
+	async queue(batch: MessageBatch<MaintenanceMessage>, env: Env): Promise<void> {
+		for (const message of batch.messages) {
+			const parsed = validateMaintenanceMessage(message.body);
+			if (!parsed.ok) {
+				console.error(`[maintenance] dropping invalid message: ${parsed.reason}`);
+				message.ack();
+				continue;
+			}
+			try {
+				if (parsed.value.kind === "semantic_candidate") {
+					await processSemanticCandidateTask(env, parsed.value);
+				} else {
+					// Non-semantic phases are intentionally visible and isolated until
+					// their bounded handlers are enabled; never fall back to the cron.
+					console.warn(`[maintenance] phase held until handler is enabled: ${parsed.value.kind}`);
+				}
+				message.ack();
+			} catch (error) {
+				console.error(`[maintenance] retrying ${parsed.value.task_id}`, error);
+				message.retry({ delaySeconds: maintenanceRetryDelaySeconds(message.attempts ?? 0) });
+			}
+		}
+	},
 	async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+		if (env.DREAM_QUEUE_MODE === "live") {
+			// Trigger-only cutover is fail-closed: the old corpus-scale Dream is
+			// never used as a fallback when queue maintenance is live.
+			console.log("[maintenance] queue live mode: cron trigger acknowledged; bounded planner/queue owns maintenance");
+			return;
+		}
 		// =========================================================================
 		// 1. Anomaly tripwires (monitoring only; no Dream off switch).
 		// =========================================================================

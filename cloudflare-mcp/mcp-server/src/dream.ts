@@ -11,6 +11,15 @@ import {
 import { computeSalienceV2 } from "./salience_v2";
 import { formatConsolidationNote } from "./consolidation";
 import { collapseNearDuplicateInsights, validateMergeConservation } from "./mergeGates";
+import { assertAutomaticMergeAllowed } from "./semanticMaintenance";
+import { EMBEDDING_DIMENSIONS, EMBEDDING_MODEL, sha256Hex } from "./embeddingFreshness";
+import {
+	maintenanceOutboxKey,
+	maintenanceTaskKey,
+	validateMaintenanceMessage,
+	type MaintenanceMessage,
+} from "./maintenanceQueue";
+import { buildMaintenanceJournal } from "./maintenanceJournal";
 import { recordDestructiveAction } from "./tripwires";
 import {
 	type JudgeQueueItem,
@@ -499,7 +508,7 @@ function appendConsolidationNote(metadata: Record<string, unknown>, note: string
 	metadata.consolidation_notes = notes.slice(-20);
 }
 
-function setVectorMetadataBase(entry: LoadedEntry): Record<string, unknown> {
+export function setVectorMetadataBase(entry: LoadedEntry): Record<string, unknown> {
 	const sourceConversations = toStringArray(entry.metadata.source_conversations);
 	const base = {
 		type: entry.type,
@@ -513,6 +522,10 @@ function setVectorMetadataBase(entry: LoadedEntry): Record<string, unknown> {
 		salience_score: entry.metadata.salience_score,
 		mention_count: entry.metadata.mention_count,
 		last_consolidated: entry.metadata.last_consolidated,
+		embedding_model: entry.metadata.embedding_model,
+		embedding_dimensions: entry.metadata.embedding_dimensions,
+		embedding_input_sha256: entry.metadata.embedding_input_sha256,
+		embedding_revision: entry.metadata.embedding_revision,
 		updated_at: entry.updatedAt,
 		...(sourceConversations.length === 1
 			? { source: sourceConversations[0] }
@@ -2594,6 +2607,14 @@ async function persistEntry(
 		return;
 	}
 	if (options?.embedding) {
+		const embeddingInputSha256 = await sha256Hex(buildEntryEmbeddingText(entry));
+		const revision = toOptionalInteger(entry.metadata.revision) ?? 0;
+		entry.metadata.embedding_model = EMBEDDING_MODEL;
+		entry.metadata.embedding_dimensions = EMBEDDING_DIMENSIONS;
+		entry.metadata.embedding_input_sha256 = embeddingInputSha256;
+		entry.metadata.embedding_revision = revision;
+		entry.entry.metadata = entry.metadata;
+		await redis.set(getEntryKey(entry.type, entry.id), JSON.stringify(entry.entry));
 		await vector.upsert({
 			id: entry.id,
 			vector: options.embedding,
@@ -2815,17 +2836,13 @@ async function patchThinIndexEntry(
 			: [];
 		const thinEntry = buildThinIndexTopicEntry(entry, generatedAt);
 		let found = false;
-		const nextTopics = existingTopics.map((topic) => {
-			if (topic.id !== entry.id) {
-				return topic;
-			}
-			found = true;
-			return {
-				...topic,
-				...thinEntry,
-			};
-		});
+		const nextTopics = existingTopics
+			.filter((topic) => topic.id !== entry.id)
+			.map((topic) => topic);
+		found = existingTopics.some((topic) => topic.id === entry.id);
 		if (!found && !thinEntry.archived) {
+			nextTopics.push(thinEntry);
+		} else if (found && !thinEntry.archived) {
 			nextTopics.push(thinEntry);
 		}
 		nextTopics.sort((left, right) => {
@@ -2842,6 +2859,10 @@ async function patchThinIndexEntry(
 			);
 		});
 		rawIndex.topics = nextTopics.slice(0, THIN_INDEX_TOPIC_LIMIT);
+	if (entry.metadata.archived === true) {
+		rawIndex.topic_count = nextTopics.filter((topic) => topic.archived !== true).length;
+		rawIndex.total_topic_count = rawIndex.topic_count;
+	}
 	} else {
 		const existingProjects = Array.isArray(rawIndex.projects)
 			? rawIndex.projects.filter(
@@ -2851,17 +2872,13 @@ async function patchThinIndexEntry(
 			: [];
 		const thinEntry = buildThinIndexProjectEntry(entry, generatedAt);
 		let found = false;
-		const nextProjects = existingProjects.map((project) => {
-			if (project.id !== entry.id) {
-				return project;
-			}
-			found = true;
-			return {
-				...project,
-				...thinEntry,
-			};
-		});
+		const nextProjects = existingProjects
+			.filter((project) => project.id !== entry.id)
+			.map((project) => project);
+		found = existingProjects.some((project) => project.id === entry.id);
 		if (!found && !thinEntry.archived) {
+			nextProjects.push(thinEntry);
+		} else if (found && !thinEntry.archived) {
 			nextProjects.push(thinEntry);
 		}
 		nextProjects.sort((left, right) => {
@@ -2878,6 +2895,10 @@ async function patchThinIndexEntry(
 			);
 		});
 		rawIndex.projects = nextProjects.slice(0, THIN_INDEX_PROJECT_LIMIT);
+	if (entry.metadata.archived === true) {
+		rawIndex.project_count = nextProjects.filter((project) => project.archived !== true).length;
+		rawIndex.total_project_count = rawIndex.project_count;
+	}
 	}
 
 	rawIndex.generated_at = generatedAt;
@@ -3681,7 +3702,7 @@ function getOperationExpectedRevisions(operation: Record<string, unknown>): Reco
 	return expectedRevisions;
 }
 
-async function loadTouchedEntries(
+export async function loadTouchedEntries(
 	redis: Redis,
 	entryIds: string[],
 ): Promise<Map<string, LoadedEntry>> {
@@ -3693,6 +3714,144 @@ async function loadTouchedEntries(
 		}
 	}
 	return entries;
+}
+
+/**
+ * Queue authority for one externally-planned semantic candidate. The planner
+ * supplies ids only; this function re-reads Redis and Vector, checks current
+ * policy/revisions/component membership, chooses the canonical entry, and
+ * delegates to the existing common merge boundary. A terminal result is
+ * cached before acknowledgement so at-least-once delivery is harmless.
+ */
+export async function processSemanticCandidateTask(
+	env: Env,
+	task: MaintenanceMessage,
+	): Promise<Record<string, unknown>> {
+	const parsed = validateMaintenanceMessage(task);
+	if (!parsed.ok) throw new Error(`invalid_maintenance_message:${parsed.reason}`);
+	if (parsed.value.kind !== "semantic_candidate" || !parsed.value.candidate_ids) {
+		return { status: "held", reason: "unsupported_maintenance_kind" };
+	}
+	const redis = createRedisClient(env);
+	const vector = createVectorClient(env);
+	const taskKey = maintenanceTaskKey(parsed.value.task_id);
+	const priorRaw = await redis.get<string>(taskKey);
+	if (priorRaw) {
+		const prior = parseStoredObject(priorRaw);
+		if (prior?.status === "completed" || prior?.status === "held") return prior;
+	}
+	const candidateIds = parsed.value.candidate_ids;
+	const entriesById = await loadTouchedEntries(redis, candidateIds);
+	const rows = await vector.fetch(candidateIds, { includeVectors: true });
+	const vectors = new Map<string, number[]>();
+	if (Array.isArray(rows)) {
+		rows.forEach((row: unknown, index: number) => {
+			const vectorValue = row && typeof row === "object" && Array.isArray((row as { vector?: unknown }).vector)
+				? (row as { vector: number[] }).vector
+				: null;
+			if (vectorValue) vectors.set(candidateIds[index], vectorValue);
+		});
+	}
+	const config = readSemanticDedupConfig();
+	const maintenanceEntries = candidateIds.map((id) => {
+		const entry = entriesById.get(id);
+		return {
+			id,
+			type: entry?.type ?? "knowledge",
+			archived: entry?.metadata.archived === true,
+			contextType: entry?.contextType,
+			revision: toOptionalInteger(entry?.metadata.revision) ?? 0,
+			vector: vectors.get(id) ?? null,
+			salienceScore: entry?.salienceScore ?? 0,
+			mentionCount: entry?.mentionCount ?? 0,
+			updatedAt: entry?.updatedAt,
+		};
+	});
+	const { validateCandidateCluster } = await import("./semanticMaintenance");
+	const validation = validateCandidateCluster(maintenanceEntries, candidateIds, config.cosineThreshold, config.maxClusterSize);
+	if (!validation.ok) {
+		const held = { status: "held", task_id: parsed.value.task_id, reason: validation.reason, component: validation.component ?? [] };
+		await redis.set(taskKey, JSON.stringify(held));
+		return held;
+	}
+	// Query only the bounded candidate vectors to detect an omitted current
+	// neighbour. This is fixed-cost (<= max cluster size queries) and fail-closed.
+	for (const id of candidateIds) {
+		const vec = vectors.get(id);
+		if (!vec) continue;
+		const neighbours = await vector.query({ vector: vec, topK: config.maxClusterSize + 1, includeMetadata: false });
+		if (neighbours.some((hit) => String(hit.id) !== id && Number(hit.score ?? 0) >= config.cosineThreshold && !candidateIds.includes(String(hit.id)))) {
+			const held = { status: "held", task_id: parsed.value.task_id, reason: "candidate_component_incomplete" };
+			await redis.set(taskKey, JSON.stringify(held));
+			return held;
+		}
+	}
+	const loadedEntries = candidateIds.map((id) => entriesById.get(id)).filter((entry): entry is LoadedEntry => Boolean(entry));
+	if (loadedEntries.length !== candidateIds.length) {
+		const held = { status: "held", task_id: parsed.value.task_id, reason: "candidate_entries_not_current" };
+		await redis.set(taskKey, JSON.stringify(held));
+		return held;
+	}
+	const protectedTypes = new Set(["explicit_save", "professional_identity", "stated_preference"]);
+	const protectedEntries = loadedEntries.filter((entry) => protectedTypes.has(entry.contextType));
+	if (protectedEntries.length > 1) {
+		const held = { status: "held", task_id: parsed.value.task_id, reason: "multiple_protected_members" };
+		await redis.set(taskKey, JSON.stringify(held));
+		return held;
+	}
+	const canonical = [...loadedEntries].sort((left, right) => {
+		if (protectedEntries.length === 1) return left.id === protectedEntries[0].id ? -1 : right.id === protectedEntries[0].id ? 1 : 0;
+		return (right.salienceScore - left.salienceScore) || (right.mentionCount - left.mentionCount) || String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")) || left.id.localeCompare(right.id);
+	})[0];
+	const duplicates = loadedEntries.filter((entry) => entry.id !== canonical.id);
+	const result = await applyDuplicateMergePlan(env, redis, vector, {
+		fingerprint: parsed.value.plan_id ?? parsed.value.task_id,
+		canonical,
+		duplicates,
+		semanticOnly: true,
+	}, parsed.value.task_id, parsed.value.created_at);
+	const completed = {
+		status: "completed",
+		task_id: parsed.value.task_id,
+		result,
+		journal_key: maintenanceOutboxKey(`${parsed.value.task_id}:${canonical.id}`),
+	};
+	await redis.set(maintenanceOutboxKey(parsed.value.task_id), JSON.stringify({ status: "completed", task_id: parsed.value.task_id, canonical_id: canonical.id }));
+	await redis.set(taskKey, JSON.stringify(completed));
+	return completed;
+}
+
+/** Roll back one completed queue merge from its durable pre-merge snapshots. */
+export async function rollbackSemanticCandidateTask(env: Env, taskId: string): Promise<Record<string, unknown>> {
+	const redis = createRedisClient(env);
+	const vector = createVectorClient(env);
+	const taskKey = maintenanceTaskKey(taskId);
+	const task = parseStoredObject(await redis.get<string>(taskKey));
+	if (!task) throw new Error("maintenance_task_not_found");
+	if (task.status === "rolled_back") return task;
+	const journalKey = typeof task.journal_key === "string" ? task.journal_key : null;
+	if (!journalKey) throw new Error("maintenance_journal_missing");
+	const journal = parseStoredObject(await redis.get<string>(journalKey));
+	const snapshots = Array.isArray(journal?.before_snapshots) ? journal.before_snapshots : [];
+	if (snapshots.length < 2) throw new Error("maintenance_before_snapshots_missing");
+	const restoredIds: string[] = [];
+	for (const rawSnapshot of snapshots) {
+		if (!rawSnapshot || typeof rawSnapshot !== "object") throw new Error("maintenance_snapshot_invalid");
+		const snapshot = rawSnapshot as { entry?: Record<string, unknown>; metadata?: Record<string, unknown> };
+		if (!snapshot.entry || !snapshot.metadata || typeof snapshot.entry.id !== "string") throw new Error("maintenance_snapshot_invalid");
+		const entryType = getEntryTypeFromId(snapshot.entry.id);
+		const restoredEntry = normalizeEntry({ ...snapshot.entry, metadata: snapshot.metadata }, entryType);
+		if (!restoredEntry) throw new Error(`maintenance_snapshot_unreadable:${snapshot.entry.id}`);
+		const loaded = buildLoadedEntry(snapshot.entry.id, entryType, restoredEntry);
+		const embedding = await getEmbedding(env, buildEntryEmbeddingText(loaded));
+		await persistEntry(redis, vector, loaded, { embedding });
+		await patchThinIndexEntry(redis, loaded, new Date().toISOString());
+		restoredIds.push(loaded.id);
+	}
+	const rolledBack = { status: "rolled_back", task_id: taskId, restored_ids: restoredIds, journal_key: journalKey };
+	await redis.set(journalKey, JSON.stringify({ ...journal, status: "rolled_back" }));
+	await redis.set(taskKey, JSON.stringify(rolledBack));
+	return rolledBack;
 }
 
 function validateOperationRevisions(
@@ -3777,7 +3936,9 @@ async function markCorrectionContestHintApplied(
 	}
 }
 
+
 async function applyDreamProposalOperation(
+	env: Env,
 	redis: Redis,
 	vector: Index,
 	operation: Record<string, unknown>,
@@ -3803,6 +3964,7 @@ async function applyDreamProposalOperation(
 		}
 		try {
 			const result = await applyDuplicateMergePlan(
+				env,
 				redis,
 				vector,
 				{
@@ -4147,6 +4309,7 @@ export async function applyDreamProposal(
 	for (const operation of operations) {
 		operationResults.push(
 			await applyDreamProposalOperation(
+				env,
 				redis,
 				vector,
 				operation,
@@ -4905,13 +5068,27 @@ function snapshotForConservationCheck(entry: LoadedEntry): { entry: Record<strin
 }
 
 async function applyDuplicateMergePlan(
+	env: Env,
 	redis: Redis,
 	vector: Index,
 	plan: DuplicateMergePlan,
 	runId: string,
 	timestamp: string,
 ): Promise<Record<string, unknown>> {
+	// This is deliberately at the common apply boundary. The scheduled decision
+	// path also holds protected losers, but manual/operator/judge paths must not
+	// be able to bypass the same safety invariant.
+	assertAutomaticMergeAllowed(plan.duplicates);
 	const parentSnapshots = [plan.canonical, ...plan.duplicates].map(snapshotForConservationCheck);
+	const journalKey = maintenanceOutboxKey(`${runId}:${plan.canonical.id}`);
+	await redis.set(journalKey, JSON.stringify(buildMaintenanceJournal(
+		runId,
+		plan.canonical,
+		plan.duplicates,
+		timestamp,
+		journalKey,
+		parentSnapshots,
+	)));
 
 	const canonical = mergeCanonicalEntry(plan.canonical, plan.duplicates, runId, timestamp);
 
@@ -4949,7 +5126,9 @@ async function applyDuplicateMergePlan(
 		);
 	}
 
-	await persistEntry(redis, vector, canonical);
+	const embedding = await getEmbedding(env, buildEntryEmbeddingText(canonical));
+	await persistEntry(redis, vector, canonical, { embedding });
+	await patchThinIndexEntry(redis, canonical, timestamp);
 	await syncEntryAccessSignals(redis, canonical);
 
 	const archivedDuplicates: Array<Record<string, unknown>> = [];
@@ -4964,8 +5143,14 @@ async function applyDuplicateMergePlan(
 				`merged duplicate into ${canonical.id}`,
 			),
 		);
+		await patchThinIndexEntry(redis, duplicate, timestamp);
 		await redis.del(getEntryAccessKey(duplicate.id), getEntryLastAccessedKey(duplicate.id));
 	}
+	const preparedJournal = parseStoredObject(await redis.get(journalKey));
+	await redis.set(journalKey, JSON.stringify({
+		...(preparedJournal ?? buildMaintenanceJournal(runId, canonical, plan.duplicates, timestamp, journalKey)),
+		status: "derived_complete",
+	}));
 
 	return {
 		canonical_id: canonical.id,
@@ -6812,7 +6997,7 @@ export async function runScheduledRetierCycle(
 						}
 						const payloadObj = item.payload as Record<string, unknown> | undefined;
 						const fingerprint = typeof payloadObj?.fingerprint === "string" ? payloadObj.fingerprint : `judge:${canonicalId}`;
-						await applyDuplicateMergePlan(redis, vector, { fingerprint, canonical, duplicates }, runId, timestamp);
+						await applyDuplicateMergePlan(env, redis, vector, { fingerprint, canonical, duplicates }, runId, timestamp);
 						await settleJudgeItem(redis, item.op_id, "applied", { run_id: runId });
 						verdictsApplied += 1;
 					} else if (item.op_type === "contradiction_resolution") {
@@ -7042,7 +7227,7 @@ export async function runDreamCycle(
 										? (payloadObj.fingerprint as string)
 										: `judge:${canonicalId}`;
 								const plan: DuplicateMergePlan = { fingerprint, canonical, duplicates };
-								const result = await applyDuplicateMergePlan(redis, vector, plan, runId, startedAt);
+								const result = await applyDuplicateMergePlan(env, redis, vector, plan, runId, startedAt);
 								mergedEntries.push({ ...result, judge_op_id: item.op_id });
 								await settleJudgeItem(redis, item.op_id, "applied", { verdict, run_id: runId });
 								judgeQueueSummary.verdicts_applied.push({
@@ -7165,7 +7350,7 @@ export async function runDreamCycle(
 					continue;
 				}
 				// Bright-line: auto-apply.
-				mergedEntries.push(await applyDuplicateMergePlan(redis, vector, plan, runId, startedAt));
+				mergedEntries.push(await applyDuplicateMergePlan(env, redis, vector, plan, runId, startedAt));
 			}
 
 			if (contradictionPlans.length > 0) {
