@@ -180,6 +180,63 @@ ledger:
   turns: 2
   consecutive_failures: 0
   blockers:
+  - 'PRODUCTION INCIDENT — I BROKE THE NIGHTLY DREAM FOR FOUR DAYS (2026-07-11
+    .. 2026-07-14). Root cause: THIS CONTRACT''s stage-4 work.
+
+    WHAT HAPPENED. runBoundedSemanticSlicePass added a SECOND runDreamProposal
+    call carrying candidate_ids. Three costs compounded, all invisible in tests
+    (which run against tiny fixture corpora, never ~12k entries):
+      (a) runDreamProposal loaded the ENTIRE corpus and only THEN filtered to
+          candidate_ids — so candidate_ids bought no saving at all;
+      (b) makeVectorNeighborFn spent TWO subrequests per entry (a fetch for the
+          entry''s own vector, then a neighbour query) — ~400 for a 200-slice;
+      (c) the slice pass ALSO loads the whole corpus a THIRD time (on top of the
+          retier cycle''s and the main proposal''s) purely to sort it and pick
+          its slice ids.
+    Cloudflare allows ~1000 subrequests per Worker invocation. The nightly blew
+    it and died with "Too many subrequests by single Worker invocation". The
+    budget is per-invocation and GLOBAL, so the slice''s own try/catch could not
+    save it — once exhausted, the grade, apply and index-rebuild that followed
+    all failed too. Result: no Dream ran on 07-11, 07-12 or 07-13. No
+    consolidation, no forgetting, no thin-index rebuild.
+
+    COLLATERAL DAMAGE. The crashed runs died MID-APPLY, leaving Redis and the
+    vector index out of step: 14 entries left ACTIVE in Redis with NO vector
+    (silently invisible to semantic search — real retrieval loss) and 89 with
+    stale vector metadata. verify-memory-full went from 0 issues (2026-06-26
+    baseline) to 104. Repaired via scripts/repair_vector_drift.py, which
+    re-derives each entry''s embedding and metadata FROM REDIS (the source of
+    truth) and upserts the vector; it never writes Redis and skips archived
+    entries. 104 -> 0.
+
+    FIXES SHIPPED. (1) Push the candidate filter DOWN into loadEntryBatchByType
+    so a targeted proposal reads only the keys it asked for (guarded by
+    test/dreamProposalScoping.test.ts, written first and confirmed to FAIL
+    against the broken code). (2) prefetchEntryVectors batches the vector fetches
+    100-at-a-time (~200 subrequests -> 2). (3) dedup.SEMANTIC_SLICE_SIZE is now
+    policy-driven and ships as 0 = DISABLED, short-circuiting the pass BEFORE it
+    loads anything — the check MUST precede the load, because the load is the
+    cost.
+
+    VERIFIED ON PRODUCTION, not inferred: the nightly now returns HTTP 200 in
+    81s with status=completed, 30 merges applied, verification passed=true, the
+    thin index rebuilt, and verify-memory-full at issues=0.
+
+    HONEST STATUS OF THIS CONTRACT AS A RESULT. The nightly bounded semantic
+    slice — the core deliverable of stage 4 — is SHIPPED BUT DISABLED IN
+    PRODUCTION. The semantic backlog therefore does NOT drain automatically. The
+    merge-conservation gates, protected-type hold and cap coupling from the same
+    stage ARE live and working (the run above applied 30 conservation-gated
+    merges). Re-enabling the slice requires first fixing the nightly so it stops
+    loading the whole corpus multiple times; only then should SEMANTIC_SLICE_SIZE
+    be raised, and only with a measured subrequest count. Recorded here rather
+    than left as a silent regression.
+
+    LESSON. Every test in this repo runs against a fixture corpus of a handful of
+    entries. Not one of them could have caught this, because the bug is purely a
+    function of corpus SIZE. A feature whose cost scales with the corpus needs a
+    test that asserts the COST (subrequests / keys read), not just the result —
+    which is exactly what dreamProposalScoping.test.ts now does.'
   - 'RESOLVED 2026-07-11 with Arjun''s go-ahead ("continue, don''t stop until
     every step is completed"): deployed to staging (648228ee), triggered a
     real governed nightly run against a fresh scheduled-boundary (staging''s
