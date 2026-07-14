@@ -1109,6 +1109,51 @@ export async function buildReplayPlansWithSemantic(
 // --- Real neighbour function backed by Upstash Vector ---------------------
 // Fetches the entry's stored embedding (never re-embeds) then queries NN.
 // Caches fetched vectors per run to avoid duplicate fetches.
+// SUBREQUEST BUDGET FIX (2026-07-14). Cloudflare allows ~1000 subrequests per
+// Worker invocation. makeVectorNeighborFn below costs TWO subrequests per entry
+// (a fetch for the entry's own vector, then a query for its neighbours), so a
+// 200-entry semantic slice cost ~400 subrequests on its own. Combined with the
+// nightly's full-corpus Redis reads that blew the cap, and the Worker died with
+// "Too many subrequests by single Worker invocation" — which killed the nightly
+// Dream outright for four days (2026-07-11..14).
+//
+// The budget is per-invocation and GLOBAL: once exhausted, every LATER
+// subrequest fails too, so the semantic slice's own try/catch could not save the
+// grade/apply/index-rebuild that followed it. The only real fix is to use fewer
+// subrequests.
+//
+// This batches the fetch half: one fetch call per chunk of ids instead of one
+// per entry (200 subrequests -> 2). The query half cannot be batched — this
+// version of the Upstash SDK takes a single query payload — so the remaining
+// cost is one query per entry, bounded by the slice size.
+const VECTOR_FETCH_CHUNK = 100;
+
+export async function prefetchEntryVectors(
+	vector: Index,
+	ids: string[],
+): Promise<Map<string, number[] | null>> {
+	const cache = new Map<string, number[] | null>();
+	for (let i = 0; i < ids.length; i += VECTOR_FETCH_CHUNK) {
+		const chunk = ids.slice(i, i + VECTOR_FETCH_CHUNK);
+		try {
+			const rows = await vector.fetch(chunk, { includeVectors: true });
+			chunk.forEach((id, index) => {
+				const row = Array.isArray(rows) ? rows[index] : null;
+				const vec = row && Array.isArray((row as { vector?: number[] }).vector)
+					? (row as { vector: number[] }).vector
+					: null;
+				cache.set(id, vec);
+			});
+		} catch {
+			// Fail-open per chunk: a miss just means those entries get no semantic
+			// neighbours this run (they are swept again on a later night), which is
+			// strictly better than aborting the nightly.
+			chunk.forEach((id) => cache.set(id, null));
+		}
+	}
+	return cache;
+}
+
 function makeVectorNeighborFn(
 	vector: Index,
 	config: SemanticDedupConfig,
@@ -3200,9 +3245,21 @@ export async function runDreamProposal(
 	// lexical-only to keep it cheap and within Worker subrequest limits.
 	const runSemantic = Boolean(candidateIdFilter) || options.semantic === true;
 	const semanticConfig = readSemanticDedupConfig();
-	const proposalNeighborFn = runSemantic
-		? makeVectorNeighborFn(createVectorClient(env), semanticConfig, new Map<string, number[] | null>())
-		: null;
+	// SUBREQUEST BUDGET FIX (2026-07-14): batch-prefetch every candidate's stored
+	// vector in chunks (one subrequest per 100 entries) and seed the neighbour
+	// function's cache with them, instead of letting it fetch one entry at a time.
+	// See prefetchEntryVectors. This removes ~half the semantic path's subrequest
+	// cost, which is what blew Cloudflare's per-invocation cap and killed the
+	// nightly Dream.
+	let proposalNeighborFn: NeighborFn | null = null;
+	if (runSemantic) {
+		const vectorClient = createVectorClient(env);
+		const vectorCache = await prefetchEntryVectors(
+			vectorClient,
+			candidateEntries.slice(0, Math.max(0, semanticConfig.maxQueries)).map((entry) => entry.id),
+		);
+		proposalNeighborFn = makeVectorNeighborFn(vectorClient, semanticConfig, vectorCache);
+	}
 	const {
 		duplicatePlans,
 		contradictionPlans: replayContradictionPlans,

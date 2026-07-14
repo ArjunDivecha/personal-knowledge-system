@@ -1445,7 +1445,18 @@ export async function runBoundedSemanticSlicePass(
 				? a.injectionTier - b.injectionTier
 				: a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
 		);
-		const slice = selectCursorSlice(sortedEntries, cursor.position, 200);
+		// SUBREQUEST BUDGET (2026-07-14): the slice size directly sets how many
+		// vector query subrequests the nightly spends (~1 per sliced entry, now
+		// that the fetch half is batched). Cloudflare caps a Worker invocation at
+		// ~1000 subrequests, and the cap is GLOBAL — once exhausted, the grade,
+		// apply and index-rebuild that follow all fail too. A hardcoded 200 cost
+		// ~400 subrequests and killed the nightly Dream for four days. Read it
+		// from policy so it can be retuned without a deploy.
+		const dedupPolicy = (MEMORY_POLICY as Record<string, unknown>).dedup as Record<string, unknown> | undefined;
+		const sliceSize = typeof dedupPolicy?.SEMANTIC_SLICE_SIZE === "number"
+			? dedupPolicy.SEMANTIC_SLICE_SIZE
+			: 50;
+		const slice = selectCursorSlice(sortedEntries, cursor.position, sliceSize);
 		if (slice.length === 0) {
 			return { mergedProposal: baseProposal, summary: { attempted: true, slice_size: 0 } };
 		}

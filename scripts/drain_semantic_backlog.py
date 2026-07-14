@@ -129,7 +129,12 @@ REPORTS_DIR = REPO_ROOT / "scripts" / "reports"
 CHECKPOINT_PATH = REPORTS_DIR / "semantic_drain_checkpoint.json"
 
 PROD_BASE_URL = "https://mcp.dancing-ganesh.com"
-MAX_CANDIDATES_PER_PROPOSAL = 200   # Worker caps candidate_ids at 200
+# The Worker caps candidate_ids at 200, but a 198-entry semantic proposal
+# measured >120s wall-clock (it fans out a vector NN query per candidate).
+# 100 keeps each proposal comfortably inside the timeout at the cost of more
+# batches — and batches are cheap: the binding constraint is the 12/hour
+# per-endpoint operator rate limit, not the batch count.
+MAX_CANDIDATES_PER_PROPOSAL = 100
 MAX_OPS_PER_APPLY = 100             # Worker caps operation_ids at 100
 RATE_LIMIT_PER_HOUR = 12            # OPERATOR_WRITE_RATE_LIMIT, per endpoint
 
@@ -295,8 +300,11 @@ class OpsClient:
 
     def post(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
         self._pace(endpoint)
+        # A semantic proposal over ~100 entries runs many vector subrequests on
+        # the Worker and routinely exceeds 120s wall-clock. Measured: a 198-entry
+        # proposal timed out at 120s. 300s gives headroom without masking a hang.
         r = requests.post(f"{self.base}/ops/dream/{endpoint}", headers=self.headers,
-                          json=payload, timeout=120)
+                          json=payload, timeout=300)
         if r.status_code == 429:
             raise SystemExit(f"❌ Rate limited on {endpoint} despite pacing — aborting rather than hammering.")
         if not r.ok:

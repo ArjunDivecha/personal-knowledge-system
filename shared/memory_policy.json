@@ -110,6 +110,8 @@
     "link_threshold": 0.70
   },
   "dedup": {
+    "_subrequest_note": "SEMANTIC_SLICE_SIZE bounds the nightly semantic sweep. Cloudflare allows ~1000 subrequests per Worker invocation; the semantic path costs ~1 query subrequest per sliced entry (the fetch half is now batched). A slice of 200 cost ~400 subrequests and, on top of the nightly's full-corpus Redis reads, blew the cap and killed Dream for four days (2026-07-11..14). 50 leaves ample headroom. Raise only with a measured subrequest count.",
+    "SEMANTIC_SLICE_SIZE": 50,
     "COSINE_DUP_THRESHOLD": 0.95,
     "COSINE_CONTEST_BAND": [0.90, 0.95],
     "DEDUP_NEIGHBOR_K": 10,
