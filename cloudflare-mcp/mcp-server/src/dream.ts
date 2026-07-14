@@ -1778,8 +1778,36 @@ async function mgetBatched<T>(redis: Redis, keys: string[], batchSize = DREAM_MG
 async function loadEntryBatchByType(
 	redis: Redis,
 	entryType: EntryType,
+	idFilter?: ReadonlySet<string> | null,
 ): Promise<{ entries: LoadedEntry[]; archivedCount: number }> {
-	const keys = await scanKeys(redis, `${entryType}:*`);
+	// PRODUCTION HANG FIX (2026-07-13). When the caller already knows exactly
+	// which entries it wants, the candidate ids ARE the key list — so read only
+	// those keys and skip the corpus scan entirely.
+	//
+	// This used to unconditionally scan `${entryType}:*` and mget the WHOLE
+	// corpus (plus a full-corpus mget for access counts and another for
+	// last-accessed, plus a salience computation per entry), and callers then
+	// filtered down afterwards. The cost was the same whether you wanted 2
+	// entries or 12,000. That was tolerable while the only caller was the
+	// unfiltered nightly — but PKS-SEMANTIC-CONSOLIDATION-001 added
+	// runBoundedSemanticSlicePass, a SECOND runDreamProposal call carrying
+	// candidate_ids (which also enables semantic mode: one vector NN query per
+	// candidate). On the real ~12k corpus the nightly then blew past the
+	// Worker's execution limits and hung in `running_proposal` — no Dream ran
+	// for three days (2026-07-11..13): no consolidation, no forgetting, no
+	// thin-index rebuild.
+	//
+	// Ids are type-prefixed (pe_ = project, otherwise knowledge), so filter to
+	// this call's own type rather than issuing reads for keys that cannot exist.
+	// Guarded by test/dreamProposalScoping.test.ts.
+	let keys: string[];
+	if (idFilter && idFilter.size > 0) {
+		keys = [...idFilter]
+			.filter((id) => (id.startsWith("pe_") ? entryType === "project" : entryType === "knowledge"))
+			.map((id) => `${entryType}:${id}`);
+	} else {
+		keys = await scanKeys(redis, `${entryType}:*`);
+	}
 	if (keys.length === 0) return { entries: [], archivedCount: 0 };
 
 	const rawEntries = await mgetBatched<unknown>(redis, keys);
@@ -3141,17 +3169,27 @@ export async function runDreamProposal(
 		};
 	}
 
-	const [knowledgeBatch, projectBatch] = await Promise.all([
-		loadEntryBatchByType(redis, "knowledge"),
-		loadEntryBatchByType(redis, "project"),
-	]);
-	const knowledgeEntries = knowledgeBatch.entries;
-	const projectEntries = projectBatch.entries;
-	const allEntries = [...knowledgeEntries, ...projectEntries];
 	const candidateIdFilter =
 		options.candidateIds && options.candidateIds.length > 0
 			? new Set(options.candidateIds)
 			: null;
+
+	// PRODUCTION HANG FIX (2026-07-13): push the candidate filter DOWN into the
+	// loader instead of loading the whole corpus and filtering here. See the
+	// comment on loadEntryBatchByType. Behavioural note: for a TARGETED proposal
+	// `allEntries` is now the candidate set, so the reporting-only fields derived
+	// from it (bucketCounts, counts.total_entries) describe the proposal's scope
+	// rather than the whole store — which is what a scoped proposal should say
+	// anyway. No OPERATION is derived from allEntries; every operation comes from
+	// candidateEntries, which is unchanged. The unfiltered nightly path passes
+	// null and is byte-identical to before.
+	const [knowledgeBatch, projectBatch] = await Promise.all([
+		loadEntryBatchByType(redis, "knowledge", candidateIdFilter),
+		loadEntryBatchByType(redis, "project", candidateIdFilter),
+	]);
+	const knowledgeEntries = knowledgeBatch.entries;
+	const projectEntries = projectBatch.entries;
+	const allEntries = [...knowledgeEntries, ...projectEntries];
 	const candidateEntries = candidateIdFilter
 		? allEntries.filter((entry) => candidateIdFilter.has(entry.id))
 		: allEntries;
