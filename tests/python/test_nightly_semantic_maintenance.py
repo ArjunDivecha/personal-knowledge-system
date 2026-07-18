@@ -103,6 +103,12 @@ def options(**overrides):
 
 
 class NightlySemanticMaintenanceTests(unittest.TestCase):
+    def test_workflow_targets_100_merges_with_candidate_headroom(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "nightly-semantic-maintenance.yml").read_text()
+        self.assertIn("default: \"100\"", workflow)
+        self.assertIn("github.event_name == 'schedule' && '100'", workflow)
+        self.assertIn("--max-candidates 300 --cohort-size 5", workflow)
+
     def test_redis_lock_accepts_boolean_upstash_success(self) -> None:
         class Redis:
             def set(self, *args, **kwargs):
@@ -253,7 +259,7 @@ class NightlySemanticMaintenanceTests(unittest.TestCase):
         self.assertIn('cron: "20 7 * * *"', maintenance)
         self.assertIn("nightly_semantic_maintenance.py", maintenance)
         self.assertIn("--live", maintenance)
-        self.assertIn("github.event_name == 'schedule' && '5'", maintenance)
+        self.assertIn("github.event_name == 'schedule' && '100'", maintenance)
         self.assertIn("--audit-workers 4", maintenance)
         self.assertIn('SEMANTIC_SLICE_SIZE"] == 0', maintenance)
         self.assertNotIn("ensure_overnight_dream_run.py", report)

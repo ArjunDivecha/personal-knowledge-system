@@ -18,7 +18,7 @@ on:
       max_applied:
         description: "Maximum successful semantic merges for this run"
         required: true
-        default: "5"
+        default: "100"
         type: string
 
 permissions:
@@ -71,9 +71,9 @@ jobs:
       - name: Run automatic semantic maintenance
         env:
           REQUESTED_MODE: ${{ github.event_name == 'schedule' && 'live' || inputs.mode }}
-          REQUESTED_MAX_APPLIED: ${{ github.event_name == 'schedule' && '5' || inputs.max_applied }}
+          REQUESTED_MAX_APPLIED: ${{ github.event_name == 'schedule' && '100' || inputs.max_applied }}
         run: |
-          args=(--max-applied "$REQUESTED_MAX_APPLIED" --max-candidates 100 --cohort-size 5 --max-queries 20000 --audit-workers 4)
+          args=(--max-applied "$REQUESTED_MAX_APPLIED" --max-candidates 300 --cohort-size 5 --max-queries 20000 --audit-workers 4)
           if [ "$REQUESTED_MODE" = "live" ]; then
             args+=(--live)
           else

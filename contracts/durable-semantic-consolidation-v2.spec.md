@@ -330,6 +330,10 @@ ledger:
   - 'The initial recurring production budget is five successful merges in one verified
     cohort with four audit query workers. Scale only from observed clean nightly records;
     do not start at the larger manual ceiling.'
+  - 'The 2026-07-18 production canary on corrected score semantics applied one previously
+    held pair with zero holds, zero rollbacks, a clean cohort barrier, and strict consistency
+    at zero issues; the operator then authorized a recurring target of 100 successful merges,
+    selected from up to 300 candidates, while retaining verification cohorts of five.'
   - 'G9 one-merge production canary passed in GitHub run 29370313379 and durable run
     nsm-20260714T214000Z-1320d5c1: seven candidates were held as incomplete, one
     applied, strict consistency stayed at zero issues, and the uncapped backlog fell
