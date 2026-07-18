@@ -16,6 +16,12 @@ def cosine(left: list[float], right: list[float]) -> float:
     return dot / den if den else 0.0
 
 
+def cosine_index_score(left: list[float], right: list[float]) -> float:
+    """Return the [0, 1] score used by an Upstash COSINE index."""
+    raw_cosine = max(-1.0, min(1.0, cosine(left, right)))
+    return (1.0 + raw_cosine) / 2.0
+
+
 def plan_candidates(rows: list[dict[str, Any]], threshold: float, max_cluster_size: int, block_size: int = 512) -> list[list[str]]:
     parent = {str(row["id"]): str(row["id"]) for row in rows}
     def find(item: str) -> str:
@@ -32,7 +38,7 @@ def plan_candidates(rows: list[dict[str, Any]], threshold: float, max_cluster_si
             for right in rows[start:]:
                 if left["id"] >= right["id"]:
                     continue
-                if cosine(left["vector"], right["vector"]) >= threshold:
+                if cosine_index_score(left["vector"], right["vector"]) >= threshold:
                     union(str(left["id"]), str(right["id"]))
     groups: dict[str, list[str]] = {}
     for row in rows:
@@ -40,7 +46,7 @@ def plan_candidates(rows: list[dict[str, Any]], threshold: float, max_cluster_si
     return sorted(sorted(ids) for ids in groups.values() if 1 < len(ids) <= max_cluster_size)
 
 
-def build_manifest(rows: list[dict[str, Any]], clusters: list[list[str]], *, threshold: float, algorithm: str = "blockwise-cosine-v1", query_capped: bool = False) -> dict[str, Any]:
+def build_manifest(rows: list[dict[str, Any]], clusters: list[list[str]], *, threshold: float, algorithm: str = "blockwise-upstash-cosine-score-v2", query_capped: bool = False) -> dict[str, Any]:
     if query_capped:
         raise ValueError("capped_or_incomplete_audit_rejected")
     watermark = hashlib.sha256("|".join(sorted(str(row["id"]) for row in rows)).encode()).hexdigest()

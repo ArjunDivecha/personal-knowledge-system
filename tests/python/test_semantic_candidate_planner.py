@@ -22,6 +22,15 @@ class SemanticPlannerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             planner.build_manifest(rows, clusters, threshold=0.9, query_capped=True)
 
+    def test_uses_upstash_cosine_score_scale(self):
+        # Raw cosine 0.91 maps to an Upstash COSINE score of 0.955.
+        raw_cosine = 0.91
+        rows = [
+            {"id": "a", "vector": [1.0, 0.0]},
+            {"id": "b", "vector": [raw_cosine, (1.0 - raw_cosine**2) ** 0.5]},
+        ]
+        self.assertEqual(planner.plan_candidates(rows, 0.95, 6), [["a", "b"]])
+
 
 if __name__ == "__main__":
     unittest.main()

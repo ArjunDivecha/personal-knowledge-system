@@ -22,7 +22,14 @@ export interface CandidateValidationResult {
 	component?: string[];
 }
 
-function cosine(a: number[], b: number[]): number {
+/**
+ * Match the score returned by an Upstash Vector COSINE index.
+ *
+ * Upstash normalizes raw cosine similarity from [-1, 1] to [0, 1] as
+ * `(1 + cosine) / 2`. The external planner compares the index score with the
+ * policy threshold, so Worker-side revalidation must use the same scale.
+ */
+function cosineIndexScore(a: number[], b: number[]): number {
 	if (a.length === 0 || a.length !== b.length) return 0;
 	let dot = 0;
 	let aa = 0;
@@ -33,7 +40,8 @@ function cosine(a: number[], b: number[]): number {
 		bb += b[i] * b[i];
 	}
 	if (aa === 0 || bb === 0) return 0;
-	return dot / Math.sqrt(aa * bb);
+	const rawCosine = Math.max(-1, Math.min(1, dot / Math.sqrt(aa * bb)));
+	return (1 + rawCosine) / 2;
 }
 
 function connectedComponent(entries: MaintenanceEntry[], threshold: number): string[] {
@@ -61,7 +69,7 @@ function connectedComponent(entries: MaintenanceEntry[], threshold: number): str
 		for (let j = i + 1; j < entries.length; j += 1) {
 			const left = entries[i].vector;
 			const right = entries[j].vector;
-			if (left && right && cosine(left, right) >= threshold) union(entries[i].id, entries[j].id);
+			if (left && right && cosineIndexScore(left, right) >= threshold) union(entries[i].id, entries[j].id);
 		}
 	}
 	const root = find(ids[0]);

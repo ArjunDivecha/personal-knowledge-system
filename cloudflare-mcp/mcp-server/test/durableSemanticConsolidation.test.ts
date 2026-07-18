@@ -13,7 +13,23 @@ const entry = (id: string, vector: number[], contextType = "task_query") => ({
 });
 
 describe("durable semantic consolidation authority", () => {
-	it("rejects an incomplete planner component instead of trusting submitted membership", () => {
+	it("uses the Upstash COSINE score scale when revalidating planner candidates", () => {
+		// Raw cosine is 0.91, while the Upstash COSINE index score is 0.955.
+		// A 0.95 planner candidate must therefore also pass Worker revalidation.
+		const rawCosine = 0.91;
+		const candidate = validateCandidateCluster(
+			[
+				entry("ke_a", [1, 0]),
+				entry("ke_b", [rawCosine, Math.sqrt(1 - rawCosine ** 2)]),
+			],
+			["ke_a", "ke_b"],
+			0.95,
+			6,
+		);
+		expect(candidate).toMatchObject({ ok: true, component: ["ke_a", "ke_b"] });
+	});
+
+	it("rejects a disconnected planner component instead of trusting submitted membership", () => {
 		const result = validateCandidateCluster(
 			[
 				entry("ke_a", [1, 0]),
@@ -28,13 +44,17 @@ describe("durable semantic consolidation authority", () => {
 			[
 				entry("ke_a", [1, 0]),
 				entry("ke_b", [0.999, 0.04]),
-				entry("ke_c", [0.998, 0.06]),
+				entry("ke_c", [-1, 0]),
 			],
-			["ke_a", "ke_b"],
+			["ke_a", "ke_b", "ke_c"],
 			0.95,
 			6,
 		);
-		expect(incomplete.ok).toBe(false);
+		expect(incomplete).toMatchObject({
+			ok: false,
+			reason: "candidate_component_incomplete",
+			component: ["ke_a", "ke_b"],
+		});
 	});
 
 	it("blocks protected types at the common automatic apply boundary", () => {

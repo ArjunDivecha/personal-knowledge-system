@@ -436,6 +436,7 @@ def run_night(
                 "candidate_ids": cluster,
                 "status": task_status.get("status"),
                 "reason": task_status.get("reason"),
+                "component": task_status.get("component"),
                 "journal_key": task_status.get("journal_key"),
             }
             report["tasks"].append(task_record)
@@ -479,7 +480,10 @@ def run_night(
         report["applied_count"] = applied
         report["held_count"] = sum(1 for task in report["tasks"] if task["status"] == "held")
         if clusters and applied == 0:
-            raise RuntimeError("semantic_maintenance_stalled:no_candidate_applied")
+            report["progress_status"] = "no_candidate_applied"
+            report.setdefault("warnings", []).append("semantic_maintenance_no_candidate_applied")
+        else:
+            report["progress_status"] = "applied" if applied else "no_candidates_planned"
 
         # Persist the verified mutation state before the slower uncapped post-audit.
         # If the runner is interrupted during that read-only scan, operators can see
@@ -619,6 +623,8 @@ def main() -> int:
         "run_id": report.get("run_id"),
         "applied_count": report.get("applied_count"),
         "held_count": report.get("held_count"),
+        "progress_status": report.get("progress_status"),
+        "warnings": report.get("warnings"),
         "report_path": str(path),
         "issues": report.get("issues"),
         "error": report.get("error"),

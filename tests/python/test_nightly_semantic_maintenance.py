@@ -211,12 +211,16 @@ class NightlySemanticMaintenanceTests(unittest.TestCase):
         self.assertEqual(len(operator.rolled_back), 1)
         self.assertIn("terminal_task_failure", report["error"])
 
-    def test_stalled_backlog_fails_loudly(self) -> None:
+    def test_all_held_run_completes_as_verified_noop(self) -> None:
         operator = FakeOperator([{"status": "held", "reason": "not_duplicate"}])
         store = FakeStore()
+        reports = iter([
+            audit_report([["a", "b"]]),
+            audit_report([["a", "b"]]),
+        ])
 
         def audit_runner(**kwargs):
-            return audit_report([["a", "b"]]), Path("audit.json")
+            return next(reports), Path("audit.json")
 
         code, report = module.run_night(
             options(max_applied=1),
@@ -225,8 +229,11 @@ class NightlySemanticMaintenanceTests(unittest.TestCase):
             audit_runner=audit_runner,
             verifier=lambda: {"passed": True},
         )
-        self.assertEqual(code, 1)
-        self.assertIn("stalled", report["error"])
+        self.assertEqual(code, 0)
+        self.assertEqual(report["status"], "completed")
+        self.assertEqual(report["progress_status"], "no_candidate_applied")
+        self.assertIn("semantic_maintenance_no_candidate_applied", report["warnings"])
+        self.assertIn("post_audit", report)
         self.assertTrue(report["barriers"][0]["passed"])
 
     def test_latest_check_requires_fresh_completed_verified_run(self) -> None:
