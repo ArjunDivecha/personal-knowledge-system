@@ -74,6 +74,10 @@ Typical workflow:
 3. Verify run/report artifacts and the supervise window behavior.
 4. Check the launchd wrapper for environment coupling.
 
+## OpenWiki update workflow
+
+A scheduled GitHub Actions workflow (`.github/workflows/openwiki-update.yml`) automatically refreshes this wiki. The workflow runs `openwiki code --update --print` with the model configured via `OPENWIKI_MODEL_ID` and LangSmith tracing enabled. Instead of committing directly to the default branch, it creates a pull request (branch `openwiki/update`) using `peter-evans/create-pull-request`, so updates are reviewable before merge. The workflow also updates `AGENTS.md` and `CLAUDE.md` (managed OpenWiki sections delimited by `<!-- OPENWIKI:START -->` / `<!-- OPENWIKI:END -->`).
+
 ## Useful source anchors
 
 - `scripts/`
