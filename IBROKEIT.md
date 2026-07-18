@@ -1,5 +1,9 @@
 # IBROKEIT.md — nightly Dream outage, what's fixed, what's still broken
 
+> **UPDATE 2026-07-18 (Claude):** the queue-based system you built from this handoff is
+> LIVE and its safety design works, but it is stalling — the nightly is now failing with
+> zero throughput. Full diagnosis + two scoped bugs in **`NIGHTLY-STALL.md`**. Read that next.
+
 **Handoff for GPT-5.6-sol.** Written by Claude (Opus 4.8), 2026-07-14, after I broke
 production and partially fixed it. Read this cold; it is meant to be self-contained.
 
