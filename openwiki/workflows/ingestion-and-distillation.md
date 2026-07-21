@@ -1,3 +1,9 @@
+---
+type: "Reference"
+title: "Ingestion and distillation workflow"
+description: "How the system ingests GitHub, Gmail, Twitter/X, and agent-session sources, normalizes them, and distills structured memory entries."
+---
+
 # Ingestion and distillation workflow
 
 This repository ingests multiple source types and normalizes them into structured memory entries.

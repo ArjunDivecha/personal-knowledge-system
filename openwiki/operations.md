@@ -1,3 +1,9 @@
+---
+type: "Reference"
+title: "Operations and local workflow"
+description: "Environment, launchd, scripts, and the automated OpenWiki CI update workflow for the personal-knowledge-system repository."
+---
+
 # Operations and local workflow
 
 This repository is operationally heavy. It depends on environment files, local exports, launchd wrappers, staging checks, and scripted validation runs.

@@ -1,3 +1,9 @@
+---
+type: "Reference"
+title: "OpenWiki quickstart"
+description: "Entry point for the personal-knowledge-system wiki. Covers ingestion, distillation, MCP retrieval, Dream governance, nightly orchestration, and testing."
+---
+
 # OpenWiki quickstart
 
 This repository is a personal knowledge system for an individual operator. It ingests conversations, code-repo context, email, and other source material; distills durable memories; stores them in Upstash Redis and Upstash Vector; and serves retrieval and maintenance actions through a Cloudflare-hosted MCP server.
@@ -16,6 +22,7 @@ This OpenWiki is a map of the current codebase, not a mirror of every file. It i
 - [Ingestion and distillation workflow](workflows/ingestion-and-distillation.md)
 - [Nightly orchestrator workflow](workflows/nightly-orchestration.md)
 - [Cloudflare MCP and Dream control plane](architecture/mcp-and-dream.md)
+- [Operations and local workflow](operations.md)
 - [Testing guidance](testing.md)
 
 ## What this repo does

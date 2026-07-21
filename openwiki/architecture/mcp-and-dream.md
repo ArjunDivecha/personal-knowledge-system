@@ -1,3 +1,9 @@
+---
+type: "Reference"
+title: "Cloudflare MCP and Dream control plane"
+description: "Production Cloudflare Worker MCP server for retrieval, salience scoring, Dream lifecycle, judge queue, and scheduled async Dream support."
+---
+
 # Cloudflare MCP and Dream control plane
 
 `cloudflare-mcp/mcp-server/` is the current production runtime for retrieval and memory governance.

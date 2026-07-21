@@ -1,3 +1,9 @@
+---
+type: "Reference"
+title: "OpenWiki"
+description: "Index of the OpenWiki knowledge base for the personal-knowledge-system repository."
+---
+
 # OpenWiki
 
 - [Quickstart](quickstart.md)

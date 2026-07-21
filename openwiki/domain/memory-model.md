@@ -1,3 +1,9 @@
+---
+type: "Reference"
+title: "Memory model and business logic"
+description: "Core memory model: selective autobiographical memory philosophy, salience scoring, forgetting policy, and Dream consolidation lifecycle."
+---
+
 # Memory model and business logic
 
 This repository is built around a specific product idea: the system should behave more like selective autobiographical memory than like a write-only archive.

@@ -1,3 +1,9 @@
+---
+type: "Reference"
+title: "Nightly orchestration workflow"
+description: "Nightly orchestrator state machine: run identity, locking, ledgering, stage persistence, resume, report generation, and launchd supervision."
+---
+
 # Nightly orchestration workflow
 
 The nightly orchestrator is the repository's run-control layer. It coordinates a date-scoped nightly job, persists stage state, writes reports, and manages resume logic.

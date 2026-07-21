@@ -1,3 +1,9 @@
+---
+type: "Reference"
+title: "Architecture overview"
+description: "High-level architecture of the personal knowledge system: ingestion, distillation, Redis/Vector storage, Cloudflare MCP retrieval, and Dream governance."
+---
+
 # Architecture overview
 
 The repository implements a personal knowledge system that turns raw personal and project evidence into a searchable, governed memory store.

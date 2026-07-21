@@ -1,3 +1,9 @@
+---
+type: "Reference"
+title: "Testing guidance"
+description: "Testing strategy across Python ingestion, TypeScript Worker runtime, Dream governance, orchestration, and retrieval-quality evals."
+---
+
 # Testing guidance
 
 Testing in this repository is broad because the system crosses Python ingestion, TypeScript Worker runtime, Dream governance, and orchestration.
