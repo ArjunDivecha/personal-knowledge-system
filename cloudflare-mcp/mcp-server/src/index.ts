@@ -3804,6 +3804,7 @@ const defaultHandler = {
 						placement: z.enum(["append", "create"]),
 						anchor_entry_id: z.string().min(1).optional(),
 						domain: z.string().min(1).max(200).optional(),
+						support_entry_ids: z.array(z.string().min(1)).min(3).max(6),
 					}).optional(),
 				}).parse(body);
 				const redis = createRedisClient(env);

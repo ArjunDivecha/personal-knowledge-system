@@ -99,7 +99,8 @@ class InsightVerdictParseTests(unittest.TestCase):
         text = (
             '{"verdict": "apply", "reason": "clear cross-cutting pattern", '
             '"synthesis": {"insight_text": "Turnover limits dominate alpha capture.", '
-            '"placement": "append", "anchor_entry_id": "ke_b"}}'
+            '"placement": "append", "anchor_entry_id": "ke_b", '
+            '"support_entry_ids": ["ke_a", "ke_b", "ke_c"]}}'
         )
         result = run.parse_insight_verdict_response(text, self.TARGETS)
         self.assertIsNotNone(result)
@@ -108,13 +109,15 @@ class InsightVerdictParseTests(unittest.TestCase):
         self.assertEqual(reason, "clear cross-cutting pattern")
         self.assertEqual(synthesis["placement"], "append")
         self.assertEqual(synthesis["anchor_entry_id"], "ke_b")
+        self.assertEqual(synthesis["support_entry_ids"], self.TARGETS)
         self.assertNotIn("domain", synthesis)
 
     def test_valid_apply_create(self):
         text = (
             '{"verdict": "apply", "reason": "spans entries", '
             '"synthesis": {"insight_text": "A durable pattern.", '
-            '"placement": "create", "domain": "cross-domain synthesis"}}'
+            '"placement": "create", "domain": "cross-domain synthesis", '
+            '"support_entry_ids": ["ke_a", "ke_b", "ke_c"]}}'
         )
         result = run.parse_insight_verdict_response(text, self.TARGETS)
         self.assertIsNotNone(result)
@@ -139,21 +142,24 @@ class InsightVerdictParseTests(unittest.TestCase):
     def test_apply_with_anchor_outside_cluster_is_rejected(self):
         text = (
             '{"verdict": "apply", "reason": "ok", '
-            '"synthesis": {"insight_text": "x", "placement": "append", "anchor_entry_id": "ke_zzz"}}'
+            '"synthesis": {"insight_text": "x", "placement": "append", "anchor_entry_id": "ke_zzz", '
+            '"support_entry_ids": ["ke_a", "ke_b", "ke_c"]}}'
         )
         self.assertIsNone(run.parse_insight_verdict_response(text, self.TARGETS))
 
     def test_apply_with_overlong_text_is_rejected(self):
         text = (
             '{"verdict": "apply", "reason": "ok", '
-            f'"synthesis": {{"insight_text": "{"x" * 501}", "placement": "create", "domain": "d"}}}}'
+            f'"synthesis": {{"insight_text": "{"x" * 501}", "placement": "create", "domain": "d", '
+            '"support_entry_ids": ["ke_a", "ke_b", "ke_c"]}}'
         )
         self.assertIsNone(run.parse_insight_verdict_response(text, self.TARGETS))
 
     def test_apply_with_invalid_placement_is_rejected(self):
         text = (
             '{"verdict": "apply", "reason": "ok", '
-            '"synthesis": {"insight_text": "x", "placement": "replace", "anchor_entry_id": "ke_a"}}'
+            '"synthesis": {"insight_text": "x", "placement": "replace", "anchor_entry_id": "ke_a", '
+            '"support_entry_ids": ["ke_a", "ke_b", "ke_c"]}}'
         )
         self.assertIsNone(run.parse_insight_verdict_response(text, self.TARGETS))
 
@@ -161,7 +167,8 @@ class InsightVerdictParseTests(unittest.TestCase):
         text = (
             "```json\n"
             '{"verdict": "apply", "reason": "ok", "synthesis": {"insight_text": "x", '
-            '"placement": "append", "anchor_entry_id": "ke_a"}}\n'
+            '"placement": "append", "anchor_entry_id": "ke_a", '
+            '"support_entry_ids": ["ke_a", "ke_b", "ke_c"]}}\n'
             "```"
         )
         result = run.parse_insight_verdict_response(text, self.TARGETS)
@@ -171,7 +178,7 @@ class InsightVerdictParseTests(unittest.TestCase):
 class ValidateSynthesisTests(unittest.TestCase):
 
     def test_rejection_reasons(self):
-        targets = ["ke_a"]
+        targets = ["ke_a", "ke_b", "ke_c"]
         self.assertEqual(run.validate_synthesis(None, targets), "missing_synthesis_block")
         self.assertEqual(
             run.validate_synthesis({"insight_text": " ", "placement": "create", "domain": "d"}, targets),
@@ -179,16 +186,43 @@ class ValidateSynthesisTests(unittest.TestCase):
         )
         self.assertEqual(
             run.validate_synthesis({"insight_text": "x", "placement": "append"}, targets),
-            "missing_anchor_entry_id",
+            "missing_support_entry_ids",
         )
         self.assertEqual(
-            run.validate_synthesis({"insight_text": "x", "placement": "create"}, targets),
+            run.validate_synthesis({"insight_text": "x", "placement": "create", "support_entry_ids": targets}, targets),
             "missing_domain",
         )
         self.assertIsNone(
             run.validate_synthesis(
-                {"insight_text": "x", "placement": "append", "anchor_entry_id": "ke_a"}, targets
+                {"insight_text": "x", "placement": "append", "anchor_entry_id": "ke_a", "support_entry_ids": targets}, targets
             )
+        )
+
+    def test_support_set_rejection_reasons(self):
+        targets = ["ke_a", "ke_b", "ke_c", "ke_d"]
+        self.assertEqual(
+            run.validate_synthesis(
+                {"insight_text": "x", "placement": "create", "domain": "d", "support_entry_ids": ["ke_a", "ke_b"]}, targets
+            ),
+            "insufficient_support_entries",
+        )
+        self.assertEqual(
+            run.validate_synthesis(
+                {"insight_text": "x", "placement": "create", "domain": "d", "support_entry_ids": ["ke_a", "ke_b", 3]}, targets
+            ),
+            "invalid_support_entry_id",
+        )
+        self.assertEqual(
+            run.validate_synthesis(
+                {"insight_text": "x", "placement": "create", "domain": "d", "support_entry_ids": ["ke_a", "ke_b", "ke_z"]}, targets
+            ),
+            "support_entry_outside_cluster",
+        )
+        self.assertEqual(
+            run.validate_synthesis(
+                {"insight_text": "x", "placement": "append", "anchor_entry_id": "ke_d", "support_entry_ids": ["ke_a", "ke_b", "ke_c"]}, targets
+            ),
+            "anchor_outside_support_set",
         )
 
 
@@ -220,6 +254,7 @@ class InsightPromptTests(unittest.TestCase):
         self.assertIn("insight_synthesis", prompt)
         self.assertIn("synthesis", prompt)
         self.assertIn("anchor_entry_id", prompt)
+        self.assertIn("support_entry_ids", prompt)
         self.assertIn("placement", prompt)
         self.assertIn("prefer SKIP", prompt)
 

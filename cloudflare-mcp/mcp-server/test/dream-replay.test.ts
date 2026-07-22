@@ -419,6 +419,7 @@ describe("Dream replay logic", () => {
 			type: "mark_contested",
 			entry_ids: ["ke_dup_primary"],
 			proposal_kind: "contest",
+			evidence: { support_entry_ids: ["ke_dup_primary"] },
 		});
 		const contestOperationId = String(contestOperation?.operation_id);
 		expect((proposal.counts as Record<string, unknown>).correction_contest_candidates).toBe(1);
@@ -568,7 +569,7 @@ describe("Dream replay logic", () => {
 			entry_id: "ke_outside_snapshot",
 			expected_revision: 0,
 			reason: "bad fixture",
-			evidence: { source: "test" },
+			evidence: { source: "test", support_entry_ids: ["ke_outside_snapshot"] },
 			rollback: { method: "restore_archived", entry_id: "ke_outside_snapshot" },
 		});
 		mockState.store.set(`dream:run:${String(proposal.run_id)}:proposal`, storedProposal);
@@ -591,7 +592,53 @@ describe("Dream replay logic", () => {
 		expect(grade.passed).toBe(false);
 		expect(grade.issues as Array<Record<string, unknown>>).toEqual(
 			expect.arrayContaining([
-				expect.objectContaining({ code: "entry_outside_snapshot", operation_id: "dop_bad_external" }),
+				 expect.objectContaining({ code: "entry_outside_snapshot", operation_id: "dop_bad_external" }),
+				expect.objectContaining({ code: "evidence_outside_snapshot", operation_id: "dop_bad_external" }),
+				expect.objectContaining({ code: "missing_evidence_revision", operation_id: "dop_bad_external" }),
+			]),
+		);
+	});
+
+	it("fails deterministic grade when touched entries lack an explicit evidence support set", async () => {
+		const proposal = await runDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{ trigger: "local_test", actorId: "test-operator", archiveLimit: 0, promotionLimit: 0 },
+		);
+		const storedProposal = getStoredObject(`dream:run:${String(proposal.run_id)}:proposal`);
+		const entryId = (storedProposal.candidate_ids as string[])[0];
+		const revisions = storedProposal.candidate_revisions as Record<string, number>;
+		(storedProposal.operations as Array<Record<string, unknown>>).push({
+			operation_id: "dop_missing_support",
+			type: "archive_entry",
+			entry_id: entryId,
+			expected_revision: revisions[entryId],
+			reason: "missing support fixture",
+			evidence: { source: "test" },
+			rollback: { method: "restore_archived", entry_id: entryId },
+		});
+		mockState.store.set(`dream:run:${String(proposal.run_id)}:proposal`, storedProposal);
+
+		const grade = await gradeDreamProposal(
+			{
+				UPSTASH_REDIS_REST_URL: "https://redis.test.local",
+				UPSTASH_REDIS_REST_TOKEN: "test-redis-token",
+				UPSTASH_VECTOR_REST_URL: "https://vector.test.local",
+				UPSTASH_VECTOR_REST_TOKEN: "test-vector-token",
+			} as Env,
+			{ proposalId: String(proposal.run_id), actorId: "test-operator" },
+		);
+
+		expect(grade.passed).toBe(false);
+		expect(grade.rubric).toEqual(expect.objectContaining({ evidence_sufficiency: false }));
+		expect(grade.issues as Array<Record<string, unknown>>).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ code: "missing_evidence_support_set", operation_id: "dop_missing_support" }),
+				expect.objectContaining({ code: "touched_entry_without_evidence", operation_id: "dop_missing_support" }),
 			]),
 		);
 	});

@@ -221,6 +221,15 @@ Phase 5 notes:
 - [x] Keep staging auto-rollback disabled so the explicit R5 rollback drill still verifies rollback
 - [x] Add local tests for probe loading, Redis payload shape, and staging apply arguments
 
+## Phase 7 Evidence Contract: Live Activation
+
+- [x] Add explicit `evidence.support_entry_ids` to every live Dream operation
+- [x] Reject evidence IDs outside the proposal snapshot or without pinned candidate revisions
+- [x] Reject operations whose touched entries are absent from their evidence support set
+- [x] Require synthesized insights to cite at least three distinct members of the judged cluster
+- [x] Persist insight support IDs on appended insights and newly created recurring-pattern entries
+- [x] Mirror the synthesis evidence validator in the Mac judge parser and prompt
+
 Phase 6.5 audit notes:
 - Concurrent-run safety: the full Dream cycle path has a Redis single-flight guard (`dream:lock`) with a 30-minute TTL and stale-lock reclaim before live mutations. The scheduled governance proposal path and the operator `run_dream_proposal` path currently call `runDreamProposal` directly, which snapshots all entries without taking that lock; `apply_dream_proposal` is protected by proposal grading, candidate snapshots, and expected revisions, but proposal generation itself can still overlap. Follow-up issue: add the same proposal-level single-flight guard, or an explicit idempotency key, around `runDreamProposal` before correction-derived contest proposals increase replay volume.
 - Replay narrowness: candidate discovery is not delta-scoped today. Both scheduled and operator proposal generation load the full `knowledge:*` and `project:*` active sets unless `candidate_ids` are supplied, then run deterministic duplicate/contradiction replay over labels, current views, and position snippets. The scans are bounded to structured entry fields rather than full content embeddings, but Phase 6.5/7 should add a last-successful-run delta path before replay-heavy correction handling ships.

@@ -57,6 +57,7 @@ export type JudgeOpType =
 export interface JudgeVerdictSynthesis {
 	insight_text: string;
 	placement: "append" | "create";
+	support_entry_ids: string[];
 	anchor_entry_id?: string;
 	domain?: string;
 }
@@ -225,6 +226,6 @@ export function buildJudgeRubric(opType: JudgeOpType): string {
 		case "contradiction_resolution":
 			return "Two knowledge entries were flagged as contradicting each other and both are now marked 'contested'. Read their current_view texts and the listed contradiction reasons. Apply if they are NOT genuinely contradictory (i.e., they are complementary, about different time periods, or the contradiction reasons are spurious) — this restores both entries to active. Skip if the contradiction is real and requires human resolution or a Phase 7C supersession step to reconcile the conflicting views.";
 		case "insight_synthesis":
-			return "You are shown a cluster of related knowledge entries from different domains. Decide whether they collectively support ONE durable, cross-cutting insight that is NOT already stated in any single entry. Apply only if the insight is non-obvious, durable (still true in six months), and evidenced by at least three of the entries — and include a `synthesis` block: insight_text (one or two sentences, max 500 chars), and placement: 'append' with anchor_entry_id (a cluster member ID) when the insight refines that one entry, or 'create' with a short domain string when the insight genuinely spans entries. Skip when in doubt — a wrong new memory is worse than a missed insight.";
+			return "You are shown a cluster of related knowledge entries from different domains. Decide whether they collectively support ONE durable, cross-cutting insight that is NOT already stated in any single entry. Apply only if the insight is non-obvious, durable (still true in six months), and evidenced by at least three of the entries — and include a `synthesis` block: insight_text (one or two sentences, max 500 chars), support_entry_ids (at least three distinct member IDs that directly support the insight), and placement: 'append' with anchor_entry_id (a supported member ID) when the insight refines that one entry, or 'create' with a short domain string when the insight genuinely spans entries. Skip when in doubt — a wrong new memory is worse than a missed insight.";
 	}
 }

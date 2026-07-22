@@ -187,9 +187,11 @@ def build_prompt(item: dict[str, Any]) -> str:
             "To apply, include the synthesized insight:\n"
             '{"verdict": "apply", "reason": "1-2 sentences", "synthesis": {"insight_text": "the insight, max 500 chars", '
             '"placement": "append" | "create", "anchor_entry_id": "<a member id, required for append>", '
-            '"domain": "<short domain string, required for create>"}}\n\n'
+            '"domain": "<short domain string, required for create>", '
+            '"support_entry_ids": ["<at least 3 distinct member ids that support the insight>"]}}\n\n'
             "Use placement 'append' with anchor_entry_id when the insight refines one member entry; "
-            "use placement 'create' with a domain when it genuinely spans entries.\n"
+            "use placement 'create' with a domain when it genuinely spans entries. "
+            "Every support_entry_id must come from the supplied cluster, and an append anchor must be in that support set.\n"
             "If anything is ambiguous, prefer SKIP. A wrong new memory is worse than a missed insight."
         )
     return (
@@ -260,6 +262,16 @@ def validate_synthesis(
         return "empty_insight_text"
     if len(text.strip()) > max_chars:
         return "insight_text_too_long"
+    raw_support_ids = synthesis.get("support_entry_ids")
+    if not isinstance(raw_support_ids, list):
+        return "missing_support_entry_ids"
+    if any(not isinstance(value, str) or not value.strip() for value in raw_support_ids):
+        return "invalid_support_entry_id"
+    support_ids = list(dict.fromkeys(value for value in raw_support_ids if isinstance(value, str) and value))
+    if len(support_ids) < 3:
+        return "insufficient_support_entries"
+    if any(entry_id not in target_entry_ids for entry_id in support_ids):
+        return "support_entry_outside_cluster"
     placement = synthesis.get("placement")
     if placement == "append":
         anchor = synthesis.get("anchor_entry_id")
@@ -267,6 +279,8 @@ def validate_synthesis(
             return "missing_anchor_entry_id"
         if anchor not in target_entry_ids:
             return "anchor_outside_cluster"
+        if anchor not in support_ids:
+            return "anchor_outside_support_set"
         return None
     if placement == "create":
         domain = synthesis.get("domain")
@@ -306,6 +320,7 @@ def parse_insight_verdict_response(
     normalized: dict[str, Any] = {
         "insight_text": synthesis["insight_text"].strip(),
         "placement": synthesis["placement"],
+        "support_entry_ids": list(dict.fromkeys(synthesis["support_entry_ids"])),
     }
     if synthesis["placement"] == "append":
         normalized["anchor_entry_id"] = synthesis["anchor_entry_id"]

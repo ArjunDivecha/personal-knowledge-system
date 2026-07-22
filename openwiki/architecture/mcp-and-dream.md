@@ -111,13 +111,21 @@ The current code and recent docs show it is no longer just a simple archive job.
 - candidate discovery
 - proposal creation
 - deterministic grading
+- revision-pinned evidence support sets for every proposed mutation
 - bounded live apply
 - rollback mechanics
 - duplicate merge handling
 - contradiction handling
 - judge queue interplay
 - outcome-quality gating
-- content-bearing insight synthesis in the judge path
+- content-bearing insight synthesis in the judge path, with at least three
+  in-cluster supporting entry IDs persisted on the resulting memory
+
+The evidence gate is structural rather than an LLM score. Every operation's
+`evidence.support_entry_ids` must be non-empty, contained in the proposal
+snapshot, backed by `candidate_revisions`, and cover every entry the operation
+touches. Insight verdicts use the same principle: support IDs must come from
+the judged cluster, and an append anchor must itself be in the support set.
 
 This is the place to look when the repo changes what counts as durable memory, how memories are consolidated, or when a nightly maintenance action becomes safe to apply.
 

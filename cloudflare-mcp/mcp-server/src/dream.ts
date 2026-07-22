@@ -183,6 +183,7 @@ interface CreateEntryParams {
 	sourceConversationId?: string;
 	sourceMessageIds?: string[];
 	evidenceSnippet?: string;
+	evidenceSupportEntryIds?: string[];
 }
 
 interface ArchiveEntryParams {
@@ -217,6 +218,7 @@ interface AddInsightParams {
 	sourceConversationId?: string;
 	sourceMessageIds?: string[];
 	evidenceSnippet?: string;
+	evidenceSupportEntryIds?: string[];
 }
 
 interface ConsolidateEntriesParams {
@@ -1514,10 +1516,20 @@ export function validateInsightSynthesis(
 	const text = typeof synthesis.insight_text === "string" ? synthesis.insight_text.trim() : "";
 	if (text.length === 0) return "empty_insight_text";
 	if (text.length > maxInsightChars) return "insight_text_too_long";
+	if (!Array.isArray(synthesis.support_entry_ids)) return "missing_support_entry_ids";
+	if (synthesis.support_entry_ids.some((value) => typeof value !== "string" || value.trim().length === 0)) {
+		return "invalid_support_entry_id";
+	}
+	const supportEntryIds = [...new Set(toStringArray(synthesis.support_entry_ids))];
+	if (supportEntryIds.length < 3) return "insufficient_support_entries";
+	if (supportEntryIds.some((entryId) => !targetEntryIds.includes(entryId))) {
+		return "support_entry_outside_cluster";
+	}
 	if (synthesis.placement === "append") {
 		const anchor = typeof synthesis.anchor_entry_id === "string" ? synthesis.anchor_entry_id : "";
 		if (anchor.length === 0) return "missing_anchor_entry_id";
 		if (!targetEntryIds.includes(anchor)) return "anchor_outside_cluster";
+		if (!supportEntryIds.includes(anchor)) return "anchor_outside_support_set";
 		return null;
 	}
 	if (synthesis.placement === "create") {
@@ -1558,9 +1570,10 @@ export async function applyInsightSynthesisVerdict(
 	}
 	const synthesis = verdict.synthesis!;
 	const insightText = synthesis.insight_text.trim();
+	const supportEntryIds = [...new Set(toStringArray(synthesis.support_entry_ids))];
 	const mutationId = `judge_insight_${item.op_id}`;
 	const reason = `dream insight synthesis (op ${item.op_id}): ${verdict.reason}`;
-	const evidenceSnippet = `Synthesized from entries: ${(item.target_entry_ids ?? []).join(", ")}`;
+	const evidenceSnippet = `Synthesized from entries: ${supportEntryIds.join(", ")}`;
 	try {
 		if (synthesis.placement === "append") {
 			const anchorId = synthesis.anchor_entry_id!;
@@ -1579,13 +1592,14 @@ export async function applyInsightSynthesisVerdict(
 				actorId: INSIGHT_SYNTHESIS_ACTOR,
 				insight: insightText,
 				evidenceSnippet,
+				evidenceSupportEntryIds: supportEntryIds,
 			});
 			if (result.ok !== true) {
 				return { outcome: "stale", detail: { error: String(result.error ?? "add_insight_failed"), anchor_entry_id: anchorId } };
 			}
 			return {
 				outcome: "applied",
-				detail: { placement: "append", anchor_entry_id: anchorId, no_op: result.no_op === true, run_id: runId },
+				detail: { placement: "append", anchor_entry_id: anchorId, support_entry_ids: supportEntryIds, no_op: result.no_op === true, run_id: runId },
 			};
 		}
 		const result = await createEntry(env, {
@@ -1596,13 +1610,14 @@ export async function applyInsightSynthesisVerdict(
 			currentView: insightText,
 			contextType: "recurring_pattern",
 			evidenceSnippet,
+			evidenceSupportEntryIds: supportEntryIds,
 		});
 		if (result.ok !== true) {
 			return { outcome: "stale", detail: { error: String(result.error ?? "create_entry_failed") } };
 		}
 		return {
 			outcome: "applied",
-			detail: { placement: "create", created_id: result.id ?? null, run_id: runId },
+			detail: { placement: "create", created_id: result.id ?? null, support_entry_ids: supportEntryIds, run_id: runId },
 		};
 	} catch (error) {
 		return {
@@ -3098,6 +3113,7 @@ function buildDreamProposalOperations(
 				? `Dream detected semantically near-duplicate entries (cosine ${plan.maxCosine ?? "?"}) with differing titles — requires judge/operator confirmation.`
 				: "Dream detected compatible duplicate entries with the same normalized topic fingerprint.",
 			evidence: {
+				support_entry_ids: [plan.canonical.id, ...archiveIds],
 				fingerprint: plan.fingerprint,
 				semantic_only: Boolean(plan.semanticOnly),
 				max_cosine: plan.maxCosine ?? null,
@@ -3131,6 +3147,7 @@ function buildDreamProposalOperations(
 				label: plan.label,
 				reasons: plan.reasons,
 				...(plan.evidence ?? {}),
+				support_entry_ids: plan.entryIds,
 			},
 			rollback: {
 				method: "update_entry",
@@ -3149,7 +3166,10 @@ function buildDreamProposalOperations(
 				? entry.contextType
 				: "recurring_pattern",
 			reason: "Dream found repeated or retrieved task-query memory that is strong enough to become durable recurring context.",
-			evidence: summarizeProposalEntry(entry),
+			evidence: {
+				support_entry_ids: [entry.id],
+				entry: summarizeProposalEntry(entry),
+			},
 			rollback: {
 				method: "set_context_type",
 				restore_context_type: entry.contextType,
@@ -3165,7 +3185,10 @@ function buildDreamProposalOperations(
 			entry_id: entry.id,
 			expected_revision: getExpectedRevision(entry),
 			reason: "Dream found low-salience single-mention memory with no retrieval reinforcement.",
-			evidence: summarizeProposalEntry(entry),
+			evidence: {
+				support_entry_ids: [entry.id],
+				entry: summarizeProposalEntry(entry),
+			},
 			rollback: {
 				method: "restore_archived",
 				entry_id: entry.id,
@@ -3192,7 +3215,10 @@ function buildDreamProposalOperations(
 			reason: daysSinceActivity !== null
 				? `Dream found this active project stale for ${daysSinceActivity} days with no access within the grace window.`
 				: "Dream found this active project has no recorded activity timestamp.",
-			evidence: summarizeProposalEntry(entry),
+			evidence: {
+				support_entry_ids: [entry.id],
+				entry: summarizeProposalEntry(entry),
+			},
 			rollback: {
 				method: "restore_snapshot",
 				entry_id: entry.id,
@@ -3469,8 +3495,8 @@ export async function mergeSemanticSliceIntoProposal(
 	});
 
 	// candidate_ids/candidate_revisions must cover every id the new operations
-	// touch — gradeDreamProposalRecord's entry_outside_snapshot check requires
-	// every touched entry to be within the proposal's own snapshot.
+	// touch or cite as evidence. The deterministic grade rejects both mutations
+	// and support claims that escape the proposal's revision-pinned snapshot.
 	const mergedCandidateIds = new Set(toStringArray(baseProposal.candidate_ids));
 	const baseCandidateRevisions = parseStoredObject(baseProposal.candidate_revisions) ?? {};
 	const mergedCandidateRevisions: Record<string, number> = {};
@@ -3480,7 +3506,11 @@ export async function mergeSemanticSliceIntoProposal(
 	}
 	const sliceCandidateRevisions = parseStoredObject(sliceProposal.candidate_revisions) ?? {};
 	for (const op of newOperations) {
-		for (const entryId of getOperationTouchedIds(op)) {
+		const coveredIds = new Set([
+			...getOperationTouchedIds(op),
+			...getOperationSupportEntryIds(op),
+		]);
+		for (const entryId of coveredIds) {
 			mergedCandidateIds.add(entryId);
 			if (mergedCandidateRevisions[entryId] === undefined) {
 				const revision = toOptionalInteger(sliceCandidateRevisions[entryId]);
@@ -3542,6 +3572,7 @@ function gradeDreamProposalRecord(
 	const proposalId = typeof proposal.run_id === "string" ? proposal.run_id : "unknown_proposal";
 	const operations = toObjectArray(proposal.operations);
 	const candidateIds = new Set(toStringArray(proposal.candidate_ids));
+	const candidateRevisions = parseStoredObject(proposal.candidate_revisions);
 	const issues: Array<Record<string, unknown>> = [];
 	const allowedOperationTypes = new Set([
 		"archive_entry",
@@ -3557,7 +3588,7 @@ function gradeDreamProposalRecord(
 	if (candidateIds.size === 0 && operations.length > 0) {
 		issues.push(buildGradeIssue("missing_snapshot_candidates", "Mutating proposal has no candidate snapshot ids."));
 	}
-	if (!parseStoredObject(proposal.candidate_revisions) && operations.length > 0) {
+	if (!candidateRevisions && operations.length > 0) {
 		issues.push(buildGradeIssue("missing_candidate_revisions", "Mutating proposal has no candidate revision map."));
 	}
 
@@ -3597,8 +3628,54 @@ function gradeDreamProposalRecord(
 		if (!reason) {
 			issues.push(buildGradeIssue("missing_reason", "Operation is missing a reason.", operationId));
 		}
-		if (!parseStoredObject(operation.evidence)) {
+		const evidence = parseStoredObject(operation.evidence);
+		if (!evidence) {
 			issues.push(buildGradeIssue("missing_evidence", "Operation is missing evidence.", operationId));
+		} else {
+			if (
+				Array.isArray(evidence.support_entry_ids) &&
+				evidence.support_entry_ids.some((value) => typeof value !== "string" || value.trim().length === 0)
+			) {
+				issues.push(buildGradeIssue(
+					"invalid_evidence_support_id",
+					"Operation evidence contains a support entry id that is not a non-empty string.",
+					operationId,
+				));
+			}
+			const supportEntryIds = getOperationSupportEntryIds(operation);
+			const supportEntryIdSet = new Set(supportEntryIds);
+			if (supportEntryIds.length === 0) {
+				issues.push(buildGradeIssue(
+					"missing_evidence_support_set",
+					"Operation evidence is missing a non-empty support_entry_ids set.",
+					operationId,
+				));
+			}
+			for (const entryId of supportEntryIds) {
+				if (!candidateIds.has(entryId)) {
+					issues.push(buildGradeIssue(
+						"evidence_outside_snapshot",
+						`Evidence cites ${entryId}, which is outside the proposal snapshot.`,
+						operationId,
+					));
+				}
+				if (toOptionalInteger(candidateRevisions?.[entryId]) === null) {
+					issues.push(buildGradeIssue(
+						"missing_evidence_revision",
+						`Evidence cites ${entryId} without a pinned candidate revision.`,
+						operationId,
+					));
+				}
+			}
+			for (const entryId of touchedIds) {
+				if (!supportEntryIdSet.has(entryId)) {
+					issues.push(buildGradeIssue(
+						"touched_entry_without_evidence",
+						`Operation touches ${entryId}, but its evidence support set does not include it.`,
+						operationId,
+					));
+				}
+			}
 		}
 	}
 
@@ -3615,13 +3692,25 @@ function gradeDreamProposalRecord(
 	}
 
 	const passed = issues.length === 0;
+	const evidenceIssueCodes = new Set([
+		"missing_candidate_revisions",
+		"missing_evidence",
+		"missing_evidence_support_set",
+		"invalid_evidence_support_id",
+		"evidence_outside_snapshot",
+		"missing_evidence_revision",
+		"touched_entry_without_evidence",
+	]);
+	const evidenceSufficient = !issues.some(
+		(issue) => typeof issue.code === "string" && evidenceIssueCodes.has(issue.code),
+	);
 	return {
 		schema_version: 1,
 		grade_id: `dpg_${gradedAt.replace(/[:.]/g, "-")}`,
 		proposal_id: proposalId,
 		graded_at: gradedAt,
 		graded_by: options.actorId,
-		rubric_version: options.rubricVersion ?? "deterministic-v1",
+		rubric_version: options.rubricVersion ?? "deterministic-v2-evidence-anchor",
 		status: passed ? "passed" : "failed",
 		passed,
 		hard_fail_count: issues.length,
@@ -3631,7 +3720,7 @@ function gradeDreamProposalRecord(
 			.map((operation) => operation.operation_id)
 			.filter((operationId): operationId is string => typeof operationId === "string"),
 		rubric: {
-			evidence_sufficiency: passed,
+			evidence_sufficiency: evidenceSufficient,
 			revision_safety: passed,
 			idempotency_safety: passed,
 			reversibility: passed,
@@ -3682,6 +3771,11 @@ function getOperationTouchedIds(operation: Record<string, unknown>): string[] {
 	for (const value of toStringArray(operation.entry_ids)) ids.add(value);
 	for (const value of toStringArray(operation.archive_ids)) ids.add(value);
 	return [...ids];
+}
+
+function getOperationSupportEntryIds(operation: Record<string, unknown>): string[] {
+	const evidence = parseStoredObject(operation.evidence);
+	return evidence ? [...new Set(toStringArray(evidence.support_entry_ids))] : [];
 }
 
 function getOperationExpectedRevisions(operation: Record<string, unknown>): Record<string, number> {
@@ -6487,6 +6581,7 @@ export async function addInsight(
 				conversation_id: params.sourceConversationId ?? `mcp:${params.actorId}`,
 				message_ids: params.sourceMessageIds ?? [],
 				snippet: params.evidenceSnippet ?? params.reason,
+				support_entry_ids: [...new Set(params.evidenceSupportEntryIds ?? [])],
 			},
 		},
 	];
@@ -6581,6 +6676,7 @@ export async function createEntry(
 		conversation_id: params.sourceConversationId ?? `mcp:${params.actorId}`,
 		message_ids: sourceMessageIds,
 		snippet: params.evidenceSnippet ?? params.reason,
+		support_entry_ids: [...new Set(params.evidenceSupportEntryIds ?? [])],
 	};
 
 	const entry: Record<string, unknown> = {
@@ -6612,6 +6708,9 @@ export async function createEntry(
 			source: "mcp",
 			source_conversations: sourceConversations,
 			source_messages: sourceMessageIds,
+			...(evidence.support_entry_ids.length > 0
+				? { evidence_support_entry_ids: evidence.support_entry_ids }
+				: {}),
 			context_type: contextType,
 			classification_status: "manual_override",
 			auto_inferred: false,

@@ -378,14 +378,14 @@ describe("validateInsightSynthesis", () => {
 	it("accepts valid append and create blocks", () => {
 		expect(
 			validateInsightSynthesis(
-				{ insight_text: "A durable pattern.", placement: "append", anchor_entry_id: "ke_b" },
+				{ insight_text: "A durable pattern.", placement: "append", anchor_entry_id: "ke_b", support_entry_ids: targets },
 				targets,
 				500,
 			),
 		).toBeNull();
 		expect(
 			validateInsightSynthesis(
-				{ insight_text: "A durable pattern.", placement: "create", domain: "cross-domain synthesis" },
+				{ insight_text: "A durable pattern.", placement: "create", domain: "cross-domain synthesis", support_entry_ids: targets },
 				targets,
 				500,
 			),
@@ -395,31 +395,62 @@ describe("validateInsightSynthesis", () => {
 	it("rejects every malformed shape", () => {
 		expect(validateInsightSynthesis(undefined, targets, 500)).toBe("missing_synthesis_block");
 		expect(
-			validateInsightSynthesis({ insight_text: "  ", placement: "append", anchor_entry_id: "ke_a" }, targets, 500),
+			validateInsightSynthesis({ insight_text: "  ", placement: "append", anchor_entry_id: "ke_a", support_entry_ids: targets }, targets, 500),
 		).toBe("empty_insight_text");
 		expect(
-			validateInsightSynthesis({ insight_text: "x".repeat(501), placement: "create", domain: "d" }, targets, 500),
+			validateInsightSynthesis({ insight_text: "x".repeat(501), placement: "create", domain: "d", support_entry_ids: targets }, targets, 500),
 		).toBe("insight_text_too_long");
-		expect(validateInsightSynthesis({ insight_text: "ok", placement: "append" }, targets, 500)).toBe(
+		expect(validateInsightSynthesis({ insight_text: "ok", placement: "append", support_entry_ids: targets }, targets, 500)).toBe(
 			"missing_anchor_entry_id",
 		);
 		expect(
 			validateInsightSynthesis(
-				{ insight_text: "ok", placement: "append", anchor_entry_id: "ke_outside" },
+				{ insight_text: "ok", placement: "append", anchor_entry_id: "ke_outside", support_entry_ids: targets },
 				targets,
 				500,
 			),
 		).toBe("anchor_outside_cluster");
-		expect(validateInsightSynthesis({ insight_text: "ok", placement: "create" }, targets, 500)).toBe(
+		expect(validateInsightSynthesis({ insight_text: "ok", placement: "create", support_entry_ids: targets }, targets, 500)).toBe(
 			"missing_domain",
 		);
 		expect(
 			validateInsightSynthesis(
-				{ insight_text: "ok", placement: "replace" as never, anchor_entry_id: "ke_a" },
+				{ insight_text: "ok", placement: "replace" as never, anchor_entry_id: "ke_a", support_entry_ids: targets },
 				targets,
 				500,
 			),
 		).toBe("invalid_placement");
+		expect(validateInsightSynthesis({ insight_text: "ok", placement: "create", domain: "d" }, targets, 500)).toBe(
+			"missing_support_entry_ids",
+		);
+		expect(
+			validateInsightSynthesis(
+				{ insight_text: "ok", placement: "create", domain: "d", support_entry_ids: ["ke_a", "ke_b", 3 as never] },
+				targets,
+				500,
+			),
+		).toBe("invalid_support_entry_id");
+		expect(
+			validateInsightSynthesis(
+				{ insight_text: "ok", placement: "create", domain: "d", support_entry_ids: ["ke_a", "ke_b"] },
+				targets,
+				500,
+			),
+		).toBe("insufficient_support_entries");
+		expect(
+			validateInsightSynthesis(
+				{ insight_text: "ok", placement: "create", domain: "d", support_entry_ids: ["ke_a", "ke_b", "ke_z"] },
+				targets,
+				500,
+			),
+		).toBe("support_entry_outside_cluster");
+		expect(
+			validateInsightSynthesis(
+				{ insight_text: "ok", placement: "append", anchor_entry_id: "ke_c", support_entry_ids: ["ke_a", "ke_b", "ke_a"] },
+				targets,
+				500,
+			),
+		).toBe("insufficient_support_entries");
 	});
 });
 
@@ -614,7 +645,7 @@ describe("applyInsightSynthesisVerdict", () => {
 			makeEnv(),
 			redis as never,
 			makeItem(targets),
-			makeVerdict({ insight_text: "ok", placement: "append", anchor_entry_id: "ke_elsewhere" }),
+			makeVerdict({ insight_text: "ok", placement: "append", anchor_entry_id: "ke_elsewhere", support_entry_ids: targets }),
 			"dr_run",
 		);
 		expect(outside.outcome).toBe("stale");
@@ -632,6 +663,7 @@ describe("applyInsightSynthesisVerdict", () => {
 				insight_text: "Sentiment breadth and portfolio churn move together.",
 				placement: "append",
 				anchor_entry_id: "ke_anchor",
+				support_entry_ids: targets,
 			}),
 			"dr_run",
 		);
@@ -639,10 +671,12 @@ describe("applyInsightSynthesisVerdict", () => {
 		expect(outcome.detail.placement).toBe("append");
 
 		const entry = getStored("knowledge:ke_anchor");
-		const insights = entry.key_insights as Array<{ insight: string; evidence: { snippet: string } }>;
+		const insights = entry.key_insights as Array<{ insight: string; evidence: { snippet: string; support_entry_ids: string[] } }>;
 		expect(insights).toHaveLength(1);
 		expect(insights[0].insight).toBe("Sentiment breadth and portfolio churn move together.");
 		expect(insights[0].evidence.snippet).toContain("ke_b");
+		expect(insights[0].evidence.support_entry_ids).toEqual(targets);
+		expect(outcome.detail.support_entry_ids).toEqual(targets);
 		const metadata = entry.metadata as Record<string, unknown>;
 		expect(metadata.revision).toBe(5);
 		expect((metadata.updated_by as Record<string, unknown>).actor_id).toBe(INSIGHT_SYNTHESIS_ACTOR);
@@ -655,6 +689,7 @@ describe("applyInsightSynthesisVerdict", () => {
 			insight_text: "Sentiment breadth and portfolio churn move together.",
 			placement: "append",
 			anchor_entry_id: "ke_anchor",
+			support_entry_ids: targets,
 		});
 		const first = await applyInsightSynthesisVerdict(makeEnv(), redis as never, makeItem(targets), verdict, "dr_run");
 		expect(first.outcome).toBe("applied");
@@ -671,7 +706,7 @@ describe("applyInsightSynthesisVerdict", () => {
 			makeEnv(),
 			redis as never,
 			makeItem(targets),
-			makeVerdict({ insight_text: "ok", placement: "append", anchor_entry_id: "ke_anchor" }),
+			makeVerdict({ insight_text: "ok", placement: "append", anchor_entry_id: "ke_anchor", support_entry_ids: targets }),
 			"dr_run",
 		);
 		expect(archived.outcome).toBe("stale");
@@ -681,7 +716,7 @@ describe("applyInsightSynthesisVerdict", () => {
 			makeEnv(),
 			redis as never,
 			makeItem(["ke_gone", "ke_b", "ke_c"], "op_test_insight_2"),
-			makeVerdict({ insight_text: "ok", placement: "append", anchor_entry_id: "ke_gone" }),
+			makeVerdict({ insight_text: "ok", placement: "append", anchor_entry_id: "ke_gone", support_entry_ids: ["ke_gone", "ke_b", "ke_c"] }),
 			"dr_run",
 		);
 		expect(missing.outcome).toBe("stale");
@@ -698,6 +733,7 @@ describe("applyInsightSynthesisVerdict", () => {
 				insight_text: "Across signals and portfolio work, turnover limits dominate alpha capture.",
 				placement: "create",
 				domain: "turnover-aware alpha capture",
+				support_entry_ids: targets,
 			}),
 			"dr_run",
 		);
@@ -713,6 +749,7 @@ describe("applyInsightSynthesisVerdict", () => {
 		);
 		const metadata = entry.metadata as Record<string, unknown>;
 		expect(metadata.context_type).toBe("recurring_pattern");
+		expect(metadata.evidence_support_entry_ids).toEqual(targets);
 		expect((metadata.updated_by as Record<string, unknown>).actor_id).toBe(INSIGHT_SYNTHESIS_ACTOR);
 		// Vector embedding was written for the new entry.
 		expect(mockState.vectorUpserts.some((row) => row.id === createdId)).toBe(true);
