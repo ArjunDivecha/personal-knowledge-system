@@ -140,7 +140,7 @@ review:
     \ correctness issues, or 'REVIEW: FAIL' plus the specific blocking issue otherwise.\
     \ Minor nice-to-haves do not block \u2014 still emit REVIEW: PASS and list them\
     \ as nits.\n\nDIFF:\n$DIFF\"\ncodex exec \"$PROMPT\" --sandbox read-only --skip-git-repo-check\
-    \ -m gpt-5.5 -c model_reasoning_effort=\"high\" > /tmp/pks_g0_review.log 2>&1\n\
+    \ -m gpt-5.6-sol -c model_reasoning_effort=\"high\" > /tmp/pks_g0_review.log 2>&1\n\
     tail -5 /tmp/pks_g0_review.log\ngrep -q \"REVIEW: PASS\" /tmp/pks_g0_review.log\
     \ && exit 0\necho \"REVIEW GATE FAIL \u2014 see /tmp/pks_g0_review.log\"\nexit\
     \ 1\n"

@@ -48,7 +48,7 @@ Successfully processed new Anthropic chat data:
 - **Pass rate:** 100%
 
 ### Stage 3: EXTRACTION ✅
-- Used Claude Sonnet 4.5 (`claude-sonnet-4-5-20250929`)
+- Used Claude Sonnet 4.5 (`claude-sonnet-5`)
 - **Extracted:** 66 knowledge entries
 - **Extracted:** 36 project entries
 - **Total:** 102 entries

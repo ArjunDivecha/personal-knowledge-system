@@ -177,7 +177,7 @@ class RenderDigestTests(unittest.TestCase):
                 "verdict": {
                     "verdict": "apply",
                     "reason": "labels match exactly and content overlaps",
-                    "judge_model": "claude-opus-4-6",
+                    "judge_model": "claude-opus-5",
                     "judge_source": "claude_cli",
                 },
                 "item": {"op_type": "duplicate_merge_borderline"},

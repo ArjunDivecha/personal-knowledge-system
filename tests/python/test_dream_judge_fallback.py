@@ -23,7 +23,7 @@ class DreamJudgeFallbackTests(unittest.TestCase):
                     self.assertIsNone(
                         dream_judge.judge_item(
                             {"op_id": "op_1"},
-                            "claude-opus-4-6",
+                            "claude-opus-5",
                             force_api=False,
                             allow_api_fallback=False,
                         )
@@ -36,7 +36,7 @@ class DreamJudgeFallbackTests(unittest.TestCase):
                 self.assertIsNone(
                     dream_judge.judge_item(
                         {"op_id": "op_1"},
-                        "claude-opus-4-6",
+                        "claude-opus-5",
                         force_api=True,
                         allow_api_fallback=False,
                     )
@@ -53,12 +53,12 @@ class DreamJudgeFallbackTests(unittest.TestCase):
                 with patch.object(dream_judge, "judge_via_anthropic_api", return_value=expected) as api:
                     result = dream_judge.judge_item(
                         {"op_id": "op_1"},
-                        "claude-opus-4-6",
+                        "claude-opus-5",
                         force_api=False,
                         allow_api_fallback=True,
                     )
         self.assertEqual(result, expected)
-        api.assert_called_once_with("prompt", "claude-opus-4-6", {"op_id": "op_1"})
+        api.assert_called_once_with("prompt", "claude-opus-5", {"op_id": "op_1"})
 
 
 if __name__ == "__main__":

@@ -263,7 +263,7 @@ function makeVerdict(
 		verdict,
 		reason: "test reason",
 		judged_at: "2026-07-02T01:00:00.000Z",
-		judge_model: "claude-opus-4-6",
+		judge_model: "claude-opus-5",
 		judge_source: "claude_cli",
 		synthesis,
 	};

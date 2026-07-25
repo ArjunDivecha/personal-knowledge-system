@@ -125,7 +125,7 @@ review:
     Review for INV1 (governed-only transitions with per-run cap — cap applies to the scheduled path, consistent with every other operation type), INV2 (pinned/explicit_save exemption), INV3 (receipted reversibility), INV4 (get_index structurally separates dormant projects, no leak under 50 active projects), INV5 (policy-driven windows — MEMORY_POLICY.project_lifecycle is read directly with no JS-side fallback, and shared/memory_policy.json's checked-in project_lifecycle block always has both fields), INV6 (scope). Respond with a single final line exactly 'REVIEW: PASS' or 'REVIEW: FAIL' plus the blocking issue. Nits do not block. Do not re-flag the manual-path cap absence — it is confirmed pre-existing uniform architecture, not a defect of this contract.
 
     DIFF: $DIFF"
-    codex exec "$PROMPT" --sandbox read-only --skip-git-repo-check -m gpt-5.5 -c model_reasoning_effort="high" 2>&1 | grep -E "^REVIEW:" | tail -1 | grep -q "^REVIEW: PASS" && echo "REVIEW PASS" || { echo "REVIEW FAIL"; exit 1; }
+    codex exec "$PROMPT" --sandbox read-only --skip-git-repo-check -m gpt-5.6-sol -c model_reasoning_effort="high" 2>&1 | grep -E "^REVIEW:" | tail -1 | grep -q "^REVIEW: PASS" && echo "REVIEW PASS" || { echo "REVIEW FAIL"; exit 1; }
   sees: &id001
   - diff
   - invariants

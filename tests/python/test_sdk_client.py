@@ -129,7 +129,7 @@ class SdkClientTests(unittest.TestCase):
             {
                 "ANTHROPIC_API_KEY": "sk-test",
                 "PKS_ALLOW_ANTHROPIC_API_FALLBACK": "1",
-                "PKS_SDK_MODEL": "claude-opus-4-8",
+                "PKS_SDK_MODEL": "claude-opus-5",
             },
             clear=True,
         ):
@@ -386,7 +386,7 @@ class SdkClientTests(unittest.TestCase):
         self.assertEqual(captured["max_turns"], 4)
 
     def test_sdk_query_refuses_opus_model_without_explicit_override(self) -> None:
-        with patch.dict("os.environ", {"PKS_SDK_MODEL": "claude-opus-4-8"}, clear=True):
+        with patch.dict("os.environ", {"PKS_SDK_MODEL": "claude-opus-5"}, clear=True):
             with self.assertRaisesRegex(RuntimeError, "Opus-class model"):
                 sdk_client.sdk_query("hello")
 
@@ -408,7 +408,7 @@ class SdkClientTests(unittest.TestCase):
         with patch.dict(
             "os.environ",
             {
-                "PKS_SDK_MODEL": "claude-opus-4-8",
+                "PKS_SDK_MODEL": "claude-opus-5",
                 "PKS_ALLOW_OPUS_SDK_MODEL": "1",
             },
             clear=True,
@@ -416,7 +416,7 @@ class SdkClientTests(unittest.TestCase):
             with patch.object(sdk_client, "query", fake_query):
                 self.assertEqual(sdk_client.sdk_query("hello"), "ok")
 
-        self.assertEqual(captured["model"], "claude-opus-4-8")
+        self.assertEqual(captured["model"], "claude-opus-5")
 
     def test_sdk_query_uses_result_text_when_assistant_text_is_empty(self) -> None:
         def fake_query(prompt, options):

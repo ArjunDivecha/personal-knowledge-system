@@ -100,7 +100,7 @@ EMBEDDING_MODEL = "text-embedding-3-large"
 EMBEDDING_DIMENSIONS = 3072
 
 # LLM model for extraction
-EXTRACTION_MODEL = "claude-opus-4-6"
+EXTRACTION_MODEL = "claude-opus-5"
 
 
 # -----------------------------------------------------------------------------

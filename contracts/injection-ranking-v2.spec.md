@@ -143,7 +143,7 @@ review:
 
     DIFF:
     \$DIFF"
-    codex exec "\$PROMPT" --sandbox read-only --skip-git-repo-check -m gpt-5.5 -c model_reasoning_effort="high" > /tmp/pks_rv2_review_gate.log 2>&1
+    codex exec "\$PROMPT" --sandbox read-only --skip-git-repo-check -m gpt-5.6-sol -c model_reasoning_effort="high" > /tmp/pks_rv2_review_gate.log 2>&1
     tail -5 /tmp/pks_rv2_review_gate.log
     grep -q "REVIEW: PASS" /tmp/pks_rv2_review_gate.log && exit 0
     echo "REVIEW GATE FAIL — see /tmp/pks_rv2_review_gate.log"

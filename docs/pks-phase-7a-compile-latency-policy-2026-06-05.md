@@ -101,7 +101,7 @@ Examples:
 
 - "make test-python-checker ran 77 tests OK"
 - "origin/main points at commit X"
-- "Opus latest model resolved to claude-opus-4-8"
+- "Opus latest model resolved to claude-opus-5"
 
 Behavior:
 

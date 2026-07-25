@@ -83,7 +83,7 @@ function makeVerdict(opId: string, verdict: "apply" | "skip"): JudgeVerdict {
 		verdict,
 		reason: `judge said ${verdict}`,
 		judged_at: "2026-05-17T01:00:00.000Z",
-		judge_model: "claude-opus-4-6",
+		judge_model: "claude-opus-5",
 		judge_source: "claude_cli",
 	};
 }

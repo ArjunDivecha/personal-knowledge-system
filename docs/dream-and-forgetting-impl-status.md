@@ -57,7 +57,7 @@ All 7 stages from the staging plan, each in its own commit. Defaults are off eve
 
 ### Stage 5b — Mac-Side Judge Script
 - New module `ingestion/dream_judge/run.py`: nightly script that polls the Worker queue, asks Opus to decide each border case, posts verdicts back.
-- **Subscription billing**: tries `claude --print --model claude-opus-4-6` first (Claude Code subscription credits, no API cost).
+- **Subscription billing**: tries `claude --print --model claude-opus-5` first (Claude Code subscription credits, no API cost).
 - **Fallback**: if the CLI is missing / times out / returns unparseable output, falls back to the Anthropic API with a logged warning, so a single failed CLI call doesn't break the queue.
 - Conservative prompt with bias-to-skip ("cost of a wrong apply is higher than wrong skip").
 - Robust verdict parser handles markdown fences, preamble, and code blocks.

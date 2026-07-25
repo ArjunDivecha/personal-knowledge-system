@@ -57,7 +57,7 @@ Current state: Dream produces nightly proposals but applies nothing. The user wa
 - Given: the proposal (op type, target entry IDs, evidence), both entries' full content, recent access history.
 - Returns: binary verdict (apply / skip) + 2-3 sentence reason.
 - No confidence score, no defer state, no "operator should see" flag, no auditor pass.
-- Model pinned to `claude-opus-4-6`.
+- Model pinned to `claude-opus-5`.
 - Hard cap: 25 Opus calls/night across L3+L4.
 
 ## Kill switches and rollback

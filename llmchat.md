@@ -100,7 +100,7 @@ Fresh ingestion run after a long gap — processed 2,180 Claude conversations th
 - 100% pass rate through quality filter (score ≥ 3)
 - Extracted 66 knowledge entries + 36 project entries
 - Cleared existing entries for fresh run (intentional reset)
-- Updated extraction model from older Sonnet to `claude-opus-4-6`
+- Updated extraction model from older Sonnet to `claude-opus-5`
 
 ### Final Storage Totals
 - Knowledge entries: **66**
@@ -108,7 +108,7 @@ Fresh ingestion run after a long gap — processed 2,180 Claude conversations th
 - Total: **102** (reset from prior 4,269)
 
 ### Context for Claude Code
-- Model updated in `d2a9f07`: `EXTRACTION_MODEL = "claude-opus-4-6"`
+- Model updated in `d2a9f07`: `EXTRACTION_MODEL = "claude-opus-5"`
 - Storage was intentionally cleared before this run
 
 ---
@@ -125,8 +125,8 @@ Added Claude Code + Codex CLI session ingestion pipeline — the system can now 
 ### Decisions Made
 - **Agent session ingestion**: New pipeline reads `~/.claude/projects/**/*.jsonl` (Claude Code) and `~/.codex/sessions/**/rollout-*.jsonl` (Codex CLI). Uses byte-offset + mtime checkpointing for incremental processing.
 - **GitHub repo linking**: Detects `git remote` from session working directory and attaches repo context to each knowledge entry.
-- **Distillation model**: `claude-sonnet-4-6` (cost-effective for high-volume session processing).
-- **Extraction model updated**: `ff38776` — set to `claude-sonnet-4-6` from older version.
+- **Distillation model**: `claude-sonnet-5` (cost-effective for high-volume session processing).
+- **Extraction model updated**: `ff38776` — set to `claude-sonnet-5` from older version.
 
 ### Key Files Added
 - `ingestion/agent_sessions/run.py` — main runner

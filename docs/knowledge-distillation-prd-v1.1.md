@@ -4,7 +4,7 @@
 **Author:** Claude + Arjun
 **Date:** December 2024 (updated March 2026)
 **Status:** Implemented
-**Note:** This PRD covers the original distillation pipeline (Claude/GPT exports). Agent session ingestion (Claude Code + Codex CLI) is documented in README.md and `ingestion/agent_sessions/run.py`. Model updated to Claude Sonnet 4.6 (`claude-sonnet-4-6`).
+**Note:** This PRD covers the original distillation pipeline (Claude/GPT exports). Agent session ingestion (Claude Code + Codex CLI) is documented in README.md and `ingestion/agent_sessions/run.py`. Model updated to Claude Sonnet 4.6 (`claude-sonnet-5`).
 
 ---
 
@@ -1543,7 +1543,7 @@ vercel:
 
 ```yaml
 anthropic_api:
-  model: claude-3-5-sonnet-20241022
+  model: claude-sonnet-5
   pricing:
     input: $3.00 / 1M tokens
     output: $15.00 / 1M tokens

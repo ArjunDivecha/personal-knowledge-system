@@ -7,7 +7,7 @@ SCRIPT NAME: dream_judge/run.py
 INPUT FILES:
 - ingestion/.env: DREAM_OPERATOR_TOKEN (auth to Worker), DREAM_MCP_BASE_URL
   (default https://mcp.dancing-ganesh.com), DREAM_OPUS_MODEL (default
-  claude-opus-4-8), ANTHROPIC_API_KEY (only when fallback is explicit)
+  claude-opus-5), ANTHROPIC_API_KEY (only when fallback is explicit)
 
 OUTPUT FILES:
 - Verdicts POSTed back to the Worker at /ops/dream/judge_verdict
@@ -88,7 +88,7 @@ log = logging.getLogger(__name__)
 # ----------------------------------------------------------------------------
 WORKER_BASE_URL = os.getenv("DREAM_MCP_BASE_URL", "https://mcp.dancing-ganesh.com").rstrip("/")
 OPERATOR_TOKEN = os.getenv("DREAM_OPERATOR_TOKEN", "")
-OPUS_MODEL = os.getenv("DREAM_OPUS_MODEL", "claude-opus-4-8")
+OPUS_MODEL = os.getenv("DREAM_OPUS_MODEL", "claude-opus-5")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 CLAUDE_CLI_PATH = os.getenv("CLAUDE_CLI_PATH", "")
 

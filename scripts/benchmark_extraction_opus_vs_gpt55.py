@@ -49,7 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-size", type=int, default=10)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--claude-model", default=EXTRACTION_MODEL)
-    parser.add_argument("--openai-model", default="gpt-5.5")
+    parser.add_argument("--openai-model", default="gpt-5.6-sol")
     parser.add_argument("--openai-reasoning-effort", default="high")
     parser.add_argument("--max-output-tokens", type=int, default=1600)
     parser.add_argument("--request-timeout-s", type=float, default=60.0)

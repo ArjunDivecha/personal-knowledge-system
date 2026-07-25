@@ -26,7 +26,7 @@
     "priority": "medium",
     "query": "which model does the Dream judge use",
     "expect_any_of": ["judge"],
-    "forbid_any_of": ["claude-opus-4-6"],
+    "forbid_any_of": ["claude-opus-5"],
     "notes": "claude-opus-4-6 is a retired model ID (CLAUDE.md model policy); its appearance as the current judge model is a stale leak. Default fixed to claude-opus-4-8 in ingestion/dream_judge/run.py on 2026-07-06."
   },
   {
