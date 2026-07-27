@@ -305,6 +305,111 @@ class RedisRunStore:
             output[pattern] = counts
         return output
 
+    def list_prepared_outbox(self) -> list[dict[str, Any]]:
+        """Every maintenance:outbox:* journal currently in `prepared` state.
+
+        A `prepared` journal is a merge whose before-snapshots were written but
+        whose apply never reached a terminal state — an orphan from a crashed
+        prior run. At run start (before this run enqueues anything) it can only
+        be someone else's leftover. The barrier treats it as unsafe, so it must
+        be reconciled or every night fails on it.
+        """
+        cursor: int | str = 0
+        keys: list[str] = []
+        while True:
+            cursor, batch = self.redis.scan(cursor, match="maintenance:outbox:*", count=1000)
+            keys.extend(str(key) for key in batch)
+            if str(cursor) == "0":
+                break
+        prepared: list[dict[str, Any]] = []
+        for start in range(0, len(keys), 100):
+            chunk = keys[start : start + 100]
+            values = self.redis.mget(*chunk) if chunk else []
+            for value in values:
+                try:
+                    parsed = json.loads(value) if isinstance(value, str) else value
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(parsed, dict) and parsed.get("status") == "prepared":
+                    prepared.append(parsed)
+        return prepared
+
+    def entry_revision(self, entry_id: str) -> int | None:
+        """Current revision of a live entry. None means the entry key is absent
+        (a genuine divergence — never blindly restore over a missing entry).
+        A present entry with no revision field reads as 0, matching the
+        Worker's `metadata.revision ?? 0` convention."""
+        key = f"project:{entry_id}" if entry_id.startswith("pe_") else f"knowledge:{entry_id}"
+        raw = self.redis.get(key)
+        if raw is None:
+            return None
+        try:
+            entry = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, ValueError):
+            return None
+        metadata = entry.get("metadata") if isinstance(entry, dict) else None
+        revision = metadata.get("revision") if isinstance(metadata, dict) else None
+        return revision if isinstance(revision, int) and not isinstance(revision, bool) else 0
+
+
+def _normalized_revision(value: Any) -> int:
+    """The system treats an absent/None revision as 0 (Worker: revision ?? 0).
+    A stale orphan's duplicate often has no revision field yet its journal
+    expects 0 — without this they would look diverged and never reconcile."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def reconcile_orphan_outbox(
+    *,
+    store: "RedisRunStore",
+    operator: OperatorClient,
+) -> dict[str, list[Any]]:
+    """Roll back orphaned `prepared` outbox entries, revision-guarded.
+
+    For each `prepared` journal: if every current entry revision still equals
+    the journal's expected revision (nothing touched the entries since prepare),
+    roll it back through the EXISTING /ops/maintenance/rollback endpoint — for a
+    never-applied orphan this restores identical state and just flips the status
+    to `rolled_back`, clearing the barrier poison. If any entry diverged or is
+    missing, DO NOT roll back (that would clobber newer state); record it for
+    human review. Never raises: a skipped orphan is strictly safer than a
+    corrupted entry, and the barrier will simply still fail that night.
+    """
+    reconciled: list[str] = []
+    skipped: list[dict[str, Any]] = []
+    for journal in store.list_prepared_outbox():
+        task_id = journal.get("task_id")
+        if not isinstance(task_id, str) or not task_id:
+            skipped.append({"task_id": None, "reason": "missing_task_id"})
+            continue
+        expected = journal.get("expected_revisions")
+        expected = expected if isinstance(expected, dict) else {}
+        ids = list(expected)
+        if not ids:
+            canonical = journal.get("canonical_id")
+            dups = journal.get("duplicate_ids")
+            ids = [canonical, *(dups if isinstance(dups, list) else [])]
+        divergence: dict[str, str] | None = None
+        for entry_id in ids:
+            if not isinstance(entry_id, str) or not entry_id:
+                continue
+            current = store.entry_revision(entry_id)
+            if current is None:
+                divergence = {"reason": "entry_missing", "detail": entry_id}
+                break
+            if current != _normalized_revision(expected.get(entry_id)):
+                divergence = {"reason": "revision_diverged", "detail": entry_id}
+                break
+        if divergence is not None:
+            skipped.append({"task_id": task_id, **divergence})
+            continue
+        try:
+            operator.rollback(task_id)
+            reconciled.append(task_id)
+        except Exception as exc:  # noqa: BLE001 — surface as skip, never abort the run
+            skipped.append({"task_id": task_id, "reason": "rollback_failed", "detail": str(exc)})
+    return {"reconciled": reconciled, "skipped": skipped}
+
 
 def barrier(
     *,
@@ -391,6 +496,21 @@ def run_night(
         if initial_health.get("status") != "ok":
             raise RuntimeError(f"worker_unhealthy:{initial_health.get('status')}")
         report["preflight_health"] = {"status": initial_health.get("status")}
+
+        # Reconcile orphaned `prepared` outbox entries from crashed prior runs
+        # BEFORE the barrier can trip on them. Live only (it mutates via the
+        # existing rollback endpoint); at this point this run has enqueued
+        # nothing, so any `prepared` entry is necessarily a prior-run orphan.
+        if options.live:
+            reconcile = reconcile_orphan_outbox(store=store, operator=operator)
+            report["reconciled"] = reconcile["reconciled"]
+            if reconcile["skipped"]:
+                report["reconcile_skipped"] = reconcile["skipped"]
+                report.setdefault("warnings", []).extend(
+                    "orphan_outbox_unreconciled:%s:%s" % (item.get("task_id"), item.get("reason"))
+                    for item in reconcile["skipped"]
+                )
+            store.save(report)
 
         pre_verification = verifier()
         report["pre_verification"] = pre_verification

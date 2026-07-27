@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -59,10 +60,20 @@ class FakeOperator:
 
 
 class FakeStore:
-    def __init__(self) -> None:
+    def __init__(self, prepared: list[dict] | None = None, revisions: dict | None = None) -> None:
         self.saved: list[dict] = []
         self.locked = False
         self.latest_value = None
+        # Orphan-reconciler inputs. Defaults (no prepared entries) make the
+        # reconciler a no-op, so every pre-existing run_night test is unaffected.
+        self._prepared = list(prepared or [])
+        self._revisions = dict(revisions or {})  # entry_id -> int; absent key => entry missing (None)
+
+    def list_prepared_outbox(self) -> list[dict]:
+        return list(self._prepared)
+
+    def entry_revision(self, entry_id: str):
+        return self._revisions.get(entry_id)
 
     def acquire(self, run_id: str, ttl_seconds: int) -> bool:
         self.locked = True
@@ -264,6 +275,108 @@ class NightlySemanticMaintenanceTests(unittest.TestCase):
         self.assertIn('SEMANTIC_SLICE_SIZE"] == 0', maintenance)
         self.assertNotIn("ensure_overnight_dream_run.py", report)
         self.assertIn("--check-latest", report)
+
+    # --- PKS-MAINT-ORPHAN-RECONCILE-001 -----------------------------------
+
+    def test_reconcile_rolls_back_clean_orphan(self) -> None:
+        # B1: a prepared orphan whose entries are untouched since prepare
+        # (current revisions == expected) is rolled back via the existing
+        # endpoint and reported as reconciled.
+        journal = {
+            "status": "prepared",
+            "task_id": "T",
+            "expected_revisions": {"ke_A": 0, "ke_B": 0},
+            "before_snapshots": [{"entry": {"id": "ke_A"}}, {"entry": {"id": "ke_B"}}],
+        }
+        store = FakeStore(prepared=[journal], revisions={"ke_A": 0, "ke_B": 0})
+        operator = FakeOperator()
+        result = module.reconcile_orphan_outbox(store=store, operator=operator)
+        self.assertEqual(operator.rolled_back, ["T"])
+        self.assertEqual(result["reconciled"], ["T"])
+        self.assertEqual(result["skipped"], [])
+
+    def test_reconcile_skips_diverged_snapshot_without_rollback(self) -> None:
+        # B2: a prepared orphan whose entry revision changed since prepare must
+        # NOT be rolled back (that would clobber newer state); it is recorded
+        # for review and the run continues.
+        journal = {"status": "prepared", "task_id": "T", "expected_revisions": {"ke_A": 0, "ke_B": 0}}
+        store = FakeStore(prepared=[journal], revisions={"ke_A": 2, "ke_B": 0})
+        operator = FakeOperator()
+        result = module.reconcile_orphan_outbox(store=store, operator=operator)
+        self.assertEqual(operator.rolled_back, [])
+        self.assertEqual(result["reconciled"], [])
+        self.assertEqual(len(result["skipped"]), 1)
+        self.assertEqual(result["skipped"][0]["task_id"], "T")
+        self.assertEqual(result["skipped"][0]["reason"], "revision_diverged")
+
+    def test_reconcile_skips_when_entry_missing(self) -> None:
+        # B2 (missing-entry variant): if a snapshot entry no longer exists,
+        # restoring it could resurrect a deleted memory — skip, do not roll back.
+        journal = {"status": "prepared", "task_id": "T", "expected_revisions": {"ke_A": 0, "ke_B": 0}}
+        store = FakeStore(prepared=[journal], revisions={"ke_A": 0})  # ke_B absent => None
+        operator = FakeOperator()
+        result = module.reconcile_orphan_outbox(store=store, operator=operator)
+        self.assertEqual(operator.rolled_back, [])
+        self.assertEqual(result["skipped"][0]["reason"], "entry_missing")
+
+    def test_reconcile_noop_when_no_orphans(self) -> None:
+        # B3: no prepared entries => zero rollbacks, empty result, run unchanged.
+        store = FakeStore(prepared=[])
+        operator = FakeOperator()
+        result = module.reconcile_orphan_outbox(store=store, operator=operator)
+        self.assertEqual(operator.rolled_back, [])
+        self.assertEqual(result, {"reconciled": [], "skipped": []})
+
+    def test_entry_revision_normalizes_absent_field_and_missing_entry(self) -> None:
+        # Guards the exact case that would have skipped the real orphan: a
+        # present entry with no `revision` field must read as 0 (== the journal's
+        # expected 0), while an absent entry key must read as None (divergence).
+        class _Redis:
+            def __init__(self, data: dict) -> None:
+                self.data = data
+
+            def get(self, key: str):
+                return self.data.get(key)
+
+        store = module.RedisRunStore(
+            redis=_Redis(
+                {
+                    "knowledge:ke_A": json.dumps({"id": "ke_A", "metadata": {"revision": 3}}),
+                    "knowledge:ke_B": json.dumps({"id": "ke_B", "metadata": {}}),
+                    "project:pe_C": json.dumps({"id": "pe_C", "metadata": {"revision": 1}}),
+                }
+            )
+        )
+        self.assertEqual(store.entry_revision("ke_A"), 3)
+        self.assertEqual(store.entry_revision("ke_B"), 0)
+        self.assertEqual(store.entry_revision("pe_C"), 1)
+        self.assertIsNone(store.entry_revision("ke_missing"))
+
+    def test_run_night_reconciles_orphan_before_barrier(self) -> None:
+        # Integration: run_night calls the reconciler in live mode and records
+        # the reconciled orphan in the report, before any cohort work.
+        journal = {
+            "status": "prepared",
+            "task_id": "ORPHAN",
+            "expected_revisions": {"ke_A": 0, "ke_B": 0},
+            "before_snapshots": [{"entry": {"id": "ke_A"}}, {"entry": {"id": "ke_B"}}],
+        }
+        store = FakeStore(prepared=[journal], revisions={"ke_A": 0, "ke_B": 0})
+        operator = FakeOperator([{"status": "held", "reason": "not_duplicate"}])
+
+        def audit_runner(**kwargs):
+            return audit_report([["a", "b"]]), Path("audit.json")
+
+        code, report = module.run_night(
+            options(max_applied=1),
+            operator=operator,
+            store=store,
+            audit_runner=audit_runner,
+            verifier=lambda: {"passed": True},
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("ORPHAN", operator.rolled_back)
+        self.assertEqual(report["reconciled"], ["ORPHAN"])
 
 
 if __name__ == "__main__":
