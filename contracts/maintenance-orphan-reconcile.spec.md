@@ -3,9 +3,9 @@ divecha: 3
 id: PKS-MAINT-ORPHAN-RECONCILE-001
 status: green
 objective: Add a run-start reconciler to the nightly semantic maintenance script that
-  rolls back orphaned `prepared` maintenance outbox entries left by crashed prior
-  runs, guarded by a revision-match check, so a stale orphan can no longer fail every
-  night's cohort barrier.
+  clears orphaned `prepared` maintenance outbox entries left by crashed prior runs,
+  so a single stale orphan can no longer fail every night's cohort barrier and roll
+  back the run's good merges.
 scope:
   write:
   - scripts/nightly_semantic_maintenance.py
@@ -23,138 +23,156 @@ context:
   - tests/python/test_nightly_semantic_maintenance.py
   - cloudflare-mcp/mcp-server/src/dream.ts
   facts:
-  - 'The bug: `barrier()` fails when ANY `maintenance:outbox:*` key has a status outside
+  - 'The bug: barrier() fails when ANY maintenance:outbox:* key has a status outside
     SAFE_OUTBOX_STATUSES = {completed, derived_complete, rolled_back}. A `prepared`
     entry from a crashed prior run therefore fails the barrier every night, raising
     cohort_verification_failed and rolling back the current run''s good merges. Confirmed
-    live: one orphan, task nsm-20260725T091529Z-ef7a53de-6db025937bb19dd6, canonical
-    ke_b952a6d7535b + duplicate ke_74f824f30864; both entries still active at their
-    pre-merge revisions => the merge never applied.'
-  - The reconciler must run at run start, AFTER lock acquire + health check, BEFORE
-    pre_verification and the cohort loop (run_night in scripts/nightly_semantic_maintenance.py).
-    At that point this run has enqueued nothing, so every `prepared` outbox entry
-    is necessarily an orphan from a prior run.
-  - 'Rollback mechanism already exists: OperatorClient.rollback(task_id) -> POST /ops/maintenance/rollback;
-    the Worker''s rollbackSemanticCandidateTask (cloudflare-mcp/mcp-server/src/dream.ts)
-    restores BOTH entries from journal.before_snapshots and flips journal+task status
-    to rolled_back. It is idempotent (returns early if already rolled_back) and requires
-    >=2 before_snapshots.'
-  - "SAFETY: rollback restores snapshots UNCONDITIONALLY. So the reconciler must first\
-    \ read the outbox journal's `expected_revisions` and compare to each entry's CURRENT\
-    \ revision in Redis. Only roll back when every current revision equals the journal's\
-    \ expected revision (nothing touched the entries since prepare). If any diverged,\
-    \ DO NOT roll back (it would clobber a newer state) \u2014 record it for human\
-    \ review and leave it."
-  - The reconciler is Python-only and reuses the existing rollback endpoint; it must
-    not add a new Worker mutation path (scope.forbid blocks Worker src).
-  - "Reads of outbox keys and entry revisions use the same Redis client the RedisRunStore\
-    \ already holds (store.redis). Outbox journal fields: status, task_id, canonical_id,\
-    \ duplicate_ids, expected_revisions (map id->int), before_snapshots. Entry key\
-    \ is `knowledge:<id>` or `project:<id>`; current revision is entry.metadata.revision\
-    \ (absent/None treated as 0 for comparison only if the journal also lacks it \u2014\
-    \ otherwise a missing revision on a live entry is a divergence)."
-  - "The run report already has a `rollbacks` list and a `warnings` list. Add a `reconciled`\
-    \ list (rolled-back orphans) and record diverged/unresolvable orphans as warnings\
-    \ + in a `reconcile_skipped` list. Reconciler must never raise and abort the run\
-    \ on a skip \u2014 a skipped orphan just means the barrier may still fail this\
-    \ night, which is strictly better than corrupting data."
+    live (07-25..07-26 failures): exactly one orphan, task nsm-20260725T091529Z-ef7a53de-6db025937bb19dd6,
+    canonical ke_b952a6d7535b + duplicate ke_74f824f30864, both entries still active
+    at their pre-merge revisions and not archived => the merge never applied.'
+  - The reconciler runs at run start, AFTER lock acquire + health check, BEFORE pre_verification
+    and the cohort loop (run_night). At that point this run has enqueued nothing,
+    so every `prepared` outbox entry is necessarily a prior-run orphan. Live-only
+    (it mutates).
+  - 'AIRTIGHT never-applied proof is required before touching an orphan: every entry
+    in the journal must be PRESENT, at its EXPECTED revision, AND NOT archived. An
+    applied merge bumps the canonical''s revision and archives the duplicate, so revision-mismatch
+    OR archived => maybe partially applied => never touch it, record it for review.
+    Absent revision field normalizes to 0 (Worker convention: revision ?? 0); a missing
+    entry KEY is a divergence.'
+  - "Two clear paths for a proven never-applied orphan. (a) If maintenance:task:<id>\
+    \ exists: roll back via the EXISTING OperatorClient.rollback -> POST /ops/maintenance/rollback\
+    \ (Worker's rollbackSemanticCandidateTask restores the identical snapshots and\
+    \ marks it rolled_back). (b) DISCOVERED in build: the live orphan is TASK-LESS\
+    \ \u2014 its maintenance:task:<id> is absent (only the outbox journal survives),\
+    \ so the endpoint returns 400 maintenance_task_not_found and cannot clear it.\
+    \ For that case, flip the outbox journal to `rolled_back` DIRECTLY (bookkeeping\
+    \ status write, never an entry) \u2014 safe precisely because the never-applied\
+    \ proof holds, so there is nothing to restore, only a stale marker to clear."
+  - 'Python-only; no new Worker mutation path (scope.forbid blocks Worker src). Redis
+    reads/writes use the client RedisRunStore already holds. Never raises: a skipped
+    orphan is strictly safer than a corrupted entry.'
+  - 'Report: add a `reconciled` list (cleared orphan task_ids) and, when non-empty,
+    a `reconcile_skipped` list plus one warning per skip. Existing all-held-noop and
+    cohort-rollback behavior is unchanged (Sol already fixed the score-scale and all-held
+    bugs from the stale NIGHTLY-STALL.md note).'
 interfaces:
 - kind: function
-  signature: reconcile_orphan_outbox(*, store, operator) -> dict[str, Any]
-  location: 'scripts/nightly_semantic_maintenance.py (new function; called from run_night
-    after health check, before pre_verification). Returns {"reconciled": [task_id...],
-    "skipped": [{task_id, reason}...]} and the caller merges these into the run report.'
+  signature: reconcile_orphan_outbox(*, store, operator) -> dict[str, list]
+  location: 'scripts/nightly_semantic_maintenance.py (new; called from run_night after
+    health check, before pre_verification, live-only). Returns {reconciled: [task_id...],
+    skipped: [{task_id, reason, detail}...]}; the caller merges these into the run
+    report.'
 behaviors:
 - id: B1
-  when: a `prepared` outbox entry exists whose journal expected_revisions all equal
-    the entries' current Redis revisions (a never-applied / cleanly-preparable orphan)
-  then: the reconciler calls operator.rollback(task_id) exactly once for it and lists
-    its task_id under reconciled; it makes the outbox status safe so a subsequent
-    barrier passes
+  when: a proven never-applied `prepared` orphan HAS a maintenance:task:<id> record
+  then: the reconciler clears it through the existing rollback endpoint (operator.rollback
+    called once) and NOT by a direct outbox write; task_id is listed under reconciled
   examples:
   - in:
-      outbox:
-        maintenance:outbox:T:ke_A:
-          status: prepared
-          task_id: T
-          expected_revisions:
-            ke_A: 0
-            ke_B: 0
-          before_snapshots:
-          - entry:
-              id: ke_A
-          - entry:
-              id: ke_B
+      orphan:
+        task_id: T
+        expected_revisions:
+          ke_A: 0
+          ke_B: 0
       entries:
         ke_A:
-          metadata:
-            revision: 0
+          revision: 0
+          archived: false
         ke_B:
-          metadata:
-            revision: 0
+          revision: 0
+          archived: false
+      task_record_exists: true
     out:
       rollback_calls:
       - T
+      terminalized: []
       reconciled:
       - T
       skipped: []
-  check: distillation/venv/bin/python -m unittest tests.python.test_nightly_semantic_maintenance.NightlySemanticMaintenanceTests.test_reconcile_rolls_back_clean_orphan
+  check: distillation/venv/bin/python -m unittest tests.python.test_nightly_semantic_maintenance.NightlySemanticMaintenanceTests.test_reconcile_task_bearing_orphan_uses_rollback_endpoint
 - id: B2
-  given: a `prepared` outbox entry whose one entry's current revision differs from
-    the journal's expected_revision (state changed since prepare)
-  when: the reconciler runs
-  then: it does NOT call operator.rollback for it (no stale-snapshot restore), records
-    it under skipped with a divergence reason, and adds a warning; the run continues
-    without raising
+  when: a proven never-applied `prepared` orphan has NO maintenance:task:<id> record
+    (the 400 maintenance_task_not_found case)
+  then: the reconciler flips the outbox journal to rolled_back directly (no endpoint
+    call) and lists task_id under reconciled
   examples:
   - in:
-      outbox:
-        maintenance:outbox:T:ke_A:
-          status: prepared
-          task_id: T
-          expected_revisions:
-            ke_A: 0
-            ke_B: 0
+      orphan:
+        task_id: T
+        outbox_key: maintenance:outbox:T:ke_A
+        expected_revisions:
+          ke_A: 0
+          ke_B: 0
       entries:
         ke_A:
-          metadata:
-            revision: 2
+          revision: 0
+          archived: false
         ke_B:
-          metadata:
-            revision: 0
+          revision: 0
+          archived: false
+      task_record_exists: false
     out:
       rollback_calls: []
+      terminalized:
+      - maintenance:outbox:T:ke_A
+      reconciled:
+      - T
+      skipped: []
+  check: distillation/venv/bin/python -m unittest tests.python.test_nightly_semantic_maintenance.NightlySemanticMaintenanceTests.test_reconcile_task_less_orphan_terminalizes_outbox
+- id: B3
+  given: "a `prepared` orphan that might have partially applied \u2014 an entry whose\
+    \ revision diverged, an archived entry, or a missing entry"
+  when: the reconciler runs
+  then: it takes NO action on it (no rollback, no terminalize) and records it under
+    skipped with the reason (revision_diverged / entry_archived / entry_missing);
+    the run continues without raising
+  examples:
+  - in:
+      orphan:
+        task_id: T
+        expected_revisions:
+          ke_A: 0
+          ke_B: 0
+      entries:
+        ke_A:
+          revision: 2
+        ke_B:
+          revision: 0
+    out:
+      rollback_calls: []
+      terminalized: []
       reconciled: []
       skipped:
       - task_id: T
         reason: revision_diverged
-  check: distillation/venv/bin/python -m unittest tests.python.test_nightly_semantic_maintenance.NightlySemanticMaintenanceTests.test_reconcile_skips_diverged_snapshot_without_rollback
-- id: B3
-  given: no `prepared` outbox entries (all outbox statuses terminal/safe)
+  check: distillation/venv/bin/python -m unittest tests.python.test_nightly_semantic_maintenance.NightlySemanticMaintenanceTests.test_reconcile_skips_diverged_snapshot
+    tests.python.test_nightly_semantic_maintenance.NightlySemanticMaintenanceTests.test_reconcile_skips_archived_entry
+    tests.python.test_nightly_semantic_maintenance.NightlySemanticMaintenanceTests.test_reconcile_skips_when_entry_missing
+- id: B4
+  given: no `prepared` outbox entries
   when: the reconciler runs
-  then: it makes zero rollback calls, reconciled and skipped are both empty, and the
-    run proceeds unchanged
+  then: it makes zero rollback calls, zero terminalizations, empty reconciled and
+    skipped; the run proceeds unchanged
   examples:
   - in:
-      outbox:
-        maintenance:outbox:X:ke_C:
-          status: completed
-        maintenance:outbox:Y:ke_D:
-          status: derived_complete
+      orphan: none
     out:
       rollback_calls: []
+      terminalized: []
       reconciled: []
       skipped: []
   check: distillation/venv/bin/python -m unittest tests.python.test_nightly_semantic_maintenance.NightlySemanticMaintenanceTests.test_reconcile_noop_when_no_orphans
-- id: B4
-  when: the existing nightly semantic maintenance python test suite runs
-  then: it still passes (no regression from the reconciler)
+- id: B5
+  when: the full python test suite runs
+  then: it still passes (no regression from the reconciler, and run_night wires it
+    in live mode)
   check: make test-python-checker
 loop:
   max_turns: 8
   max_consecutive_failures: 3
 ledger:
-- at: '2026-07-27T08:46:43.600927+00:00'
+- at: '2026-07-27T08:55:09.980563+00:00'
   turn: 0
   failing: []
   note: green

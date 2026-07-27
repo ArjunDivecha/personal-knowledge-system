@@ -305,15 +305,16 @@ class RedisRunStore:
             output[pattern] = counts
         return output
 
-    def list_prepared_outbox(self) -> list[dict[str, Any]]:
-        """Every maintenance:outbox:* journal currently in `prepared` state.
+    def list_prepared_outbox(self) -> list[tuple[str, dict[str, Any]]]:
+        """(outbox_key, journal) for every maintenance:outbox:* in `prepared`.
 
         A `prepared` journal is a merge whose before-snapshots were written but
         whose apply never reached a terminal state — an orphan from a crashed
         prior run. At run start (before this run enqueues anything) it can only
         be someone else's leftover. The barrier treats it as unsafe, so it must
-        be reconciled or every night fails on it.
-        """
+        be reconciled or every night fails on it. The key is returned because a
+        task-less orphan (no maintenance:task:* record) can only be cleared by
+        writing this key directly — the rollback endpoint keys off the task."""
         cursor: int | str = 0
         keys: list[str] = []
         while True:
@@ -321,24 +322,25 @@ class RedisRunStore:
             keys.extend(str(key) for key in batch)
             if str(cursor) == "0":
                 break
-        prepared: list[dict[str, Any]] = []
+        prepared: list[tuple[str, dict[str, Any]]] = []
         for start in range(0, len(keys), 100):
             chunk = keys[start : start + 100]
             values = self.redis.mget(*chunk) if chunk else []
-            for value in values:
+            for key, value in zip(chunk, values):
                 try:
                     parsed = json.loads(value) if isinstance(value, str) else value
                 except (TypeError, ValueError):
                     continue
                 if isinstance(parsed, dict) and parsed.get("status") == "prepared":
-                    prepared.append(parsed)
+                    prepared.append((key, parsed))
         return prepared
 
-    def entry_revision(self, entry_id: str) -> int | None:
-        """Current revision of a live entry. None means the entry key is absent
-        (a genuine divergence — never blindly restore over a missing entry).
-        A present entry with no revision field reads as 0, matching the
-        Worker's `metadata.revision ?? 0` convention."""
+    def entry_state(self, entry_id: str) -> tuple[int, bool] | None:
+        """(revision, archived) for a live entry, or None if the entry key is
+        absent. A present entry with no revision field reads as 0, matching the
+        Worker's `metadata.revision ?? 0` convention. Both fields are needed to
+        prove a merge NEVER applied: an applied merge bumps the canonical's
+        revision AND archives the duplicate, so either mismatch is a red flag."""
         key = f"project:{entry_id}" if entry_id.startswith("pe_") else f"knowledge:{entry_id}"
         raw = self.redis.get(key)
         if raw is None:
@@ -348,8 +350,31 @@ class RedisRunStore:
         except (TypeError, ValueError):
             return None
         metadata = entry.get("metadata") if isinstance(entry, dict) else None
-        revision = metadata.get("revision") if isinstance(metadata, dict) else None
-        return revision if isinstance(revision, int) and not isinstance(revision, bool) else 0
+        metadata = metadata if isinstance(metadata, dict) else {}
+        revision = metadata.get("revision")
+        revision = revision if isinstance(revision, int) and not isinstance(revision, bool) else 0
+        return revision, bool(metadata.get("archived"))
+
+    def entry_revision(self, entry_id: str) -> int | None:
+        """Back-compat helper: current revision only (None if the entry key is
+        absent). See entry_state for the archived flag."""
+        state = self.entry_state(entry_id)
+        return None if state is None else state[0]
+
+    def task_exists(self, task_id: str) -> bool:
+        """Whether a maintenance:task:<id> record exists. A `prepared` outbox
+        entry WITHOUT one is the exact orphan the rollback endpoint cannot
+        clean (it 400s with maintenance_task_not_found)."""
+        return self.redis.get(f"maintenance:task:{task_id}") is not None
+
+    def terminalize_orphan_outbox(self, outbox_key: str, journal: dict[str, Any]) -> None:
+        """Flip a task-less, provably-never-applied `prepared` orphan to
+        `rolled_back`. Bookkeeping-only: it writes ONLY the outbox journal's
+        status, never an entry — the caller has already verified every entry is
+        present, at its expected revision, and not archived, so the merge did
+        not happen and there is nothing to restore, only a stale marker to
+        clear. `rolled_back` is the truthful terminal state."""
+        self.redis.set(outbox_key, json.dumps({**journal, "status": "rolled_back"}))
 
 
 def _normalized_revision(value: Any) -> int:
@@ -364,20 +389,31 @@ def reconcile_orphan_outbox(
     store: "RedisRunStore",
     operator: OperatorClient,
 ) -> dict[str, list[Any]]:
-    """Roll back orphaned `prepared` outbox entries, revision-guarded.
+    """Clear orphaned `prepared` outbox entries, airtight-guarded.
 
-    For each `prepared` journal: if every current entry revision still equals
-    the journal's expected revision (nothing touched the entries since prepare),
-    roll it back through the EXISTING /ops/maintenance/rollback endpoint — for a
-    never-applied orphan this restores identical state and just flips the status
-    to `rolled_back`, clearing the barrier poison. If any entry diverged or is
-    missing, DO NOT roll back (that would clobber newer state); record it for
-    human review. Never raises: a skipped orphan is strictly safer than a
-    corrupted entry, and the barrier will simply still fail that night.
+    For each `prepared` orphan we FIRST prove the merge never applied: every
+    entry in the journal must be present, at its expected revision, and NOT
+    archived. An applied merge bumps the canonical's revision and archives the
+    duplicate, so any mismatch means "maybe partially applied" -> we DO NOT
+    touch it (that could clobber newer state or hide real drift from the
+    barrier); we record it for human review.
+
+    Given a provably-never-applied orphan, two cases:
+      * a maintenance:task:<id> record exists -> roll it back through the
+        EXISTING /ops/maintenance/rollback endpoint (the Worker restores the
+        identical snapshots and marks it rolled_back).
+      * the task record is MISSING (the exact orphan the endpoint 400s on with
+        maintenance_task_not_found) -> flip the outbox journal to rolled_back
+        directly. This writes ONLY bookkeeping status, never an entry: the merge
+        did not happen, so there is nothing to restore, only a stale marker to
+        clear so the barrier stops failing on it every night.
+
+    Never raises: a skipped orphan is strictly safer than a corrupted entry, and
+    the barrier simply still fails that night rather than data being lost.
     """
     reconciled: list[str] = []
     skipped: list[dict[str, Any]] = []
-    for journal in store.list_prepared_outbox():
+    for outbox_key, journal in store.list_prepared_outbox():
         task_id = journal.get("task_id")
         if not isinstance(task_id, str) or not task_id:
             skipped.append({"task_id": None, "reason": "missing_task_id"})
@@ -393,18 +429,26 @@ def reconcile_orphan_outbox(
         for entry_id in ids:
             if not isinstance(entry_id, str) or not entry_id:
                 continue
-            current = store.entry_revision(entry_id)
-            if current is None:
+            state = store.entry_state(entry_id)
+            if state is None:
                 divergence = {"reason": "entry_missing", "detail": entry_id}
                 break
-            if current != _normalized_revision(expected.get(entry_id)):
+            revision, archived = state
+            if archived:
+                divergence = {"reason": "entry_archived", "detail": entry_id}
+                break
+            if revision != _normalized_revision(expected.get(entry_id)):
                 divergence = {"reason": "revision_diverged", "detail": entry_id}
                 break
         if divergence is not None:
             skipped.append({"task_id": task_id, **divergence})
             continue
+        # Provably never applied. Clear it by the safest available mechanism.
         try:
-            operator.rollback(task_id)
+            if store.task_exists(task_id):
+                operator.rollback(task_id)
+            else:
+                store.terminalize_orphan_outbox(outbox_key, journal)
             reconciled.append(task_id)
         except Exception as exc:  # noqa: BLE001 — surface as skip, never abort the run
             skipped.append({"task_id": task_id, "reason": "rollback_failed", "detail": str(exc)})
