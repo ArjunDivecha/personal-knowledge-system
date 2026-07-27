@@ -94,12 +94,31 @@ It never raises: a skipped orphan is strictly safer than a corrupted entry.
   23; cluster count drifting down (860 → 826). The drain works at ~20–36
   merges/night; the orphan had halted it since 07-25.
 
-### Validation run
-<!-- FILLED IN AFTER THE LIVE RUN COMPLETES -->
-_A live `workflow_dispatch` maintenance run (GH `30251870904`) was triggered to
-confirm end-to-end that the barrier now passes and merges apply. Result:_
+### Validation run — SUCCESS
 
-**PENDING — see the final version of this section.**
+A full live maintenance run (GH `30251870904`, 08:57→09:24 UTC, workflow_dispatch
+mode=live) confirmed end-to-end:
+
+```
+conclusion: success
+applied: 11 merges   held: 289   attempted: 300   rollbacks: 0
+barriers: 3, ALL PASSED   (last barrier unsafe_outbox: []  consistency: True)
+reconciled: []   (nothing to reconcile — the orphan was already cleared)
+pre_audit clusters: 798  (down from 826 → 860 the prior good nights)
+```
+
+Both halves of the fix are proven:
+1. **The reconciler clears a real orphan** — proven earlier this session against
+   production: it terminalized the task-less 07-25 orphan (`reconciled:
+   ['nsm-20260725T091529Z-…']`), 1 → 0 prepared, entries untouched.
+2. **From the cleaned state the nightly succeeds** — this run: barrier passes
+   (no `prepared` poison), 11 merges applied and survived verification, **0
+   rollbacks**. The drain is moving again (11 real duplicates merged; cluster
+   count 826 → 798).
+
+Post-run, independently: **verify-memory-full = 0 issues** (11,975 entries), **0
+prepared orphans**. Going forward the reconciler runs first every night and will
+auto-clear any new orphan before the barrier can trip on it.
 
 ---
 
