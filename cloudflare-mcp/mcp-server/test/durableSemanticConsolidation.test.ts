@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	assertAutomaticMergeAllowed,
+	isCurrentOmittedNeighbor,
 	requiresEmbeddingRefresh,
 	validateCandidateCluster,
 } from "../src/semanticMaintenance";
@@ -55,6 +56,37 @@ describe("durable semantic consolidation authority", () => {
 			reason: "candidate_component_incomplete",
 			component: ["ke_a", "ke_b"],
 		});
+	});
+
+	it("ignores stale or cross-type vector neighbours", () => {
+		const candidateIds = ["ke_a", "ke_b"];
+		expect(
+			isCurrentOmittedNeighbor(
+				{ id: "ke_stale", score: 0.97, type: "knowledge" },
+				candidateIds,
+				new Set(),
+				"knowledge",
+				0.95,
+			),
+		).toBe(false);
+		expect(
+			isCurrentOmittedNeighbor(
+				{ id: "pe_live", score: 0.97, type: "project" },
+				candidateIds,
+				new Set(["pe_live"]),
+				"knowledge",
+				0.95,
+			),
+		).toBe(false);
+		expect(
+			isCurrentOmittedNeighbor(
+				{ id: "ke_live", score: 0.97, type: "knowledge" },
+				candidateIds,
+				new Set(["ke_live"]),
+				"knowledge",
+				0.95,
+			),
+		).toBe(true);
 	});
 
 	it("blocks protected types at the common automatic apply boundary", () => {

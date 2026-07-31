@@ -11,7 +11,10 @@ import {
 import { computeSalienceV2 } from "./salience_v2";
 import { formatConsolidationNote } from "./consolidation";
 import { collapseNearDuplicateInsights, validateMergeConservation } from "./mergeGates";
-import { assertAutomaticMergeAllowed } from "./semanticMaintenance";
+import {
+	assertAutomaticMergeAllowed,
+	isCurrentOmittedNeighbor,
+} from "./semanticMaintenance";
 import { EMBEDDING_DIMENSIONS, EMBEDDING_MODEL, sha256Hex } from "./embeddingFreshness";
 import {
 	maintenanceOutboxKey,
@@ -3762,6 +3765,15 @@ function getEntryTypeFromId(entryId: string): EntryType {
 	return entryId.startsWith("pe_") ? "project" : "knowledge";
 }
 
+async function isCurrentActiveEntry(
+	redis: Redis,
+	entryType: EntryType,
+	entryId: string,
+): Promise<boolean> {
+	const entry = normalizeEntry(await redis.get(getEntryKey(entryType, entryId)), entryType);
+	return Boolean(entry && (entry.metadata as Record<string, unknown>).archived !== true);
+}
+
 function getOperationTouchedIds(operation: Record<string, unknown>): string[] {
 	const ids = new Set<string>();
 	const entryId = typeof operation.entry_id === "string" ? operation.entry_id : null;
@@ -3870,12 +3882,37 @@ export async function processSemanticCandidateTask(
 		return held;
 	}
 	// Query only the bounded candidate vectors to detect an omitted current
-	// neighbour. This is fixed-cost (<= max cluster size queries) and fail-closed.
+	// neighbour. Vector can retain stale rows after a Redis entry is removed or
+	// archived, so a hit is only safety-relevant after a current Redis existence
+	// check for the same entry type. This remains fixed-cost (<= max cluster size
+	// queries plus bounded Redis checks) and fail-closed for live state.
+	const candidateType = maintenanceEntries[0]?.type ?? "knowledge";
 	for (const id of candidateIds) {
 		const vec = vectors.get(id);
 		if (!vec) continue;
-		const neighbours = await vector.query({ vector: vec, topK: config.maxClusterSize + 1, includeMetadata: false });
-		if (neighbours.some((hit) => String(hit.id) !== id && Number(hit.score ?? 0) >= config.cosineThreshold && !candidateIds.includes(String(hit.id)))) {
+		const neighbours = await vector.query({ vector: vec, topK: config.neighborK + 5, includeMetadata: false });
+		const currentNeighborIds = new Set<string>();
+		for (const hit of neighbours) {
+			const hitId = String(hit.id);
+			const score = Number(hit.score ?? 0);
+			if (!Number.isFinite(score) || score < config.cosineThreshold || candidateIds.includes(hitId)) continue;
+			if (getEntryTypeFromId(hitId) !== candidateType) continue;
+			if (await isCurrentActiveEntry(redis, candidateType, hitId)) currentNeighborIds.add(hitId);
+		}
+		if (neighbours.some((hit) => {
+			const hitId = String(hit.id);
+			return isCurrentOmittedNeighbor(
+				{
+					id: hitId,
+					score: Number(hit.score ?? 0),
+					type: getEntryTypeFromId(hitId),
+				},
+				candidateIds,
+				currentNeighborIds,
+				candidateType,
+				config.cosineThreshold,
+			);
+		})) {
 			const held = { status: "held", task_id: parsed.value.task_id, reason: "candidate_component_incomplete" };
 			await redis.set(taskKey, JSON.stringify(held));
 			return held;

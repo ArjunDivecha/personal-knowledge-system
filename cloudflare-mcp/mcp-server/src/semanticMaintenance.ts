@@ -22,6 +22,33 @@ export interface CandidateValidationResult {
 	component?: string[];
 }
 
+export interface SemanticNeighborHit {
+	id: string;
+	score: number;
+	type?: string | null;
+}
+
+/**
+ * Decide whether a vector hit is a current, same-type neighbour omitted from
+ * a submitted candidate. The Worker supplies `currentEntryIds` after checking
+ * Redis, so stale Vector rows cannot poison an otherwise valid candidate.
+ */
+export function isCurrentOmittedNeighbor(
+	hit: SemanticNeighborHit,
+	candidateIds: readonly string[],
+	currentEntryIds: ReadonlySet<string>,
+	candidateType: MaintenanceEntry["type"],
+	threshold: number,
+): boolean {
+	return (
+		Number.isFinite(hit.score) &&
+		hit.score >= threshold &&
+		hit.type === candidateType &&
+		!candidateIds.includes(hit.id) &&
+		currentEntryIds.has(hit.id)
+	);
+}
+
 /**
  * Match the score returned by an Upstash Vector COSINE index.
  *
