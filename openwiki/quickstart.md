@@ -71,6 +71,7 @@ When changing code, start in the subsystem that owns the behavior:
 - **Source ingestion or env loading:** `ingestion/core/config.py`, `ingestion/core/storage.py`, and the relevant source runner
 - **Retrieval or memory policy:** `cloudflare-mcp/mcp-server/src/index.ts`, `salience.ts`, `retrievalPolicy.ts`
 - **Dream mutation logic:** `cloudflare-mcp/mcp-server/src/dream.ts`, `judgeQueue.ts`, `phase9OutcomeGate.ts`
+- **Semantic candidate guard or lossless merge gates:** `cloudflare-mcp/mcp-server/src/dream.ts` (`processSemanticCandidateTask`), `semanticMaintenance.ts`, `mergeGates.ts`, `semanticCursor.ts` — see [Cloudflare MCP and Dream control plane](architecture/mcp-and-dream.md)
 - **Nightly scheduling and run control:** `orchestrator/engine.py`, `orchestrator/stages.py`, `orchestrator/dream.py`
 - **Launchd behavior:** `scripts/run_orchestrator_launchd.sh`, `scripts/install_orchestrator_launchd_shadow.sh`
 - **Validation and regression checks:** `tests/python/`, `tests/probes/`, `cloudflare-mcp/mcp-server/test/`, `orchestrator/tests/`, `scripts/run_eval.py`
@@ -95,4 +96,7 @@ If you are unsure, read the architecture overview first, then jump to the subsys
 
 ## Backlog
 
-- **Semantic consolidation modules** — `cloudflare-mcp/mcp-server/src/mergeGates.ts` (hard merge conservation gates: evidence conservation, metadata monotonicity, near-duplicate insight collapse) and `cloudflare-mcp/mcp-server/src/semanticCursor.ts` (rolling cursor for bounded semantic dedup slices) are not yet documented in [MCP and Dream control plane](architecture/mcp-and-dream.md). The nightly semantic slice is currently SHIPPED BUT DISABLED per the HEAD commit; the contract lives in `contracts/semantic-consolidation.spec.md`. Deferred because these modules are in HEAD, not in the working-tree diff for this update run.
+No outstanding documentation backlog. The semantic consolidation modules
+(`mergeGates.ts`, `semanticCursor.ts`, `semanticMaintenance.ts`) and the
+stale-vector-row candidate guard are documented in
+[MCP and Dream control plane](architecture/mcp-and-dream.md).

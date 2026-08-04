@@ -38,6 +38,7 @@ These tests cover a lot of the production control plane:
 - judge queue behavior
 - scheduled async Dream behavior
 - semantic deduplication
+- durable semantic consolidation authority (stale/cross-type vector neighbour filtering, merge hard gates, semantic cursor)
 - phase 8 retrieval behavior
 - tripwires
 - OAuth/MCP transport behavior
