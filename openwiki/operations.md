@@ -82,7 +82,7 @@ Typical workflow:
 
 ## OpenWiki update workflow
 
-A scheduled GitHub Actions workflow (`.github/workflows/openwiki-update.yml`) automatically refreshes this wiki. The workflow runs `openwiki code --update --print` with the model configured via `OPENWIKI_MODEL_ID` and LangSmith tracing enabled. Instead of committing directly to the default branch, it creates a pull request (branch `openwiki/update`) using `peter-evans/create-pull-request`, so updates are reviewable before merge. The workflow also updates `AGENTS.md` and `CLAUDE.md` (managed OpenWiki sections delimited by `<!-- OPENWIKI:START -->` / `<!-- OPENWIKI:END -->`).
+A scheduled GitHub Actions workflow (`.github/workflows/openwiki-update.yml`) automatically refreshes this wiki. It runs daily (`cron: "0 8 * * *"`) and on manual `workflow_dispatch`. The job installs OpenWiki globally, runs `openwiki --update --print --modelId z-ai/glm-5.2` (authenticated with `OPENROUTER_API_KEY`), and commits any changes in `openwiki/` directly to the current branch as `openwiki-bot` (`docs: update OpenWiki [automated]`) before pushing. There is no pull-request step and no separate `AGENTS.md`/`CLAUDE.md` section management in this workflow.
 
 ## Useful source anchors
 
