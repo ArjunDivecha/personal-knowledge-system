@@ -47,10 +47,12 @@ Relevant evidence:
 Its responsibilities include:
 
 - serving MCP retrieval tools
-- applying retrieval policy and salience ranking
+- applying retrieval policy, salience ranking (v1 and shadow v2), and optional MMR diversity selection behind the `RANKING_V2` flag
 - managing Dream proposals, grading, apply, rollback, and verification
 - handling judge queue items
 - exposing scheduled async Dream behavior
+- atomic-commit maintenance journal and queue-backed semantic consolidation
+- tripwire-based kill switches for Dream auto-apply, retrieval policy, and ranking v2
 - exposing OpenAI-compatible read surfaces
 
 The server distinguishes read-only tools from mutating tools, and the write surface is gated by auth/scopes and policy checks.

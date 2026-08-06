@@ -20,9 +20,10 @@ The `tests/python/` directory contains a substantial regression suite around:
 - Gmail/GitHub/Twitter clients and extractors
 - memory migration and deserialization
 - quality audits and validation ledgers
-- Dream judge fallback behavior
+- Dream judge fallback behavior (`tests/python/test_dream_judge_fallback.py`) and the judge client parser (`ingestion/dream_judge/test_parser.py`)
 - nightly health checks
 - retrieval and phase-specific schema behavior
+- salience v2 and precedence lattice lockstep with the Worker twins
 
 This is the main place to look when changing the Python pipeline or repo-level behavior outside the Worker runtime.
 
@@ -45,6 +46,32 @@ These tests cover a lot of the production control plane:
 - worker HTTP behavior
 
 If you change the live MCP server or Dream logic, this suite is the first regression layer to check.
+
+### Worker CI
+
+`.github/workflows/worker-runtime-tests.yml` runs on push and pull request when
+`cloudflare-mcp/mcp-server/**`, `Makefile`, `README.md`, or
+`docs/testing-matrix.md` change. It runs `npm ci`, generates Worker types
+(`npm run cf-typegen`), type-checks (`npm run type-check`), and runs the runtime
+suite (`npm run test:worker`, i.e. `vitest run --no-file-parallelism`). Locally
+the Makefile target `make worker-test` calls the same script; the narrow
+type-check is `make worker-typecheck`.
+
+### Python twins of shared logic
+
+Several Worker TypeScript modules have Python twins in `distillation/utils/`
+that must stay semantically identical, enforced by shared fixture tables replayed
+by both test suites:
+
+- `salience_v2.ts` ↔ `distillation/utils/salience_v2.py`, locked by
+  `shared/salience_v2_fixtures.json` (`test/salience_v2.test.ts` and
+  `tests/python/test_salience_v2.py`)
+- `precedence.ts` ↔ `distillation/utils/precedence.py`, locked by
+  `shared/precedence_fixtures.json` (`test/precedence.test.ts` and
+  `tests/python/test_precedence_lattice.py`)
+
+If you change one twin, update the shared fixture and run both suites so the
+other twin does not drift.
 
 ### Orchestrator tests
 
@@ -90,7 +117,7 @@ That distinction matters because many failures in this repo are environment or s
 When changing code, check the relevant test family first:
 
 - **Ingestion env/config changes:** Python tests around the affected source and config validation
-- **Retrieval/scoring changes:** Worker tests for salience, retrieval policy, and phase 8 retrieval; then run `scripts/run_eval.py` before and after to produce an eval diff
+- **Retrieval/scoring changes:** Worker tests for salience, retrieval policy, and phase 8 retrieval; for salience v2 / MMR / precedence also run the Python twin tests (`tests/python/test_salience_v2.py`, `tests/python/test_precedence_lattice.py`) so the twins stay in lockstep; then run `scripts/run_eval.py` before and after to produce an eval diff
 - **Dream mutation changes:** Worker Dream tests, judge queue tests, phase 9 outcome gate tests
 - **Orchestrator changes:** `orchestrator/tests/`
 - **Launchd or schedule changes:** orchestrator supervise-window tests and shell wrapper behavior

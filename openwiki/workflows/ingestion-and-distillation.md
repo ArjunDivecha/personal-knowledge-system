@@ -52,6 +52,15 @@ Important behavior from the code:
 - `ingestion/agent_sessions/run.py`
 - `ingestion/twitter/run.py`
 
+A fifth runner, `ingestion/dream_judge/run.py`, is the Mac-side Opus judge
+client. It reads pending border-case ops from the Worker's
+[judge queue](../architecture/mcp-and-dream.md) and asks Claude Opus (via the
+`claude` CLI first, Anthropic API as a fail-closed fallback) to decide each one
+(apply or skip), then POSTs verdicts back to the Worker at
+`/ops/dream/judge_verdict`. It is designed to run nightly via
+`scripts/run_nightly_ingestion.sh`, after the other ingestion steps and before
+the remote Worker cron fires its next cycle. It owns `ingestion/dream_judge/test_parser.py`.
+
 The repository history also shows ongoing hardening around GitHub ingestion, agent-session ingestion, and billing/budget guards.
 
 ### Storage and extraction
@@ -92,6 +101,8 @@ When editing ingestion code, watch for:
 ## Good next stops
 
 - `ingestion/core/config.py`
+- `ingestion/dream_judge/run.py`
+- `scripts/nightly_semantic_maintenance.py`
 - `AGENTS.md` ingestion section
 - `docs/repo-agent-context.md`
 - `README.md`

@@ -39,6 +39,16 @@ Salience is not a binary yes/no property. It is a scored combination of:
 
 This is the main mechanism that keeps durable memories visible while allowing weak, one-off facts to become effectively invisible unless reinforced.
 
+A second-generation score, `salience_v2`, is computed as a five-component additive
+score (usage, evidence, recency, authority, corroboration) and written into
+`metadata.salience_v2` during the nightly Dream pass. It is in shadow phase only:
+not consulted by live ranking or tiering until the `RANKING_V2` env flag is on
+(Phase B). When enabled, it pairs with
+[MMR diversity selection](../architecture/mcp-and-dream.md) to replace the
+plain sort-and-slice top-K. The TypeScript `salience_v2.ts` and
+`precedence.ts` modules have Python twins in `distillation/utils/` that must stay
+semantically identical, enforced by shared fixture tables.
+
 ### Retrieval policy shaping
 
 `cloudflare-mcp/mcp-server/src/retrievalPolicy.ts` documents the system's query-time biasing strategy:
@@ -105,9 +115,15 @@ Examples:
 
 - `README.md`
 - `cloudflare-mcp/mcp-server/src/salience.ts`
+- `cloudflare-mcp/mcp-server/src/salience_v2.ts`
 - `cloudflare-mcp/mcp-server/src/retrievalPolicy.ts`
+- `cloudflare-mcp/mcp-server/src/mmr.ts`
+- `cloudflare-mcp/mcp-server/src/precedence.ts`
 - `cloudflare-mcp/mcp-server/src/dream.ts`
 - `cloudflare-mcp/mcp-server/src/judgeQueue.ts`
+- `distillation/utils/salience_v2.py`
+- `distillation/utils/precedence.py`
+- `shared/memory_policy.json`
 - `docs/dream-and-forgetting-impl-status.md`
 - `docs/pks-dream-insight-synthesis-prd-2026-07-02.md`
 - `docs/pks-memory-os-v0.4-prd.md`

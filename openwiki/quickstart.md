@@ -68,13 +68,14 @@ Python ingestion code lives under `ingestion/`. The shared config is in `ingesti
 
 When changing code, start in the subsystem that owns the behavior:
 
-- **Source ingestion or env loading:** `ingestion/core/config.py`, `ingestion/core/storage.py`, and the relevant source runner
-- **Retrieval or memory policy:** `cloudflare-mcp/mcp-server/src/index.ts`, `salience.ts`, `retrievalPolicy.ts`
+- **Source ingestion or env loading:** `ingestion/core/config.py`, `ingestion/core/storage.py`, and the relevant source runner (including `ingestion/dream_judge/run.py` for the Mac-side Opus judge client)
+- **Retrieval or memory policy:** `cloudflare-mcp/mcp-server/src/index.ts`, `salience.ts`, `salience_v2.ts`, `retrievalPolicy.ts`, `mmr.ts`, `precedence.ts`
 - **Dream mutation logic:** `cloudflare-mcp/mcp-server/src/dream.ts`, `judgeQueue.ts`, `phase9OutcomeGate.ts`
-- **Semantic candidate guard or lossless merge gates:** `cloudflare-mcp/mcp-server/src/dream.ts` (`processSemanticCandidateTask`), `semanticMaintenance.ts`, `mergeGates.ts`, `semanticCursor.ts` — see [Cloudflare MCP and Dream control plane](architecture/mcp-and-dream.md)
+- **Semantic candidate guard or lossless merge gates:** `cloudflare-mcp/mcp-server/src/dream.ts` (`processSemanticCandidateTask`), `semanticMaintenance.ts`, `mergeGates.ts`, `semanticCursor.ts`, `maintenanceJournal.ts`, `maintenanceQueue.ts` — see [Cloudflare MCP and Dream control plane](architecture/mcp-and-dream.md)
 - **Nightly scheduling and run control:** `orchestrator/engine.py`, `orchestrator/stages.py`, `orchestrator/dream.py`
 - **Launchd behavior:** `scripts/run_orchestrator_launchd.sh`, `scripts/install_orchestrator_launchd_shadow.sh`
-- **Validation and regression checks:** `tests/python/`, `tests/probes/`, `cloudflare-mcp/mcp-server/test/`, `orchestrator/tests/`, `scripts/run_eval.py`
+- **CI and remote scheduling:** `.github/workflows/` (worker-runtime-tests, agent-session/github/twitter ingestion, nightly-semantic-maintenance, nightly-sleep-report) — see [Operations and local workflow](operations.md)
+- **Validation and regression checks:** `tests/python/`, `tests/probes/`, `cloudflare-mcp/mcp-server/test/`, `orchestrator/tests/`, `scripts/run_eval.py`, `Makefile` targets `worker-typecheck` / `worker-test`
 
 ## Important cautions
 
@@ -97,6 +98,13 @@ If you are unsure, read the architecture overview first, then jump to the subsys
 ## Backlog
 
 No outstanding documentation backlog. The semantic consolidation modules
-(`mergeGates.ts`, `semanticCursor.ts`, `semanticMaintenance.ts`) and the
-stale-vector-row candidate guard are documented in
-[MCP and Dream control plane](architecture/mcp-and-dream.md).
+(`mergeGates.ts`, `semanticCursor.ts`, `semanticMaintenance.ts`,
+`maintenanceJournal.ts`, `maintenanceQueue.ts`) and the stale-vector-row
+candidate guard are documented in
+[MCP and Dream control plane](architecture/mcp-and-dream.md), along with the
+salience v2 / MMR / `RANKING_V2` ranking path, the precedence lattice, and the
+tripwire kill switches. The Mac-side Opus judge client
+(`ingestion/dream_judge/run.py`) is documented in
+[Ingestion and distillation workflow](workflows/ingestion-and-distillation.md),
+and the GitHub Actions automation surface is documented in
+[Operations and local workflow](operations.md).

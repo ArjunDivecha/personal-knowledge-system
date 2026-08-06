@@ -73,16 +73,20 @@ It enforces:
 - terminal status validation
 - separation between accepted status and executed behavior
 
-### Policy modules
+### Policy and helper modules
 
 Relevant policy/helper files include:
 
-- `src/salience.ts`
-- `src/retrievalPolicy.ts`
-- `src/phase8Retrieval.ts`
-- `src/phase9OutcomeGate.ts`
-- `src/tripwires.ts`
-- `src/consolidation.ts`
+- `src/salience.ts` — v1 salience: recency decay, mention frequency, type weighting, signal-flag multipliers
+- `src/salience_v2.ts` — five-component additive score (usage, evidence, recency, authority, corroboration); TypeScript twin of `distillation/utils/salience_v2.py`, locked in lockstep by `shared/salience_v2_fixtures.json`
+- `src/retrievalPolicy.ts` — query-time cross-context and quarantine penalties
+- `src/phase8Retrieval.ts` — phase-specific retrieval gates
+- `src/phase9OutcomeGate.ts` — outcome-quality gating for Dream operations
+- `src/precedence.ts` — authority-then-durability claim comparator; TypeScript twin of `distillation/utils/precedence.py`, locked by `shared/precedence_fixtures.json`
+- `src/mmr.ts` — greedy Maximal Marginal Relevance diversity selection for query-time top-K
+- `src/tripwires.ts` — anomaly kill switches (see [Tripwires](#tripwires))
+- `src/consolidation.ts` — `formatConsolidationNote` timestamped audit-note formatter
+- `src/embeddingFreshness.ts` — `text-embedding-3-large` (3072-dim) model/dimension constants and embedding-metadata freshness check
 
 These modules are where the repo encodes its memory-specific heuristics, thresholds, and safety rules.
 
@@ -101,6 +105,38 @@ The code uses additional policy shaping such as:
 The goal is to keep unrelated memories from surfacing uninvited while still allowing them to be found on direct query.
 
 `retrievalPolicy.ts` documents the rationale for this in code comments: the primary fix for unwanted cross-topic surfacing is to score down unrelated items rather than hard-filtering them.
+
+### Salience v2, MMR, and the RANKING_V2 flag
+
+The retrieval path has a shadow-to-live ranking upgrade tracked by contract
+`PKS-INJECTION-RANKING-002` (see `contracts/injection-ranking-v2.spec.md`).
+
+- `salience_v2.ts` computes a five-component additive score
+  (`0.30*usage + 0.25*evidence + 0.20*recency + 0.15*authority + 0.10*corroboration`)
+  during the nightly Dream pass and writes it to `metadata.salience_v2`. It is
+  **not consulted by live ranking or tiering** until the `RANKING_V2` env var is
+  set to `on` (Phase B). The weights and recency half-lives live in the
+  `salience_v2` block of `shared/memory_policy.json`.
+- `mmr.ts` is the Phase B query-time selector. `selectSearchTopResults` in
+  `index.ts` switches between the legacy "sort + slice top-K" path and greedy
+  MMR diversity selection based on the same `RANKING_V2` flag. INV4 guarantees
+  the single best match is never displaced: the first pick is always
+  `argmax(finalScore)` with no diversity penalty; only picks #2+ apply the MMR
+  penalty, per-domain cap, and token budget.
+- `precedence.ts` feeds the `authority` component: it resolves which of two
+  conflicting claims wins on an authority-then-durability lattice (user > behavioral
+  > assistant > inferred), with recency only as the final tiebreak.
+
+Both `salience_v2.ts` and `precedence.ts` must stay semantically identical to
+their Python twins (`distillation/utils/salience_v2.py`,
+`distillation/utils/precedence.py`); the shared fixture tables
+(`shared/salience_v2_fixtures.json`, `shared/precedence_fixtures.json`) are
+replayed by both the Vitest suite and the Python unittest suite to enforce that
+lockstep.
+
+`RANKING_V2` is also a tripwire kill switch: if the MMR path causes a retrieval
+collapse, `tripwires.ts` can flip a Redis kill flag that overrides the env var
+back off.
 
 ## Dream governance
 
@@ -185,9 +221,9 @@ When changing this guard, the focused test is
 ("ignores stale or cross-type vector neighbours"), which pins that a stale
 vector hit (not in the Redis-verified `currentEntryIds` set) is ignored and a
 live same-type hit is not. The minimal validation is the Worker Vitest suite
-(`make worker-test`, i.e. `npx vitest run --no-file-parallelism` in
-`cloudflare-mcp/mcp-server`); for a narrow run target the contract's G3 gate
-uses `test/semantic-dedup.test.ts`.
+(`make worker-test`, i.e. `npm run test:worker` / `vitest run
+--no-file-parallelism` in `cloudflare-mcp/mcp-server`); for a narrow run target
+the contract's G3 gate uses `test/semantic-dedup.test.ts`.
 
 ## Hard merge gates and the semantic cursor
 
@@ -236,6 +272,50 @@ The contracts behind both modules live in
 `test/semanticCursor.test.ts` plus `test/semantic-dedup.test.ts` (bounds and
 cursor coverage, G3 gate).
 
+## Maintenance journal and queue
+
+Two small modules back the durability and at-least-once-delivery contract for
+governed semantic consolidation.
+
+`cloudflare-mcp/mcp-server/src/maintenanceQueue.ts` defines the Cloudflare
+Queue message schema (`MaintenanceMessage`, `schema_version: 1`) and the task
+kinds that flow through the `DREAM_MAINTENANCE_QUEUE` queue binding:
+`semantic_candidate`, `vector_outbox`, `recovery`, `lexical_bucket`,
+`retier_cursor`, and `thin_index_patch`. `validateMaintenanceMessage` enforces
+identity, kind, candidate-id bounds (2–6, matching
+`MAX_MAINTENANCE_CLUSTER_SIZE`), and timestamp validity before a message is
+trusted. `maintenanceRetryDelaySeconds` provides bounded exponential backoff up
+to `MAX_MAINTENANCE_ATTEMPTS` (5). These are the queue-level invariants that let
+`processSemanticCandidateTask` cache a terminal result before acknowledgement
+so at-least-once delivery is harmless.
+
+`cloudflare-mcp/mcp-server/src/maintenanceJournal.ts` is the atomic-commit
+journal that backs `applyDuplicateMergePlan`. `buildMaintenanceJournal` records
+the canonical id, duplicate ids, expected revisions, vector outbox key, and
+before-snapshots. `ATOMIC_MERGE_COMMIT_LUA` is the Redis Lua CAS script the
+production adapter runs in a single invocation: it checks the journal status
+and every entry's expected `revision` before committing, so a concurrent write
+to any touched entry fails the whole merge atomically. This is the structural
+mechanism behind the "no derived-store acknowledgement is valid before the CAS
+script returns 1" contract.
+
+## Tripwires
+
+`cloudflare-mcp/mcp-server/src/tripwires.ts` is the automated safety scaffold
+for Dream and forgetting. It defines three Redis-backed kill switches:
+`DREAM_AUTO_APPLY_MODE`, `RETRIEVAL_POLICY_MODE`, and `RANKING_V2`. Because
+Cloudflare Workers cannot modify their own env vars at runtime, the effective
+mode is the more restrictive of the operator env var (the ON switch) and the
+Redis kill flag (the OFF override set by a tripwire firing).
+
+The tripwires fire on two anomaly patterns over a 14-day median baseline:
+a destructive-action spike (`DESTRUCTIVE_SPIKE_MULTIPLIER = 3`) and a retrieval
+collapse (`RETRIEVAL_COLLAPSE_RATIO = 0.7`), each requiring two consecutive
+breach days (`CONSECUTIVE_DAYS_REQUIRED = 2`). A separate
+`HARD_DELETE_DAILY_CAP_DEFAULT = 5` caps irreversible hard-delete operations
+per day. When a tripwire fires, the relevant kill flag flips and the affected
+mode is forced off until the operator manually clears the Redis flag.
+
 ## Read/write tool surface
 
 `AGENTS.md` notes the production server exposes read-only tools such as index, context, deep retrieval, search, and health, and write tools that require `mcp:write` scope.
@@ -265,11 +345,19 @@ Do not treat them as interchangeable. They share intent, but their runtime envir
 - `cloudflare-mcp/mcp-server/src/judgeQueue.ts`
 - `cloudflare-mcp/mcp-server/src/scheduledDreamAsync.ts`
 - `cloudflare-mcp/mcp-server/src/salience.ts`
+- `cloudflare-mcp/mcp-server/src/salience_v2.ts`
 - `cloudflare-mcp/mcp-server/src/retrievalPolicy.ts`
 - `cloudflare-mcp/mcp-server/src/phase8Retrieval.ts`
 - `cloudflare-mcp/mcp-server/src/phase9OutcomeGate.ts`
+- `cloudflare-mcp/mcp-server/src/precedence.ts`
+- `cloudflare-mcp/mcp-server/src/mmr.ts`
+- `cloudflare-mcp/mcp-server/src/tripwires.ts`
 - `cloudflare-mcp/mcp-server/src/semanticMaintenance.ts`
 - `cloudflare-mcp/mcp-server/src/mergeGates.ts`
 - `cloudflare-mcp/mcp-server/src/semanticCursor.ts`
+- `cloudflare-mcp/mcp-server/src/maintenanceJournal.ts`
+- `cloudflare-mcp/mcp-server/src/maintenanceQueue.ts`
+- `cloudflare-mcp/mcp-server/src/embeddingFreshness.ts`
+- `cloudflare-mcp/mcp-server/src/consolidation.ts`
 - `cloudflare-mcp/mcp-server/test/`
 - `cloudflare-mcp/mcp-server/package.json`

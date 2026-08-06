@@ -84,12 +84,28 @@ Typical workflow:
 
 A scheduled GitHub Actions workflow (`.github/workflows/openwiki-update.yml`) automatically refreshes this wiki. It runs daily (`cron: "0 8 * * *"`) and on manual `workflow_dispatch`. The job installs OpenWiki globally, runs `openwiki --update --print --modelId z-ai/glm-5.2` (authenticated with `OPENROUTER_API_KEY`), and commits any changes in `openwiki/` directly to the current branch as `openwiki-bot` (`docs: update OpenWiki [automated]`) before pushing. There is no pull-request step and no separate `AGENTS.md`/`CLAUDE.md` section management in this workflow.
 
+## GitHub Actions automation
+
+Beyond the OpenWiki update, the repo runs several scheduled and push-triggered workflows under `.github/workflows/`. These have largely replaced local launchd jobs for ingestion and validation:
+
+- `agent-session-ingestion.yml` — scheduled remote run of `ingestion/agent_sessions/run.py` on a self-hosted macOS runner (`knowledge-agent-sessions` label), at `06:10 UTC`.
+- `github-ingestion.yml` — remote GitHub repo ingestion, including repo-attached agent context under `.pks/agent-context/`.
+- `twitter-ingestion.yml` — remote Twitter/X timeline ingestion at `05:40 UTC`. Do not install a local LaunchAgent for Twitter ingestion.
+- `nightly-semantic-maintenance.yml` — runs `scripts/nightly_semantic_maintenance.py` at `07:20 UTC` (after the Worker's `07:10 UTC` Dream trigger). Feeds bounded candidate clusters to the Worker queue. Defaults to `live` mode on schedule; `workflow_dispatch` accepts `plan` or `live` and a `max_applied` cap. Guards that the retired Worker semantic slice (`SEMANTIC_SLICE_SIZE == 0`) remains disabled.
+- `nightly-sleep-report.yml` — verifies durable completion of the semantic maintenance cohort at `08:45 UTC`.
+- `worker-runtime-tests.yml` — push/PR-triggered CI for `cloudflare-mcp/mcp-server/**`: type-check + `npm run test:worker`. See [Testing guidance](testing.md).
+
+The intended scheduling sequence is: Twitter at `05:40 UTC`, agent sessions at `06:10 UTC`, Worker Dream cron at `07:10 UTC`, external semantic planner at `07:20 UTC`, sleep/completion report at `08:45 UTC`.
+
 ## Useful source anchors
 
 - `scripts/`
 - `scripts/nightly_orchestrator.py`
+- `scripts/nightly_semantic_maintenance.py`
+- `scripts/semantic_candidate_planner.py`
 - `scripts/run_orchestrator_launchd.sh`
 - `scripts/run_nightly_ingestion.sh`
 - `scripts/install_global_repo_agent_context_hook.sh`
 - `scripts/install_repo_agent_context_hook.sh`
+- `.github/workflows/`
 - `docs/testing-matrix.md`
