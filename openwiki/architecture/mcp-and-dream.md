@@ -21,7 +21,7 @@ This server is the live control plane for:
 - judge queue management
 - scheduled async Dream support
 - OpenAI-compatible read surfaces
-- Twitter and GitHub helper flows
+- Twitter and GitHub helper flows — see [Tweets reader subsystem](#tweets-reader-subsystem) for the Worker-side tweet URL reader
 
 The top-level `AGENTS.md` says this is the current production path and should be inspected first for live MCP behavior.
 
@@ -329,6 +329,50 @@ If you are changing one of these tools, verify whether the change affects:
 - Dream apply/revert flows
 - tests in `cloudflare-mcp/mcp-server/test/`
 
+## Tweets reader subsystem
+
+`cloudflare-mcp/mcp-server/src/tweets/` is the production surface behind the
+`read_tweet`, `read_thread`, and `health` MCP tools. It is distinct from the
+Python Twitter/X ingestion pipeline (`ingestion/twitter/run.py`, see
+[Ingestion and distillation workflow](../workflows/ingestion-and-distillation.md)):
+the Worker tweets reader resolves a public X/Twitter URL pasted by an operator at
+query time and returns normalized post/thread content, while the ingestion
+pipeline pulls the operator's own timeline into durable memory.
+
+The subsystem is organized into five modules under `src/tweets/`:
+
+- `url-parser.ts` — normalizes operator-supplied URLs into a canonical
+  `https://x.com/<user>/status/<id>` form. Accepts `x.com`, `twitter.com`,
+  `fixupx.com`, `fxtwitter.com`, `vxtwitter.com`, mobile/m prefixes, `nitter.*`
+  hosts, and `t.co` short links (the latter resolved to a final URL before
+  parsing). Rejects non-Twitter hosts and malformed IDs with a typed
+  `TweetReaderError` (`invalid_url`).
+- `types.ts` — the shared `ReadTweetOutput` / `ReadThreadOutput` /
+  `NormalizedTweetUrl` / `TweetMedia` types and the `TweetReaderError` /
+  `TweetUpstreamError` error classes. `source_api` records which upstream served
+  the result (`fxtwitter`, `vxtwitter`, or `adhx`).
+- `fetchers.ts` — the multi-upstream fallback chain. `fetchTweetWithFallback`
+  tries `fetchFxTweet` → `fetchVxTweet` → `fetchAdhxTweet` in order, continuing
+  only on recoverable upstream errors (`not_found`, `protected`, or a
+  `TweetUpstreamError`); a hard client error (`invalid_url`) aborts immediately.
+  `fetchFxThread` resolves a self-reply thread via the fxtwitter API.
+  `checkTweetUpstreams` is a lightweight liveness probe used by the `health`
+  tool to report FxTwitter/VxTwitter/ADHX upstream status.
+- `article-flattener.ts` — `flattenArticle` converts X Article (long-form post)
+  Draft.js block structures into Markdown body text so article-bearing tweets
+  surface as readable content instead of raw block JSON.
+- `cache.ts` — `getTweetCacheKey` derives a deterministic Redis cache key from
+  the tweet id and the media-alt-text inclusion flag.
+
+When changing this subsystem, the focused tests are
+`cloudflare-mcp/mcp-server/test/url-parser.test.ts` (URL canonicalization,
+`t.co` resolution, host rejection) and
+`cloudflare-mcp/mcp-server/test/article-flattener.test.ts` (Draft.js → Markdown
+flattening, already-flattened passthrough). The minimal validation is the
+Worker Vitest suite (`make worker-test`); a narrow run target is
+`vitest run test/url-parser.test.ts test/article-flattener.test.ts` in
+`cloudflare-mcp/mcp-server`.
+
 ## Important caution
 
 There are two MCP implementations in the repo.
@@ -359,5 +403,10 @@ Do not treat them as interchangeable. They share intent, but their runtime envir
 - `cloudflare-mcp/mcp-server/src/maintenanceQueue.ts`
 - `cloudflare-mcp/mcp-server/src/embeddingFreshness.ts`
 - `cloudflare-mcp/mcp-server/src/consolidation.ts`
+- `cloudflare-mcp/mcp-server/src/tweets/url-parser.ts`
+- `cloudflare-mcp/mcp-server/src/tweets/fetchers.ts`
+- `cloudflare-mcp/mcp-server/src/tweets/article-flattener.ts`
+- `cloudflare-mcp/mcp-server/src/tweets/types.ts`
+- `cloudflare-mcp/mcp-server/src/tweets/cache.ts`
 - `cloudflare-mcp/mcp-server/test/`
 - `cloudflare-mcp/mcp-server/package.json`
