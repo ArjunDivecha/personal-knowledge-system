@@ -86,16 +86,16 @@ A scheduled GitHub Actions workflow (`.github/workflows/openwiki-update.yml`) au
 
 ## GitHub Actions automation
 
-Beyond the OpenWiki update, the repo runs several scheduled and push-triggered workflows under `.github/workflows/`. These have largely replaced local launchd jobs for ingestion and validation:
+Beyond the OpenWiki update, the repo runs several scheduled and push-triggered workflows under `.github/workflows/`. The semantic-maintenance and sleep-report workflows are on real `cron` schedules; the ingestion workflows are not scheduled and run only on `repository_dispatch` / `workflow_dispatch`:
 
-- `agent-session-ingestion.yml` — scheduled remote run of `ingestion/agent_sessions/run.py` on a self-hosted macOS runner (`knowledge-agent-sessions` label), at `06:10 UTC`.
-- `github-ingestion.yml` — remote GitHub repo ingestion, including repo-attached agent context under `.pks/agent-context/`.
-- `twitter-ingestion.yml` — remote Twitter/X timeline ingestion at `05:40 UTC`. Do not install a local LaunchAgent for Twitter ingestion.
-- `nightly-semantic-maintenance.yml` — runs `scripts/nightly_semantic_maintenance.py` at `07:20 UTC` (after the Worker's `07:10 UTC` Dream trigger). Feeds bounded candidate clusters to the Worker queue. Defaults to `live` mode on schedule; `workflow_dispatch` accepts `plan` or `live` and a `max_applied` cap. Guards that the retired Worker semantic slice (`SEMANTIC_SLICE_SIZE == 0`) remains disabled.
-- `nightly-sleep-report.yml` — verifies durable completion of the semantic maintenance cohort at `08:45 UTC`.
-- `worker-runtime-tests.yml` — push/PR-triggered CI for `cloudflare-mcp/mcp-server/**`: type-check + `npm run test:worker`. See [Testing guidance](testing.md).
+- `agent-session-ingestion.yml` — remote run of `ingestion/agent_sessions/run.py` on a self-hosted macOS runner (`knowledge-agent-sessions` label). Triggered by `repository_dispatch` (`agent-session-ingestion-manual`) or `workflow_dispatch`; not scheduled. Supports `dry_run`, `backfill`, `sync_state_only`, a `source` filter (`claude_code` or `codex_cli`), and a `limit` cap.
+- `github-ingestion.yml` — remote GitHub repo ingestion, including repo-attached agent context under `.pks/agent-context/`. Triggered by `repository_dispatch` (`github-ingestion-manual`) or `workflow_dispatch`; not scheduled. Supports `dry_run`, `no_resume`, a comma-separated `repos` filter, and `skip_code` / `skip_commits` toggles.
+- `twitter-ingestion.yml` — remote Twitter/X timeline ingestion on a self-hosted macOS runner. Triggered by `workflow_dispatch` only; not scheduled. Supports `dry_run`, `reset_state` (ignore saved `since_id`), and an optional `max_tweets` cap. Do not install a local LaunchAgent for Twitter ingestion.
+- `nightly-semantic-maintenance.yml` — runs `scripts/nightly_semantic_maintenance.py` on `cron: "20 7 * * *"` (07:20 UTC, after the Worker's `07:10 UTC` Dream trigger). Feeds bounded candidate clusters to the Worker queue. Defaults to `live` mode on schedule; `workflow_dispatch` accepts `plan` or `live` and a `max_applied` cap (defaults to `100` on schedule, `100` on manual). Guards that the retired Worker semantic slice (`SEMANTIC_SLICE_SIZE == 0`) remains disabled.
+- `nightly-sleep-report.yml` — verifies durable completion of the semantic maintenance cohort on `cron: "45 8 * * *"` (08:45 UTC) by running `scripts/nightly_semantic_maintenance.py --check-latest --max-age-hours 4`.
+- `worker-runtime-tests.yml` — push/PR-triggered CI for `cloudflare-mcp/mcp-server/**`, `Makefile`, `README.md`, and `docs/testing-matrix.md`: type-check + `npm run test:worker`. See [Testing guidance](testing.md).
 
-The intended scheduling sequence is: Twitter at `05:40 UTC`, agent sessions at `06:10 UTC`, Worker Dream cron at `07:10 UTC`, external semantic planner at `07:20 UTC`, sleep/completion report at `08:45 UTC`.
+The scheduled sequence is: Worker Dream cron at `07:10 UTC`, external semantic planner at `07:20 UTC`, sleep/completion report at `08:45 UTC`. The ingestion workflows have no fixed schedule and are expected to be dispatched externally (or manually) to fit the self-hosted macOS runner's availability.
 
 ## Useful source anchors
 
