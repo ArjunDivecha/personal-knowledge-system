@@ -1,24 +1,24 @@
 {
- "generated_at": "2026-07-09T14:25:38+00:00",
- "config_tag": "gate-check",
+ "generated_at": "2026-08-09T08:04:44+00:00",
+ "config_tag": "source-first-current-probes",
  "base_url": "https://mcp.dancing-ganesh.com",
  "k": 5,
  "negative_threshold": 0.85,
- "note_access_side_effect": "search calls may increment server-side access counts; baseline runs are not organic usage",
- "note_tokens": "token_estimate = chars/4 of returned label+summary; search response has no usage field",
- "n_enabled": 52,
- "n_drafts": 5,
+ "note_access_side_effect": "all probes passed suppress_access_signals=true; Workers honoring the flag write no access signals for this run \u2014 older Workers strip the arg and apply legacy rank-1 reconsolidation; baseline runs are not organic usage",
+ "note_tokens": "token_estimate = chars/4 of normalized legacy or source-first result text; search response has no usage field",
+ "n_enabled": 50,
+ "n_drafts": 7,
  "errors": 0,
  "axes": {
   "carry_forward_recall": {
    "metric": "recall_at_k",
-   "value": 0.9,
-   "n": 20,
+   "value": 1.0,
+   "n": 18,
    "status": "measured"
   },
   "project_recall": {
    "metric": "recall_at_k",
-   "value": 0.857,
+   "value": 1.0,
    "n": 7,
    "status": "measured"
   },
@@ -30,19 +30,19 @@
   },
   "exact_lexical": {
    "metric": "recall_at_k",
-   "value": 0.667,
+   "value": 1.0,
    "n": 6,
    "status": "measured"
   },
   "stale_fact": {
    "metric": "stale_leak_rate",
-   "value": 0.5,
+   "value": 0.0,
    "n": 4,
    "status": "measured"
   },
   "supersession": {
    "metric": "supersession_accuracy",
-   "value": 0.5,
+   "value": 1.0,
    "n": 2,
    "status": "measured"
   },
@@ -54,20 +54,21 @@
   },
   "paraphrase": {
    "metric": "paraphrase_consistency",
-   "value": 0.667,
+   "value": 1.0,
    "n": 3,
    "status": "measured"
   }
  },
  "tokens_per_query": {
-  "median": 254,
-  "p95": 267
+  "median": 3795,
+  "p95": 4084
  },
  "paraphrase_groups": {
   "lora_config": {
    "consistent": true,
    "common_ids": [
-    "ke_b1f1822362c7"
+    "ev_a0971c1d0b28f5ac77340489",
+    "ev_cc1a06e7c2a3cdeae2574e32"
    ],
    "legs": [
     "para_lora_a",
@@ -75,8 +76,11 @@
    ]
   },
   "asado_warehouse": {
-   "consistent": false,
-   "common_ids": [],
+   "consistent": true,
+   "common_ids": [
+    "ev_5706f7fa5be973227bf2ae34",
+    "ev_993ca4b01632cb5145fceadd"
+   ],
    "legs": [
     "para_asado_a",
     "para_asado_b"
@@ -85,8 +89,8 @@
   "bbg_spreads": {
    "consistent": true,
    "common_ids": [
-    "ke_145d5b974622",
-    "ke_4fac0f92e470"
+    "ev_07e83c622e41ea012ae3b877",
+    "ev_a6a9d71ad48b2ad8583350a1"
    ],
    "legs": [
     "para_bbg_a",
@@ -101,21 +105,21 @@
    "enabled": true,
    "query": "Data/asado.duckdb",
    "paraphrase_group": null,
-   "latency_s": 4.18,
-   "token_estimate": 251,
+   "latency_s": 1.24,
+   "token_estimate": 3526,
    "top_ids": [
-    "ke_8ce1600b1f18",
-    "ke_e806ea8473b3",
-    "ke_1ca852cb56c3",
-    "ke_52a4dfa20fd3",
-    "ke_b9c30430abe1"
+    "ev_5706f7fa5be973227bf2ae34",
+    "ev_30c622410409bc8e09e98e02",
+    "ev_993ca4b01632cb5145fceadd",
+    "ev_761a079669bd7f0c33145a3a",
+    "ev_b41d98961cede7a65d5bbbbb"
    ],
    "top_final_scores": [
-    1.0983,
-    0.9431,
-    0.9403,
-    0.9398,
-    0.9345
+    0.8332,
+    0.8181,
+    0.8167,
+    0.8046,
+    0.8041
    ],
    "expected_found": true,
    "id_hit": false,
@@ -129,27 +133,27 @@
    "enabled": true,
    "query": "bbg.hist PX_BID PX_ASK",
    "paraphrase_group": null,
-   "latency_s": 2.42,
-   "token_estimate": 245,
+   "latency_s": 0.57,
+   "token_estimate": 3662,
    "top_ids": [
-    "ke_812f9dd2dcc8",
-    "ke_098270efab7f",
-    "ke_4e8fee2ee4d2",
-    "ke_c9246908a74f",
-    "ke_93fb22b897e7"
+    "ev_3d1242a9c928f0c183472c61",
+    "ev_6e5fdcf4bd620a43d66f7de7",
+    "ev_b9cfd8dc2e16f0052411a6be",
+    "ev_a6a9d71ad48b2ad8583350a1",
+    "ev_ebd1eaf0802437bea730db16"
    ],
    "top_final_scores": [
-    0.8543,
-    0.8512,
-    0.7617,
-    0.7436,
-    0.7341
+    0.705,
+    0.7042,
+    0.6935,
+    0.6904,
+    0.6727
    ],
-   "expected_found": false,
+   "expected_found": true,
    "id_hit": false,
-   "text_hit": false,
+   "text_hit": true,
    "leaks": [],
-   "passed": false
+   "passed": true
   },
   {
    "id": "lex_embedding_model_name",
@@ -157,25 +161,25 @@
    "enabled": true,
    "query": "text-embedding-3-large",
    "paraphrase_group": null,
-   "latency_s": 2.85,
-   "token_estimate": 253,
+   "latency_s": 0.73,
+   "token_estimate": 3516,
    "top_ids": [
-    "ke_231701212087",
-    "ke_a14b114f6a85",
-    "ke_860cf7c41e04",
-    "ke_e2fc05398e0f",
-    "ke_92870487a1ff"
+    "ev_26cf0db6ecd5d40ef368c212",
+    "ev_2eee08878ba76b438c797d44",
+    "ev_0a93af9c21675ec33e2251e5",
+    "ev_c89609d810ef01064694521f",
+    "ev_121c17083980d4f9362554fb"
    ],
    "top_final_scores": [
-    0.9656,
-    0.8528,
-    0.8221,
-    0.8205,
-    0.803
+    0.7743,
+    0.7587,
+    0.756,
+    0.7487,
+    0.2876
    ],
    "expected_found": true,
-   "id_hit": true,
-   "text_hit": false,
+   "id_hit": false,
+   "text_hit": true,
    "leaks": [],
    "passed": true
   },
@@ -185,21 +189,21 @@
    "enabled": true,
    "query": "ArjunDivecha/News repo pipeline",
    "paraphrase_group": null,
-   "latency_s": 2.56,
-   "token_estimate": 240,
+   "latency_s": 1.01,
+   "token_estimate": 3873,
    "top_ids": [
-    "ke_ece4408958f2",
-    "ke_a5c7f2f60dbd",
-    "ke_5c2de012d012",
-    "ke_2b7427c120f3",
-    "ke_9119b1e2e698"
+    "ev_6681c1b4b34ce01f3ed98ea7",
+    "ev_767c927698155481decd2692",
+    "ev_8890f2c402df7786701a796d",
+    "ev_35f3e06c8b95e1cd3a872742",
+    "ev_b4ce9e73ffb42ec0f6af2755"
    ],
    "top_final_scores": [
-    1.1164,
-    1.0842,
-    0.957,
-    0.9536,
-    0.9338
+    0.7319,
+    0.283,
+    0.253,
+    0.223,
+    0.2571
    ],
    "expected_found": true,
    "id_hit": false,
@@ -213,21 +217,21 @@
    "enabled": true,
    "query": "Corwin-Schultz spread estimator",
    "paraphrase_group": null,
-   "latency_s": 2.13,
-   "token_estimate": 256,
+   "latency_s": 0.44,
+   "token_estimate": 3888,
    "top_ids": [
-    "ke_989aec8b9432",
-    "ke_de7c33d2c21b",
-    "ke_3f080a5023be",
-    "ke_8055ad0ea595",
-    "ke_784360a72fc0"
+    "ev_aed2bd14b4bb1000828773f8",
+    "ev_f3410e6bafa4097abb81740e",
+    "ev_130147992338976d7daf72d6",
+    "ev_2d33f5bb6e0466782bb27eb4",
+    "ev_1deec3b1f3472209abd84e6a"
    ],
    "top_final_scores": [
-    0.9729,
-    0.7521,
-    0.6802,
-    0.6683,
-    0.6051
+    0.7661,
+    0.7397,
+    0.7336,
+    0.2143,
+    0.2143
    ],
    "expected_found": true,
    "id_hit": false,
@@ -241,27 +245,27 @@
    "enabled": true,
    "query": "1MTR 3MTR 12MTR signal direction",
    "paraphrase_group": null,
-   "latency_s": 2.85,
-   "token_estimate": 247,
+   "latency_s": 0.44,
+   "token_estimate": 3870,
    "top_ids": [
-    "ke_4f1e6268c1b9",
-    "ke_e0908648597a",
-    "ke_e4da992cab7c",
-    "ke_1161ba4d8481",
-    "ke_26b4663b5697"
+    "ev_03b39396e0944fdc7f7b2310",
+    "ev_06638146ca167b1b84129d74",
+    "ev_3f61c8940d7fbeedbc45209a",
+    "ev_c92165f5c24557df861fc30d",
+    "ev_3d9bf425f7445dbf148e3e75"
    ],
    "top_final_scores": [
-    0.7447,
-    0.6424,
-    0.636,
-    0.6042,
-    0.6034
+    0.2271,
+    0.1971,
+    0.1961,
+    0.1961,
+    0.1961
    ],
-   "expected_found": false,
+   "expected_found": true,
    "id_hit": false,
-   "text_hit": false,
+   "text_hit": true,
    "leaks": [],
-   "passed": false
+   "passed": true
   },
   {
    "id": "esave_eval_discipline",
@@ -269,24 +273,24 @@
    "enabled": true,
    "query": "what is my eval discipline for changing PKS retrieval",
    "paraphrase_group": null,
-   "latency_s": 2.87,
-   "token_estimate": 255,
+   "latency_s": 0.84,
+   "token_estimate": 3872,
    "top_ids": [
-    "ke_85828e07e5d64b1a",
-    "ke_e8b1aa974c2e",
-    "ke_2cc747dca0ed",
-    "ke_afac988a5d05",
-    "ke_5bc4eda0fbf4"
+    "ev_516b31991c30afaaa493c2cc",
+    "ev_12bc5a6eb5c3f50204244db6",
+    "ev_fe1150fd94c7d11e843fd7df",
+    "ev_af96a81b7e5a1077a031fbc5",
+    "ev_169ec0ff696bd25c615d132f"
    ],
    "top_final_scores": [
-    1.0241,
-    0.8782,
-    0.8637,
-    0.8335,
-    0.8326
+    0.7329,
+    0.7316,
+    0.7262,
+    0.7167,
+    0.7146
    ],
    "expected_found": true,
-   "id_hit": true,
+   "id_hit": false,
    "text_hit": true,
    "leaks": [],
    "passed": true
@@ -297,28 +301,28 @@
    "enabled": true,
    "query": "what is the capital of France",
    "paraphrase_group": null,
-   "latency_s": 2.71,
-   "token_estimate": 244,
+   "latency_s": 0.37,
+   "token_estimate": 3337,
    "top_ids": [
-    "ke_e43aa67269e3",
-    "ke_8d14f1691f17",
-    "ke_72d21f85f65f",
-    "ke_0a2ea5105ac1",
-    "ke_9e7f3812d15f"
+    "ev_62a2465adb369d994682bee7",
+    "ev_2ca6abb03f0d5c2506614c49",
+    "ev_0097fab2ec9c93ec03066f0e",
+    "ev_2d80cd2fb3f5fb0f962a2370",
+    "ev_96376b41f84007defb6f9b22"
    ],
    "top_final_scores": [
-    0.5636,
-    0.507,
-    0.4746,
-    0.461,
-    0.4315
+    0.2871,
+    0.2121,
+    0.2121,
+    0.2121,
+    0.2111
    ],
    "expected_found": true,
    "id_hit": false,
    "text_hit": false,
    "leaks": [],
    "passed": true,
-   "top_score": 0.5636
+   "top_score": 0.2871
   },
   {
    "id": "neg_quicksort",
@@ -326,28 +330,28 @@
    "enabled": true,
    "query": "explain how quicksort works",
    "paraphrase_group": null,
-   "latency_s": 2.72,
-   "token_estimate": 258,
+   "latency_s": 0.44,
+   "token_estimate": 2918,
    "top_ids": [
-    "ke_379c5c45ff79",
-    "ke_6f0845df93a4",
-    "ke_a09e072c7f8d",
-    "ke_cf535b972fb8",
-    "ke_9a4f69f63b3f"
+    "ev_97e24134af5385826daa8b5b",
+    "ev_7a47dde7e8d1ec236ab9e086",
+    "ev_41b882304de420b1d3007a10",
+    "ev_014391ad415d7b0773cec131",
+    "ev_6646eeb389c705bb26c77e53"
    ],
    "top_final_scores": [
-    0.5913,
-    0.4683,
-    0.4679,
-    0.4675,
-    0.4672
+    0.5955,
+    0.5888,
+    0.5879,
+    0.5513,
+    0.5491
    ],
    "expected_found": true,
    "id_hit": false,
    "text_hit": false,
    "leaks": [],
    "passed": true,
-   "top_score": 0.5913
+   "top_score": 0.5955
   },
   {
    "id": "neg_unit_conversion",
@@ -355,28 +359,28 @@
    "enabled": true,
    "query": "convert 100 fahrenheit to celsius",
    "paraphrase_group": null,
-   "latency_s": 2.09,
-   "token_estimate": 244,
+   "latency_s": 0.44,
+   "token_estimate": 3556,
    "top_ids": [
-    "ke_3b36fefd9182",
-    "ke_3919354d9987",
-    "ke_7a6fe6d2f617",
-    "ke_d8b46e94620e",
-    "ke_34a0f2fcdc4b"
+    "ev_7b4fe584c07b7ba7cd5890a9",
+    "ev_1b824d8dda01354434efca27",
+    "ev_deb2add8e9c824e209f11316",
+    "ev_edc189c56fa86fccd482406c",
+    "ev_6ff3c07a24dc33d108770a08"
    ],
    "top_final_scores": [
-    0.6005,
-    0.5959,
-    0.5159,
-    0.4701,
-    0.4691
+    0.5506,
+    0.5491,
+    0.5376,
+    0.535,
+    0.2249
    ],
    "expected_found": true,
    "id_hit": false,
    "text_hit": false,
    "leaks": [],
    "passed": true,
-   "top_score": 0.6005
+   "top_score": 0.5506
   },
   {
    "id": "neg_poem",
@@ -384,28 +388,28 @@
    "enabled": true,
    "query": "write a haiku about autumn leaves",
    "paraphrase_group": null,
-   "latency_s": 2.69,
-   "token_estimate": 270,
+   "latency_s": 0.37,
+   "token_estimate": 3345,
    "top_ids": [
-    "ke_142e5c85cb63",
-    "ke_548e4ced8499",
-    "ke_a4287e8db7b9",
-    "ke_dfba19cdf023",
-    "ke_3e43a35d3920"
+    "ev_6ce82cb62e10dbfbe26e3fc1",
+    "ev_2d33f5bb6e0466782bb27eb4",
+    "ev_cb593311ae1fca61eda82af3",
+    "ev_6df9b61e876e5d4f24df890f",
+    "ev_0c3b35f5f1d2d9e3c95a489e"
    ],
    "top_final_scores": [
-    0.6394,
-    0.5768,
-    0.5716,
-    0.5696,
-    0.5611
+    0.6105,
+    0.5762,
+    0.5756,
+    0.5697,
+    0.5696
    ],
    "expected_found": true,
    "id_hit": false,
    "text_hit": false,
    "leaks": [],
    "passed": true,
-   "top_score": 0.6394
+   "top_score": 0.6105
   },
   {
    "id": "neg_python_syntax",
@@ -413,28 +417,28 @@
    "enabled": true,
    "query": "python list comprehension syntax",
    "paraphrase_group": null,
-   "latency_s": 2.26,
-   "token_estimate": 250,
+   "latency_s": 0.43,
+   "token_estimate": 3989,
    "top_ids": [
-    "ke_c9e893c8fe05",
-    "ke_60934900da1f",
-    "ke_068bc6837fa74125",
-    "ke_f4d913130284",
-    "ke_115dea7a856e"
+    "ev_963a3a1ed97c1a1348c5093e",
+    "ev_beb2bcb1ae87f9e7099d4630",
+    "ev_193ac0fcfcec6b76318198d3",
+    "ev_fcea4c5efbc17e1461bc0f04",
+    "ev_21d937848744c0a0484e41a6"
    ],
    "top_final_scores": [
-    0.6193,
-    0.5742,
-    0.4861,
-    0.4838,
-    0.4838
+    0.6191,
+    0.6189,
+    0.6187,
+    0.6184,
+    0.6168
    ],
    "expected_found": true,
    "id_hit": false,
    "text_hit": false,
    "leaks": [],
    "passed": true,
-   "top_score": 0.6193
+   "top_score": 0.6191
   },
   {
    "id": "neg_who_is_einstein",
@@ -442,54 +446,54 @@
    "enabled": true,
    "query": "who was Albert Einstein",
    "paraphrase_group": null,
-   "latency_s": 2.55,
-   "token_estimate": 258,
+   "latency_s": 0.46,
+   "token_estimate": 3114,
    "top_ids": [
-    "ke_4a3efaa8340e",
-    "ke_5d56b52f471d",
-    "ke_c384add0b285",
-    "ke_1a60c25e11f2",
-    "ke_7ed1f86571e6"
+    "ev_5b2401dfbb57cb96f19350dc",
+    "ev_85fac894aff81a88450e72ac",
+    "ev_c6024e1e6f857d33b293aa76",
+    "ev_1bd1993130628d12fae8593e",
+    "ev_345b18943b50af150cc1a4d8"
    ],
    "top_final_scores": [
-    0.5496,
-    0.5294,
-    0.5225,
-    0.5223,
-    0.5147
+    0.5537,
+    0.547,
+    0.5341,
+    0.534,
+    0.5321
    ],
    "expected_found": true,
    "id_hit": false,
    "text_hit": false,
    "leaks": [],
    "passed": true,
-   "top_score": 0.5496
+   "top_score": 0.5537
   },
   {
    "id": "para_lora_a",
    "axis": "paraphrase",
    "enabled": true,
-   "query": "LoRA settings for my News fine-tune",
+   "query": "LoRA settings in the FineTuning project",
    "paraphrase_group": "lora_config",
-   "latency_s": 2.14,
-   "token_estimate": 254,
+   "latency_s": 0.51,
+   "token_estimate": 2256,
    "top_ids": [
-    "ke_b1f1822362c7",
-    "ke_d1e52ca0bb3f",
-    "ke_ecb4d9a1c6a8",
-    "ke_56e2e82597e8",
-    "ke_67a689793eb6"
+    "ev_a0971c1d0b28f5ac77340489",
+    "ev_79403d1d1af481a3f6969b77",
+    "ev_f0d9e7ec6b12b5ae2b908e24",
+    "ev_900305bb4ddd90882275df50",
+    "ev_cc1a06e7c2a3cdeae2574e32"
    ],
    "top_final_scores": [
-    0.9828,
-    0.8073,
-    0.788,
-    0.7855,
-    0.783
+    0.821,
+    0.8053,
+    0.7953,
+    0.7888,
+    0.7881
    ],
    "expected_found": true,
-   "id_hit": true,
-   "text_hit": false,
+   "id_hit": false,
+   "text_hit": true,
    "leaks": [],
    "passed": true
   },
@@ -497,27 +501,27 @@
    "id": "para_lora_b",
    "axis": "paraphrase",
    "enabled": true,
-   "query": "what rank and alpha am I using for low-rank adaptation training",
+   "query": "what configuration does the FineTuning MLX-LM-LoRA project use",
    "paraphrase_group": "lora_config",
-   "latency_s": 2.25,
-   "token_estimate": 248,
+   "latency_s": 0.52,
+   "token_estimate": 1344,
    "top_ids": [
-    "ke_5773eda2d964",
-    "ke_1e0ad5854055",
-    "ke_6d699bc913b4",
-    "ke_4ee91f590444",
-    "ke_b1f1822362c7"
+    "ev_a0971c1d0b28f5ac77340489",
+    "ev_cc1a06e7c2a3cdeae2574e32",
+    "ev_94b6b8a6af0a4c663a0ead9f",
+    "ev_a72bf1b4f3b15db1eb97538f",
+    "ev_af51ea7ea6d3d78d761eb001"
    ],
    "top_final_scores": [
-    0.7503,
-    0.5973,
-    0.5916,
-    0.5666,
-    0.2437
+    0.8206,
+    0.7924,
+    0.7908,
+    0.7904,
+    0.7901
    ],
    "expected_found": true,
-   "id_hit": true,
-   "text_hit": false,
+   "id_hit": false,
+   "text_hit": true,
    "leaks": [],
    "passed": true
   },
@@ -527,25 +531,25 @@
    "enabled": true,
    "query": "ASADO DuckDB warehouse location",
    "paraphrase_group": "asado_warehouse",
-   "latency_s": 2.39,
-   "token_estimate": 244,
+   "latency_s": 0.64,
+   "token_estimate": 3449,
    "top_ids": [
-    "ke_ae0a7d555995",
-    "ke_8ce1600b1f18",
-    "ke_e806ea8473b3",
-    "ke_52a4dfa20fd3",
-    "ke_63306c7108fb"
+    "ev_5706f7fa5be973227bf2ae34",
+    "ev_761a079669bd7f0c33145a3a",
+    "ev_993ca4b01632cb5145fceadd",
+    "ev_b41d98961cede7a65d5bbbbb",
+    "ev_975407e14ad14767aacfe8cb"
    ],
    "top_final_scores": [
-    1.1995,
-    1.0388,
-    1.0387,
-    1.035,
-    1.0318
+    0.8032,
+    0.7886,
+    0.7874,
+    0.7775,
+    0.7268
    ],
    "expected_found": true,
-   "id_hit": true,
-   "text_hit": false,
+   "id_hit": false,
+   "text_hit": true,
    "leaks": [],
    "passed": true
   },
@@ -553,29 +557,29 @@
    "id": "para_asado_b",
    "axis": "paraphrase",
    "enabled": true,
-   "query": "which single database file holds the consolidated macro research data",
+   "query": "where does ASADO keep its consolidated macro database",
    "paraphrase_group": "asado_warehouse",
-   "latency_s": 2.15,
-   "token_estimate": 263,
+   "latency_s": 0.74,
+   "token_estimate": 3795,
    "top_ids": [
-    "ke_69b03674b101",
-    "ke_43b77fdfc22f",
-    "ke_6cab9eafde4a",
-    "ke_48f8ffdffd52",
-    "ke_0ed5e8bef7dd"
+    "ev_7318c27c58d804cb00ad3d91",
+    "ev_5706f7fa5be973227bf2ae34",
+    "ev_993ca4b01632cb5145fceadd",
+    "ev_b00eb94196b0300adaf84ca9",
+    "ev_38b4d11e68027d255aa4bbc7"
    ],
    "top_final_scores": [
-    0.8274,
-    0.645,
-    0.6048,
-    0.5857,
-    0.2449
+    0.7578,
+    0.7535,
+    0.7355,
+    0.728,
+    0.7218
    ],
-   "expected_found": false,
+   "expected_found": true,
    "id_hit": false,
-   "text_hit": false,
+   "text_hit": true,
    "leaks": [],
-   "passed": false
+   "passed": true
   },
   {
    "id": "para_bbg_a",
@@ -583,27 +587,27 @@
    "enabled": true,
    "query": "pulling bid ask history from Bloomberg for spread calculation",
    "paraphrase_group": "bbg_spreads",
-   "latency_s": 2.3,
-   "token_estimate": 247,
+   "latency_s": 0.44,
+   "token_estimate": 3673,
    "top_ids": [
-    "ke_812f9dd2dcc8",
-    "ke_4fac0f92e470",
-    "ke_d65b43a1c63d",
-    "ke_03234b7a7327",
-    "ke_145d5b974622"
+    "ev_a6a9d71ad48b2ad8583350a1",
+    "ev_07e83c622e41ea012ae3b877",
+    "ev_54247bf92c1efdc357e1b6a3",
+    "ev_3d1242a9c928f0c183472c61",
+    "ev_412c66ea6ad93554496c3d1d"
    ],
    "top_final_scores": [
-    0.979,
-    0.8851,
-    0.8825,
-    0.8799,
-    0.877
+    0.7507,
+    0.7333,
+    0.7226,
+    0.7194,
+    0.693
    ],
-   "expected_found": false,
+   "expected_found": true,
    "id_hit": false,
-   "text_hit": false,
+   "text_hit": true,
    "leaks": [],
-   "passed": false
+   "passed": true
   },
   {
    "id": "para_bbg_b",
@@ -611,27 +615,27 @@
    "enabled": true,
    "query": "how did I compute trailing spreads from terminal data",
    "paraphrase_group": "bbg_spreads",
-   "latency_s": 2.32,
-   "token_estimate": 259,
+   "latency_s": 0.38,
+   "token_estimate": 3896,
    "top_ids": [
-    "ke_145d5b974622",
-    "ke_ab846663d952",
-    "ke_32e5cd60dddc",
-    "ke_d4d1027863a1",
-    "ke_4fac0f92e470"
+    "ev_35c69818345d45501dcc1b90",
+    "ev_f3410e6bafa4097abb81740e",
+    "ev_07e83c622e41ea012ae3b877",
+    "ev_a6a9d71ad48b2ad8583350a1",
+    "ev_560cf86856113c1c1e22bff3"
    ],
    "top_final_scores": [
-    0.7785,
-    0.77,
-    0.7636,
-    0.7365,
-    0.7362
+    0.6991,
+    0.6877,
+    0.6838,
+    0.6793,
+    0.6763
    ],
-   "expected_found": false,
+   "expected_found": true,
    "id_hit": false,
-   "text_hit": false,
+   "text_hit": true,
    "leaks": [],
-   "passed": false
+   "passed": true
   },
   {
    "id": "proj_asado_warehouse",
@@ -639,24 +643,24 @@
    "enabled": true,
    "query": "where is the ASADO analytical warehouse stored",
    "paraphrase_group": null,
-   "latency_s": 2.92,
-   "token_estimate": 234,
+   "latency_s": 0.66,
+   "token_estimate": 3824,
    "top_ids": [
-    "ke_ae0a7d555995",
-    "ke_116616986b27",
-    "ke_29114415cf3d",
-    "ke_63306c7108fb",
-    "ke_fdf2807cd1c8"
+    "ev_7f8c6ed87cd6fda5ac6e1a3f",
+    "ev_5706f7fa5be973227bf2ae34",
+    "ev_30c622410409bc8e09e98e02",
+    "ev_761a079669bd7f0c33145a3a",
+    "ev_993ca4b01632cb5145fceadd"
    ],
    "top_final_scores": [
-    1.1868,
-    1.1773,
-    1.0696,
-    0.9532,
-    0.8741
+    0.7589,
+    0.7384,
+    0.7349,
+    0.7307,
+    0.7246
    ],
    "expected_found": true,
-   "id_hit": true,
+   "id_hit": false,
    "text_hit": true,
    "leaks": [],
    "passed": true
@@ -667,24 +671,24 @@
    "enabled": true,
    "query": "T2 factor timing pipeline structure how many steps",
    "paraphrase_group": null,
-   "latency_s": 2.09,
-   "token_estimate": 256,
+   "latency_s": 0.43,
+   "token_estimate": 3547,
    "top_ids": [
-    "ke_fc740e5766f5",
-    "ke_df026db27b98",
-    "ke_bfba36f8b31b",
-    "ke_6f1bf535f800",
-    "ke_f90f56930b6d"
+    "ev_839c51164021abdb3076e856",
+    "ev_50cc643ed9db7351e8ab991f",
+    "ev_78ff14bf8b7cc2e4e5292f35",
+    "ev_0c9a10976b084485749cbfea",
+    "ev_7f76a6f32fc4ca700fd83b93"
    ],
    "top_final_scores": [
-    1.0794,
-    1.0391,
-    0.9118,
-    0.8894,
-    0.8548
+    0.2213,
+    0.2211,
+    0.2208,
+    0.1998,
+    0.1998
    ],
    "expected_found": true,
-   "id_hit": true,
+   "id_hit": false,
    "text_hit": true,
    "leaks": [],
    "passed": true
@@ -695,24 +699,24 @@
    "enabled": true,
    "query": "which step of the News pipeline generates the Flash report",
    "paraphrase_group": null,
-   "latency_s": 2.48,
-   "token_estimate": 250,
+   "latency_s": 0.86,
+   "token_estimate": 3700,
    "top_ids": [
-    "ke_449ce54a214a",
-    "ke_91f81bf784ec",
-    "ke_8da2d4aa6666",
-    "ke_a9c2f82c7aaa",
-    "ke_9d8b56085cfa"
+    "ev_a7398d31aa738cbafbd18dd4",
+    "ev_1f8220e9eeed4209233ffc2d",
+    "ev_e020362c016fc416f320b8b0",
+    "ev_cf7021ee28c045510706efca",
+    "ev_b0ad871f1f01bcca37bcc7e1"
    ],
    "top_final_scores": [
-    1.3411,
-    0.934,
-    0.9304,
-    0.8756,
-    0.8752
+    0.7485,
+    0.7198,
+    0.7146,
+    0.712,
+    0.7087
    ],
    "expected_found": true,
-   "id_hit": true,
+   "id_hit": false,
    "text_hit": true,
    "leaks": [],
    "passed": true
@@ -721,29 +725,29 @@
    "id": "proj_lawbot_vercel_limits",
    "axis": "project_recall",
    "enabled": true,
-   "query": "California Law Chatbot serverless memory and timeout limits",
+   "query": "is the California Law Chatbot Vercel integration still active",
    "paraphrase_group": null,
-   "latency_s": 2.32,
-   "token_estimate": 216,
+   "latency_s": 0.55,
+   "token_estimate": 4203,
    "top_ids": [
-    "ke_589310793faf",
-    "ke_bbb3645fe4ec",
-    "ke_7e1949d6f8b0",
-    "ke_f863106863d9",
-    "ke_1710cdb02ca1"
+    "ev_557ea107fd2f871dcf567d5c",
+    "ev_1fc4d57455514dc5c4e65b69",
+    "ev_e71f5bfd6817c98840b0443a",
+    "ev_15244ee0ee40c83dc5147916",
+    "ev_c7c8ce31d4df67d991ac3b76"
    ],
    "top_final_scores": [
-    0.938,
-    0.6811,
-    0.6703,
-    0.6189,
-    0.6145
+    0.7649,
+    0.7544,
+    0.753,
+    0.7519,
+    0.7396
    ],
-   "expected_found": false,
+   "expected_found": true,
    "id_hit": false,
-   "text_hit": false,
+   "text_hit": true,
    "leaks": [],
-   "passed": false
+   "passed": true
   },
   {
    "id": "proj_pks_stack",
@@ -751,21 +755,21 @@
    "enabled": true,
    "query": "what infrastructure does my personal knowledge system run on",
    "paraphrase_group": null,
-   "latency_s": 2.64,
-   "token_estimate": 249,
+   "latency_s": 0.41,
+   "token_estimate": 3993,
    "top_ids": [
-    "ke_fa712793ad41",
-    "ke_656fb93f77f0",
-    "ke_d8d4298e8ced",
-    "ke_0952853f2552",
-    "ke_91c37f8c6b78"
+    "ev_1b199be32ea5c04b73a1433c",
+    "ev_8a7064fa4c403f67ebc164b3",
+    "ev_0699cf843fcef4e02d1e0c89",
+    "ev_cee52c55ae39bafde7d42927",
+    "ev_10923f5de0f0a21277f3009d"
    ],
    "top_final_scores": [
-    0.9386,
-    0.9168,
-    0.9055,
-    0.9038,
-    0.8784
+    0.776,
+    0.77,
+    0.768,
+    0.7671,
+    0.7666
    ],
    "expected_found": true,
    "id_hit": false,
@@ -777,26 +781,26 @@
    "id": "proj_lora_config",
    "axis": "project_recall",
    "enabled": true,
-   "query": "LoRA hyperparameters for the News fine-tune",
+   "query": "what project contains the current LoRA fine-tuning setup",
    "paraphrase_group": null,
-   "latency_s": 2.23,
-   "token_estimate": 260,
+   "latency_s": 0.84,
+   "token_estimate": 1547,
    "top_ids": [
-    "ke_b1f1822362c7",
-    "ke_b8daa60b9ef7",
-    "ke_d1e52ca0bb3f",
-    "ke_ecb4d9a1c6a8",
-    "ke_12f3440fa090"
+    "ev_a0971c1d0b28f5ac77340489",
+    "ev_79403d1d1af481a3f6969b77",
+    "ev_900305bb4ddd90882275df50",
+    "ev_cc1a06e7c2a3cdeae2574e32",
+    "ev_94b6b8a6af0a4c663a0ead9f"
    ],
    "top_final_scores": [
-    1.0399,
-    0.9544,
-    0.8734,
-    0.8644,
-    0.8531
+    0.8,
+    0.7791,
+    0.7742,
+    0.7732,
+    0.7721
    ],
    "expected_found": true,
-   "id_hit": true,
+   "id_hit": false,
    "text_hit": true,
    "leaks": [],
    "passed": true
@@ -807,21 +811,21 @@
    "enabled": true,
    "query": "how are CEB PDFs chunked for the law chatbot",
    "paraphrase_group": null,
-   "latency_s": 2.43,
-   "token_estimate": 237,
+   "latency_s": 0.44,
+   "token_estimate": 4084,
    "top_ids": [
-    "ke_db71581bcc49",
-    "ke_0bc5f6e7032c",
-    "ke_a46423612052",
-    "ke_b4ca5bd0c960",
-    "ke_84121f4583f5"
+    "ev_6ebf58078f14d061f068692c",
+    "ev_5265f959f51132a011f5693c",
+    "ev_e61907b316209a5d5b924d21",
+    "ev_1003f5452cbc81ba78ba3fa6",
+    "ev_d878beb353012ba479248bcb"
    ],
    "top_final_scores": [
-    1.0757,
-    1.0042,
-    0.9951,
-    0.9914,
-    0.9549
+    0.7986,
+    0.7932,
+    0.7742,
+    0.7684,
+    0.7655
    ],
    "expected_found": true,
    "id_hit": false,
@@ -830,54 +834,26 @@
    "passed": true
   },
   {
-   "id": "recall_dip_factor",
-   "axis": "carry_forward_recall",
-   "enabled": true,
-   "query": "demographic inflation pressure DIP factor",
-   "paraphrase_group": null,
-   "latency_s": 2.49,
-   "token_estimate": 256,
-   "top_ids": [
-    "ke_322e1725a88f",
-    "ke_16b391f72beb",
-    "ke_b36fe988df4a",
-    "ke_323a22adcf0a",
-    "ke_f7720599e21c"
-   ],
-   "top_final_scores": [
-    0.7578,
-    0.6881,
-    0.6703,
-    0.6456,
-    0.6023
-   ],
-   "expected_found": false,
-   "id_hit": false,
-   "text_hit": false,
-   "leaks": [],
-   "passed": false
-  },
-  {
    "id": "recall_asado_strategy_1",
    "axis": "carry_forward_recall",
    "enabled": true,
    "query": "ASADO country rotation analog signal strategy 1",
    "paraphrase_group": null,
-   "latency_s": 2.37,
-   "token_estimate": 267,
+   "latency_s": 0.59,
+   "token_estimate": 3370,
    "top_ids": [
-    "ke_47be9353acb4",
-    "ke_ff17575edeb1",
-    "ke_f81760da887e",
-    "ke_f786a70aea55",
-    "ke_14e227519b15"
+    "ev_2e06b3fa639543883633efb1",
+    "ev_32b5ff8c53c20ae935c07722",
+    "ev_f71a6c39729a7237a6e6374f",
+    "ev_452651cc37159c4a9120008f",
+    "ev_fa85764d87b370f31ed29cd3"
    ],
    "top_final_scores": [
-    0.9554,
-    0.913,
-    0.8991,
-    0.8914,
-    0.8882
+    0.7828,
+    0.7642,
+    0.7586,
+    0.7569,
+    0.7536
    ],
    "expected_found": true,
    "id_hit": false,
@@ -891,21 +867,21 @@
    "enabled": true,
    "query": "GDELT signal construction feeding ASADO",
    "paraphrase_group": null,
-   "latency_s": 2.45,
-   "token_estimate": 261,
+   "latency_s": 1.14,
+   "token_estimate": 4058,
    "top_ids": [
-    "ke_7580075549ab",
-    "ke_ff17575edeb1",
-    "ke_ce18a53b9325",
-    "ke_fea76cf6cc1b",
-    "ke_076b17edde21"
+    "ev_5d96547e863a701f51395fbe",
+    "ev_4348ed46efab0c6d35cccf2a",
+    "ev_959ef2d864633e8a937fe759",
+    "ev_49f9ab3c2674524c3d69e568",
+    "ev_49365c4c43d0613e957b673f"
    ],
    "top_final_scores": [
-    1.111,
-    0.8847,
-    0.8751,
-    0.8748,
-    0.8652
+    0.8225,
+    0.8168,
+    0.8141,
+    0.7873,
+    0.7842
    ],
    "expected_found": true,
    "id_hit": false,
@@ -914,54 +890,26 @@
    "passed": true
   },
   {
-   "id": "recall_inmobi_ipo_advisory",
-   "axis": "carry_forward_recall",
-   "enabled": true,
-   "query": "InMobi IPO advisory engagement",
-   "paraphrase_group": null,
-   "latency_s": 2.64,
-   "token_estimate": 255,
-   "top_ids": [
-    "ke_3527d41d9a52",
-    "ke_06f4fa2d3356",
-    "ke_46f8d3311484",
-    "ke_0cb14c1cb862",
-    "ke_851097276003"
-   ],
-   "top_final_scores": [
-    0.7201,
-    0.6614,
-    0.6609,
-    0.6604,
-    0.585
-   ],
-   "expected_found": false,
-   "id_hit": false,
-   "text_hit": false,
-   "leaks": [],
-   "passed": false
-  },
-  {
    "id": "recall_t2_ic_saturation",
    "axis": "carry_forward_recall",
    "enabled": true,
    "query": "T2 factor timing IC saturation",
    "paraphrase_group": null,
-   "latency_s": 2.13,
-   "token_estimate": 261,
+   "latency_s": 0.54,
+   "token_estimate": 3715,
    "top_ids": [
-    "ke_fc740e5766f5",
-    "ke_df026db27b98",
-    "ke_9e01e1f200f5",
-    "ke_6f1bf535f800",
-    "ke_bfba36f8b31b"
+    "ev_0c9a10976b084485749cbfea",
+    "ev_839c51164021abdb3076e856",
+    "ev_b1cd4539609d36325280b52d",
+    "ev_7f76a6f32fc4ca700fd83b93",
+    "ev_b8d606bffc8f9ae4105845d3"
    ],
    "top_final_scores": [
-    0.9115,
-    0.871,
-    0.7613,
-    0.7387,
-    0.7347
+    0.2041,
+    0.2041,
+    0.2041,
+    0.2041,
+    0.2041
    ],
    "expected_found": true,
    "id_hit": false,
@@ -975,21 +923,21 @@
    "enabled": true,
    "query": "LoopPilot autonomous experiment loop runner",
    "paraphrase_group": null,
-   "latency_s": 2.7,
-   "token_estimate": 252,
+   "latency_s": 0.62,
+   "token_estimate": 3068,
    "top_ids": [
-    "ke_3929a10dcfdd",
-    "ke_630c43fed87c",
-    "ke_1e9025bae3b7",
-    "ke_63ccc1569ef4",
-    "ke_80652f55f8a6"
+    "ev_76bd10358ff87a6c7542fbaf",
+    "ev_ce4dd36ad0b860e7bad71b6a",
+    "ev_457cda53118ad886f48d566a",
+    "ev_a2881f09a2ef698033e67444",
+    "ev_3c0cd408329442adf0e7b3d3"
    ],
    "top_final_scores": [
-    1.1123,
-    1.0157,
-    1.0011,
-    0.976,
-    0.973
+    0.8225,
+    0.8215,
+    0.8193,
+    0.8171,
+    0.817
    ],
    "expected_found": true,
    "id_hit": false,
@@ -1003,21 +951,21 @@
    "enabled": true,
    "query": "LoopPilot promotion logic and best_metrics baseline",
    "paraphrase_group": null,
-   "latency_s": 2.85,
-   "token_estimate": 248,
+   "latency_s": 0.79,
+   "token_estimate": 4055,
    "top_ids": [
-    "ke_3929a10dcfdd",
-    "ke_ee97ebda76fe",
-    "ke_630c43fed87c",
-    "ke_dfd511604104",
-    "ke_80652f55f8a6"
+    "ev_34b40a55932987e7c273dccc",
+    "ev_6aa105b995150642b9adbc95",
+    "ev_9189a564db7f7d32ec602063",
+    "ev_64697557b1499e4715cfac39",
+    "ev_6678b88e16530a955f916c3e"
    ],
    "top_final_scores": [
-    0.8353,
-    0.7953,
-    0.7882,
-    0.7591,
-    0.7547
+    0.797,
+    0.785,
+    0.7824,
+    0.7512,
+    0.261
    ],
    "expected_found": true,
    "id_hit": false,
@@ -1031,21 +979,21 @@
    "enabled": true,
    "query": "Pattern CNN trading Jiang Kelly Xiu re-imagined images",
    "paraphrase_group": null,
-   "latency_s": 2.47,
-   "token_estimate": 265,
+   "latency_s": 0.53,
+   "token_estimate": 3357,
    "top_ids": [
-    "ke_b9956b106d1f",
-    "ke_39453d4525e7",
-    "ke_ac83e3fa8f13",
-    "ke_dc06675711f6",
-    "ke_5018aab29a85"
+    "ev_b9bf52ee8fea3e50441374cf",
+    "ev_61be2b4320e895fc371c5372",
+    "ev_9ffad1e01fc2403d0e563281",
+    "ev_df4c9bf996b0491d398ab28f",
+    "ev_130147992338976d7daf72d6"
    ],
    "top_final_scores": [
-    0.849,
-    0.7427,
-    0.7391,
-    0.7351,
-    0.6997
+    0.761,
+    0.7429,
+    0.7412,
+    0.7317,
+    0.7306
    ],
    "expected_found": true,
    "id_hit": false,
@@ -1059,21 +1007,21 @@
    "enabled": true,
    "query": "Karpathy nanochat training loop",
    "paraphrase_group": null,
-   "latency_s": 2.65,
-   "token_estimate": 250,
+   "latency_s": 0.44,
+   "token_estimate": 3839,
    "top_ids": [
-    "ke_6c65d4c9ba74",
-    "ke_f4b332a13d3f",
-    "ke_33336a13d03f",
-    "ke_e748c7557867",
-    "ke_a7fb1580f531"
+    "ev_48b5ad84fc1a851c75be0f7d",
+    "ev_a5923e821e7e4ad7a348c858",
+    "ev_3ddbebc6acb4e041ef9a02e0",
+    "ev_03b39396e0944fdc7f7b2310",
+    "ev_06638146ca167b1b84129d74"
    ],
    "top_final_scores": [
-    1.0398,
-    0.7891,
-    0.7737,
-    0.7643,
-    0.7517
+    0.2496,
+    0.2121,
+    0.2121,
+    0.2121,
+    0.2121
    ],
    "expected_found": true,
    "id_hit": false,
@@ -1087,21 +1035,21 @@
    "enabled": true,
    "query": "personal knowledge system Dream forgetting design",
    "paraphrase_group": null,
-   "latency_s": 2.9,
-   "token_estimate": 270,
+   "latency_s": 0.46,
+   "token_estimate": 3978,
    "top_ids": [
-    "ke_c0e07727b947",
-    "ke_c0dd9ba42b5d",
-    "ke_6df3576838b4",
-    "ke_133dd33499f8",
-    "ke_e5fdf89dc5ce"
+    "ev_9581fbfe880bfd551aa67ab6",
+    "ev_cee52c55ae39bafde7d42927",
+    "ev_fe1150fd94c7d11e843fd7df",
+    "ev_66fbe801906009aeb73cacc9",
+    "ev_1358b12c86d625bad10243a2"
    ],
    "top_final_scores": [
-    1.1378,
-    1.066,
-    1.0394,
-    1.0341,
-    1.0189
+    0.8223,
+    0.8174,
+    0.8109,
+    0.8066,
+    0.7847
    ],
    "expected_found": true,
    "id_hit": false,
@@ -1115,21 +1063,21 @@
    "enabled": true,
    "query": "Dream quarantine before tier demotion synaptic weakening",
    "paraphrase_group": null,
-   "latency_s": 2.72,
-   "token_estimate": 267,
+   "latency_s": 0.74,
+   "token_estimate": 3670,
    "top_ids": [
-    "ke_07d23279881e",
-    "ke_f8674ec36daf",
-    "ke_133dd33499f8",
-    "ke_6df3576838b4",
-    "ke_c0dd9ba42b5d"
+    "ev_bd2b0b8f38139d7b845c3975",
+    "ev_05c11c8ca05aaf17babf9117",
+    "ev_09f8618b00e0e85ac6738f19",
+    "ev_b98efb65a67b532a76861333",
+    "ev_c2ab6930dba7370f646f2628"
    ],
    "top_final_scores": [
-    1.0111,
-    0.9065,
-    0.9035,
-    0.8859,
-    0.8722
+    0.7478,
+    0.7439,
+    0.7416,
+    0.7226,
+    0.7198
    ],
    "expected_found": true,
    "id_hit": false,
@@ -1143,21 +1091,21 @@
    "enabled": true,
    "query": "semantic entity resolution deduplication embeddings",
    "paraphrase_group": null,
-   "latency_s": 2.7,
-   "token_estimate": 272,
+   "latency_s": 0.45,
+   "token_estimate": 4086,
    "top_ids": [
-    "ke_387c509f65ff",
-    "ke_a7063451e3f6",
-    "ke_0f33a68290b4",
-    "ke_fec3ebb8cbd4",
-    "ke_b95e318425d8"
+    "ev_5dfe59bf4be62c779fe6bca2",
+    "ev_03232240342e71326a544681",
+    "ev_4c53bd46dbdfcb1ab75ac241",
+    "ev_2eee08878ba76b438c797d44",
+    "ev_0a93af9c21675ec33e2251e5"
    ],
    "top_final_scores": [
-    0.9954,
-    0.8965,
-    0.8398,
-    0.7932,
-    0.7756
+    0.7656,
+    0.7366,
+    0.7033,
+    0.7011,
+    0.6982
    ],
    "expected_found": true,
    "id_hit": false,
@@ -1171,21 +1119,21 @@
    "enabled": true,
    "query": "Cloudflare Worker MCP server Upstash retrieval",
    "paraphrase_group": null,
-   "latency_s": 2.6,
-   "token_estimate": 243,
+   "latency_s": 0.67,
+   "token_estimate": 3738,
    "top_ids": [
-    "ke_2fa5449b8c5b",
-    "ke_f0fb4a434fe2",
-    "ke_2590b9555628",
-    "ke_2a297b50766c",
-    "ke_b55d96eda8f4"
+    "ev_169ec0ff696bd25c615d132f",
+    "ev_d452a195269e66efd1f724ee",
+    "ev_29eb353fce8c848a6fff90bb",
+    "ev_35e90d1bd9922285117223ac",
+    "ev_b50a8cb079114ff13a7845a9"
    ],
    "top_final_scores": [
-    1.225,
-    0.9303,
-    0.9142,
-    0.8855,
-    0.8708
+    0.7615,
+    0.7571,
+    0.7368,
+    0.7284,
+    0.7216
    ],
    "expected_found": true,
    "id_hit": false,
@@ -1199,21 +1147,21 @@
    "enabled": true,
    "query": "Bloomberg terminal data integration OpusBloomberg",
    "paraphrase_group": null,
-   "latency_s": 2.29,
-   "token_estimate": 257,
+   "latency_s": 1.32,
+   "token_estimate": 3377,
    "top_ids": [
-    "ke_098270efab7f",
-    "ke_195d248e337e",
-    "ke_145d5b974622",
-    "ke_d65b43a1c63d",
-    "ke_ab846663d952"
+    "ev_6e5fdcf4bd620a43d66f7de7",
+    "ev_89926b5ad4d650bbcb828613",
+    "ev_4e2366b8e271c5f7ac7b1ed5",
+    "ev_3d1242a9c928f0c183472c61",
+    "ev_8579e0da0439a351292b1629"
    ],
    "top_final_scores": [
-    1.1963,
-    1.0755,
-    1.0451,
-    1.0232,
-    1.0038
+    0.8258,
+    0.8209,
+    0.8009,
+    0.7878,
+    0.7746
    ],
    "expected_found": true,
    "id_hit": false,
@@ -1227,21 +1175,21 @@
    "enabled": true,
    "query": "country equity rotation backtest sharpe",
    "paraphrase_group": null,
-   "latency_s": 2.66,
-   "token_estimate": 258,
+   "latency_s": 0.37,
+   "token_estimate": 3860,
    "top_ids": [
-    "ke_e2a0930dd466",
-    "ke_4dae13e499f9",
-    "ke_24202834e568",
-    "ke_22564beb2d9c",
-    "ke_5b2235ab60754b27"
+    "ev_802138a9b44da2edc1a8e40f",
+    "ev_a45b5d1550c259be3e0f0abf",
+    "ev_a6ee94612c5d5aca3e5fbd18",
+    "ev_df57480da642089f3fb075fb",
+    "ev_46f49446d86a8e6d3497fe29"
    ],
    "top_final_scores": [
-    0.8365,
-    0.7907,
-    0.7861,
-    0.7792,
-    0.7767
+    0.7891,
+    0.7884,
+    0.7857,
+    0.7851,
+    0.7828
    ],
    "expected_found": true,
    "id_hit": false,
@@ -1255,21 +1203,21 @@
    "enabled": true,
    "query": "GMO senior advisor quantitative investing identity",
    "paraphrase_group": null,
-   "latency_s": 3.06,
-   "token_estimate": 256,
+   "latency_s": 0.51,
+   "token_estimate": 3853,
    "top_ids": [
-    "ke_5d56b52f471d",
-    "ke_7ed1f86571e6",
-    "ke_4a459fb69b28",
-    "ke_2077281cef8b",
-    "ke_7054d5016e7c"
+    "ev_ecb84655cebca43ab426cdc4",
+    "ev_e0de0799a3b130a8718fdb26",
+    "ev_b874e370e25164124d4b2c4a",
+    "ev_dd2f0b0e57c7139f56cfff04",
+    "ev_25ff21bcc6d3ba96df4fd03e"
    ],
    "top_final_scores": [
-    1.0201,
-    0.9489,
-    0.9458,
-    0.8833,
-    0.8799
+    0.6792,
+    0.6727,
+    0.6704,
+    0.6664,
+    0.6625
    ],
    "expected_found": true,
    "id_hit": false,
@@ -1283,21 +1231,21 @@
    "enabled": true,
    "query": "agent session ingestion Claude Code Codex pipeline",
    "paraphrase_group": null,
-   "latency_s": 2.8,
-   "token_estimate": 254,
+   "latency_s": 0.56,
+   "token_estimate": 3755,
    "top_ids": [
-    "ke_9f1b54d35c17",
-    "ke_4baa9e7be0ce",
-    "ke_fa768f11222d",
-    "ke_25bc65eb5ede",
-    "ke_445f3a095138"
+    "ev_a9e2861b9a250b3b0c339eec",
+    "ev_f4f14466a04756d7100df2d3",
+    "ev_908ebe218a78fdd568e96bbd",
+    "ev_29eb353fce8c848a6fff90bb",
+    "ev_aa8cd7e97af090d1c6a84752"
    ],
    "top_final_scores": [
-    1.0349,
-    0.941,
-    0.9326,
-    0.9189,
-    0.9075
+    0.793,
+    0.7796,
+    0.7761,
+    0.7754,
+    0.7725
    ],
    "expected_found": true,
    "id_hit": false,
@@ -1311,21 +1259,21 @@
    "enabled": true,
    "query": "salience scoring memory decay half life",
    "paraphrase_group": null,
-   "latency_s": 2.62,
-   "token_estimate": 246,
+   "latency_s": 0.45,
+   "token_estimate": 3945,
    "top_ids": [
-    "ke_dcd43c7d45ee",
-    "ke_81af196df73a",
-    "ke_5cc85140d4bd",
-    "ke_30a9035c3e90",
-    "ke_c979b532a11c"
+    "ev_9f86bc89f4c4da2e83d9c909",
+    "ev_d48b3589664fcce67f3765a0",
+    "ev_9581fbfe880bfd551aa67ab6",
+    "ev_b526fd44469407c9001166b9",
+    "ev_dd7e593461040cc31daa585a"
    ],
    "top_final_scores": [
-    1.013,
-    0.9406,
-    0.9118,
-    0.9066,
-    0.8998
+    0.7708,
+    0.7683,
+    0.7666,
+    0.7431,
+    0.7361
    ],
    "expected_found": true,
    "id_hit": false,
@@ -1339,21 +1287,21 @@
    "enabled": true,
    "query": "California law chatbot content classification taxonomy",
    "paraphrase_group": null,
-   "latency_s": 2.4,
-   "token_estimate": 264,
+   "latency_s": 0.51,
+   "token_estimate": 3600,
    "top_ids": [
-    "ke_46c9f7231a2d",
-    "ke_d165fd41121c",
-    "ke_5e7875835417",
-    "ke_15c86a4bee56",
-    "ke_8b46c1cf0010"
+    "ev_c517610a980302b542fce213",
+    "ev_d78d14afa5cc2f7488db18f8",
+    "ev_91d6c807b23ff7aacfaaf9c1",
+    "ev_e6ce2168ce9aaea45ce09b56",
+    "ev_ab13366f5952a2d1fbbc2cf2"
    ],
    "top_final_scores": [
-    1.0214,
-    0.9585,
-    0.9579,
-    0.9535,
-    0.9099
+    0.7631,
+    0.7627,
+    0.7626,
+    0.7474,
+    0.263
    ],
    "expected_found": true,
    "id_hit": false,
@@ -1367,21 +1315,21 @@
    "enabled": true,
    "query": "tweet reader ingestion fxtwitter fallback",
    "paraphrase_group": null,
-   "latency_s": 2.34,
-   "token_estimate": 241,
+   "latency_s": 0.66,
+   "token_estimate": 4031,
    "top_ids": [
-    "ke_32379a085029",
-    "ke_2ad25d9e0b1d",
-    "ke_26bc70991626",
-    "ke_37636d65aba5",
-    "ke_ff2c5b60d4da"
+    "ev_cdb7a4d0c35c14a255284837",
+    "ev_1bd7933f5771a973591d972a",
+    "ev_b482e09a958b22984c860f57",
+    "ev_7b6ae6a64ffda16eb4686674",
+    "ev_f0da20418f14910c94178d7f"
    ],
    "top_final_scores": [
-    0.8163,
-    0.81,
-    0.7829,
-    0.7635,
-    0.7352
+    0.6861,
+    0.7013,
+    0.6998,
+    0.6984,
+    0.6868
    ],
    "expected_found": true,
    "id_hit": false,
@@ -1395,21 +1343,21 @@
    "enabled": true,
    "query": "what embedding model and dimensions does PKS production search use",
    "paraphrase_group": null,
-   "latency_s": 2.71,
-   "token_estimate": 264,
+   "latency_s": 0.46,
+   "token_estimate": 4450,
    "top_ids": [
-    "ke_f80014ac2d4d",
-    "ke_231701212087",
-    "ke_2e2c4f33caf6",
-    "ke_aec64588fa9e",
-    "ke_83d3c0af1adc"
+    "ev_1358b12c86d625bad10243a2",
+    "ev_af96a81b7e5a1077a031fbc5",
+    "ev_94a4e50442847535e7ef40aa",
+    "ev_aac22bbb526f2863be381ea6",
+    "ev_03308d722d7bccf38d53f34b"
    ],
    "top_final_scores": [
-    0.9786,
-    0.8842,
-    0.8211,
-    0.7851,
-    0.7802
+    0.7207,
+    0.714,
+    0.7041,
+    0.7034,
+    0.6968
    ],
    "expected_found": false,
    "id_hit": false,
@@ -1423,21 +1371,21 @@
    "enabled": true,
    "query": "how is PKS search scored relevance recency salience weights",
    "paraphrase_group": null,
-   "latency_s": 2.49,
-   "token_estimate": 253,
+   "latency_s": 0.43,
+   "token_estimate": 3910,
    "top_ids": [
-    "ke_f80014ac2d4d",
-    "ke_298c5d99a6ed",
-    "ke_529b9478ebac",
-    "ke_046119ec8af4",
-    "ke_568ce6e21c25"
+    "ev_aac22bbb526f2863be381ea6",
+    "ev_1358b12c86d625bad10243a2",
+    "ev_5d8aa801cacb99b770016bb5",
+    "ev_b526fd44469407c9001166b9",
+    "ev_e5361fcaf6d1b5609252b7f8"
    ],
    "top_final_scores": [
-    1.0501,
-    0.9187,
-    0.8751,
-    0.8649,
-    0.8456
+    0.7625,
+    0.7433,
+    0.7239,
+    0.7226,
+    0.7148
    ],
    "expected_found": true,
    "id_hit": false,
@@ -1451,29 +1399,27 @@
    "enabled": true,
    "query": "which model does the Dream judge use",
    "paraphrase_group": null,
-   "latency_s": 2.73,
-   "token_estimate": 265,
+   "latency_s": 0.55,
+   "token_estimate": 4042,
    "top_ids": [
-    "ke_323713202eae",
-    "ke_d4b7c49b1c48",
-    "ke_cc6885799bc7",
-    "ke_aa1619f13af7",
-    "ke_e5fdf89dc5ce"
+    "ev_6c69b2a9f56afc51f580f739",
+    "ev_8c3c28c9a20e116433cc9003",
+    "ev_fa0d8961005a1a5a469e6c73",
+    "ev_0664918d4c7279ae3ee56e28",
+    "ev_75fed790a07645914b41eb85"
    ],
    "top_final_scores": [
-    0.9525,
-    0.8799,
-    0.8716,
-    0.8715,
-    0.8509
+    0.6909,
+    0.6886,
+    0.6873,
+    0.6863,
+    0.6861
    ],
    "expected_found": true,
    "id_hit": false,
    "text_hit": true,
-   "leaks": [
-    "claude-opus-4-6"
-   ],
-   "passed": false
+   "leaks": [],
+   "passed": true
   },
   {
    "id": "stale_mcp_four_tools",
@@ -1481,29 +1427,27 @@
    "enabled": true,
    "query": "how many MCP tools does the personal knowledge system expose",
    "paraphrase_group": null,
-   "latency_s": 2.73,
-   "token_estimate": 247,
+   "latency_s": 0.49,
+   "token_estimate": 3508,
    "top_ids": [
-    "ke_a8e7c09c8223",
-    "ke_eb6950e9bb1c",
-    "ke_42bce700dbf5",
-    "ke_02dca6cf0930",
-    "ke_aeffc95ede44"
+    "ev_8a7064fa4c403f67ebc164b3",
+    "ev_4502628ce6b3bbb0a354c951",
+    "ev_1358b12c86d625bad10243a2",
+    "ev_aac22bbb526f2863be381ea6",
+    "ev_43e4cd23c75cbf4748d0722b"
    ],
    "top_final_scores": [
-    1.0617,
-    1.0365,
-    0.9707,
-    0.9405,
-    0.9349
+    0.7524,
+    0.7476,
+    0.7401,
+    0.7356,
+    0.7351
    ],
-   "expected_found": false,
+   "expected_found": true,
    "id_hit": false,
-   "text_hit": false,
-   "leaks": [
-    "four tools"
-   ],
-   "passed": false
+   "text_hit": true,
+   "leaks": [],
+   "passed": true
   },
   {
    "id": "sup_search_formula",
@@ -1511,21 +1455,21 @@
    "enabled": true,
    "query": "current PKS search scoring formula",
    "paraphrase_group": null,
-   "latency_s": 2.66,
-   "token_estimate": 253,
+   "latency_s": 0.43,
+   "token_estimate": 3817,
    "top_ids": [
-    "ke_f80014ac2d4d",
-    "ke_529b9478ebac",
-    "ke_298c5d99a6ed",
-    "ke_568ce6e21c25",
-    "ke_046119ec8af4"
+    "ev_d48b3589664fcce67f3765a0",
+    "ev_e5361fcaf6d1b5609252b7f8",
+    "ev_e415bbd36f74f7dbed713651",
+    "ev_af96a81b7e5a1077a031fbc5",
+    "ev_fe1150fd94c7d11e843fd7df"
    ],
    "top_final_scores": [
-    1.1113,
-    0.9258,
-    0.9128,
-    0.8993,
-    0.863
+    0.7544,
+    0.7499,
+    0.7323,
+    0.7268,
+    0.7263
    ],
    "expected_found": true,
    "id_hit": false,
@@ -1539,27 +1483,27 @@
    "enabled": true,
    "query": "is the PKS forgetting layer running in the nightly dream",
    "paraphrase_group": null,
-   "latency_s": 2.61,
-   "token_estimate": 243,
+   "latency_s": 0.45,
+   "token_estimate": 3990,
    "top_ids": [
-    "ke_143a6f1fb01a",
-    "ke_cdc417317473",
-    "ke_2206279a6830",
-    "ke_9076a5004c57",
-    "ke_aaa9d38862fc"
+    "ev_66fbe801906009aeb73cacc9",
+    "ev_fe1150fd94c7d11e843fd7df",
+    "ev_194be9c832b4a927fa14c766",
+    "ev_ad35dc1f1900d883b9c2d3d0",
+    "ev_fcfff2fd59854dd5d7dec976"
    ],
    "top_final_scores": [
-    0.9308,
-    0.7801,
-    0.7725,
-    0.7468,
-    0.725
+    0.7569,
+    0.7506,
+    0.7504,
+    0.7485,
+    0.7373
    ],
-   "expected_found": false,
+   "expected_found": true,
    "id_hit": false,
-   "text_hit": false,
+   "text_hit": true,
    "leaks": [],
-   "passed": false
+   "passed": true
   }
  ]
 }

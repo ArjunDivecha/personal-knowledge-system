@@ -16,8 +16,8 @@
     "priority": "high",
     "query": "how is PKS search scored relevance recency salience weights",
     "expect_any_of": ["0.55", "55%", "semantic"],
-    "forbid_any_of": ["70% relevance + 30% recency", "70/30"],
-    "notes": "README's old 70/30 formula was superseded by 0.55 semantic + 0.15 recency + 0.30 salience (verified in salience.ts/memory_policy.json 2026-07-06). If a stale 70/30 entry surfaces un-flagged, that's a leak."
+    "forbid_any_of": ["current search uses 70% relevance + 30% recency", "current scoring is 70/30"],
+    "notes": "The current README explicitly says the old 70/30 rule is no longer used; forbid only an affirmative current-use claim so a correct negation is not scored as a stale leak."
   },
   {
     "id": "stale_judge_model",
@@ -25,9 +25,9 @@
     "enabled": true,
     "priority": "medium",
     "query": "which model does the Dream judge use",
-    "expect_any_of": ["judge"],
-    "forbid_any_of": ["claude-opus-5"],
-    "notes": "claude-opus-4-6 is a retired model ID (CLAUDE.md model policy); its appearance as the current judge model is a stale leak. Default fixed to claude-opus-4-8 in ingestion/dream_judge/run.py on 2026-07-06."
+    "expect_any_of": ["DeepSeek V4 Flash", "direct API", "judge"],
+    "forbid_any_of": ["current judge model is claude-opus-5", "dream judge uses claude-opus-5"],
+    "notes": "Current routing: Dream evaluation uses DeepSeek V4 Flash via the direct API. Broad claude-opus-5 mentions remain in unrelated legal benchmark artifacts and are not a judge-model leak."
   },
   {
     "id": "stale_mcp_four_tools",

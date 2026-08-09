@@ -50,6 +50,18 @@ The `scripts/` directory contains many one-off or recurring operational tools, i
 
 When changing a script, check whether it writes to `scripts/reports/`, `ingestion/checkpoints/`, or Redis keys. Many of these scripts are designed around durable artifacts rather than stdout alone.
 
+## Source-first freshness and write lockdown
+
+When `SOURCE_FIRST_MODE=on`, the Cloudflare Worker serves only the promoted
+immutable source-first generation. All legacy MCP write tools, `/ops/dream/*`
+mutation routes, the Dream scheduler, and the maintenance queue are held. The
+source-first rebuild workflow is the only promotion path:
+`.github/workflows/source-first-rebuild.yml` writes a manifest and `sf:heartbeat`,
+runs the retrieval regression gate against the committed baseline, and then
+checks that the promoted generation is no more than 36 hours old. `/health`
+reports the generation age and freshness status; `degraded` means the serving
+generation or heartbeat is missing, stale, or mismatched.
+
 ## Common workflow patterns
 
 ### Ingestion changes
@@ -92,10 +104,11 @@ Beyond the OpenWiki update, the repo runs several scheduled and push-triggered w
 - `github-ingestion.yml` — remote GitHub repo ingestion, including repo-attached agent context under `.pks/agent-context/`. Triggered by `repository_dispatch` (`github-ingestion-manual`) or `workflow_dispatch`; not scheduled. Supports `dry_run`, `no_resume`, a comma-separated `repos` filter, and `skip_code` / `skip_commits` toggles.
 - `twitter-ingestion.yml` — remote Twitter/X timeline ingestion on a self-hosted macOS runner. Triggered by `workflow_dispatch` only; not scheduled. Supports `dry_run`, `reset_state` (ignore saved `since_id`), and an optional `max_tweets` cap. Do not install a local LaunchAgent for Twitter ingestion.
 - `nightly-semantic-maintenance.yml` — runs `scripts/nightly_semantic_maintenance.py` on `cron: "20 7 * * *"` (07:20 UTC, after the Worker's `07:10 UTC` Dream trigger). Feeds bounded candidate clusters to the Worker queue. Defaults to `live` mode on schedule; `workflow_dispatch` accepts `plan` or `live` and a `max_applied` cap (defaults to `100` on schedule, `100` on manual). Guards that the retired Worker semantic slice (`SEMANTIC_SLICE_SIZE == 0`) remains disabled.
+- In source-first mode, the legacy Dream and semantic-maintenance paths above are intentionally short-circuited by the Worker; retain the workflow files as historical/rollback artifacts, but do not treat their old mutation behavior as live.
 - `nightly-sleep-report.yml` — verifies durable completion of the semantic maintenance cohort on `cron: "45 8 * * *"` (08:45 UTC) by running `scripts/nightly_semantic_maintenance.py --check-latest --max-age-hours 4`.
 - `worker-runtime-tests.yml` — push/PR-triggered CI for `cloudflare-mcp/mcp-server/**`, `Makefile`, `README.md`, and `docs/testing-matrix.md`: type-check + `npm run test:worker`. See [Testing guidance](testing.md).
 
-The scheduled sequence is: Worker Dream cron at `07:10 UTC`, external semantic planner at `07:20 UTC`, sleep/completion report at `08:45 UTC`. The ingestion workflows have no fixed schedule and are expected to be dispatched externally (or manually) to fit the self-hosted macOS runner's availability.
+The active source-first sequence is: ingestion workflows as dispatched, source-first rebuild/promotion at `06:30 UTC`, and a read-only retrieval gate in that same workflow. The old Dream/semantic/sleep sequence remains documented only for rollback archaeology and is short-circuited when source-first mode is on.
 
 ## Useful source anchors
 

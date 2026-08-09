@@ -24,7 +24,7 @@ import worker from "../src/index";
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 
-function getTestEnv(): Env {
+function getTestEnv(sourceFirstMode: "off" | "on" = "off"): Env {
 	return {
 		...env,
 		UPSTASH_REDIS_REST_URL: "https://redis.test.local",
@@ -34,12 +34,13 @@ function getTestEnv(): Env {
 		OPENAI_API_KEY: "test-openai-key",
 		GITHUB_TOKEN: "test-github-token",
 		DREAM_OPERATOR_TOKEN: "test-dream-operator-token",
+		SOURCE_FIRST_MODE: sourceFirstMode,
 	};
 }
 
-async function dispatch(request: Request): Promise<Response> {
+async function dispatch(request: Request, sourceFirstMode: "off" | "on" = "off"): Promise<Response> {
 	const ctx = createExecutionContext();
-	const response = await worker.fetch(request, getTestEnv(), ctx);
+	const response = await worker.fetch(request, getTestEnv(sourceFirstMode), ctx);
 	await waitOnExecutionContext(ctx);
 	return response;
 }
@@ -139,6 +140,34 @@ describe("Worker HTTP routes", () => {
 		);
 	});
 
+	it("reports source-first heartbeat freshness in health", async () => {
+		const publishedAt = new Date().toISOString();
+		redisMock.get.mockImplementation(async (key: string) => {
+			switch (key) {
+				case "sf:current_generation":
+					return "sf_health";
+				case "sf:manifest:sf_health":
+					return { generation: "sf_health", built_at: publishedAt, published_at: publishedAt, evidence_count: 4, project_count: 1 };
+				case "sf:heartbeat":
+					return { generation: "sf_health", published_at: publishedAt };
+				default:
+					return null;
+			}
+		});
+		redisMock.scard.mockResolvedValue(0);
+		redisMock.llen.mockResolvedValue(0);
+
+		const response = await dispatch(new IncomingRequest("https://example.com/health"), "on");
+		expect(response.status).toBe(200);
+		const payload = (await response.json()) as Record<string, any>;
+		expect(payload.status).toBe("ok");
+		expect(payload.source_first).toMatchObject({
+			enabled: true,
+			generation: "sf_health",
+			freshness: { status: "fresh" },
+		});
+	});
+
 	it("rejects unauthorized operator writes", async () => {
 		const response = await dispatch(
 			new IncomingRequest("https://example.com/ops/dream/run", {
@@ -150,6 +179,27 @@ describe("Worker HTTP routes", () => {
 
 		expect(response.status).toBe(401);
 		expect(await response.json()).toEqual({ error: "Unauthorized" });
+	});
+
+	it("hard-disables legacy Dream mutation routes in source-first mode", async () => {
+		const response = await dispatch(
+			new IncomingRequest("https://example.com/ops/dream/apply", {
+				method: "POST",
+				headers: {
+					authorization: "Bearer test-dream-operator-token",
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({ proposal_id: "dpr_old", mutation_id: "mut_old", reason: "must be blocked" }),
+			}),
+			"on",
+		);
+
+		expect(response.status).toBe(410);
+		expect(await response.json()).toEqual({
+			error: "legacy_write_surface_disabled",
+			mode: "source_first",
+			immutable: true,
+		});
 	});
 
 	it("rejects unauthorized Dream proposal apply calls", async () => {

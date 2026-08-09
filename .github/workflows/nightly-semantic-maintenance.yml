@@ -68,8 +68,8 @@ jobs:
 
       - name: Run automatic semantic maintenance
         env:
-          REQUESTED_MODE: ${{ github.event_name == 'schedule' && 'live' || inputs.mode }}
-          REQUESTED_MAX_APPLIED: ${{ github.event_name == 'schedule' && '100' || inputs.max_applied }}
+          REQUESTED_MODE: ${{ inputs.mode }}
+          REQUESTED_MAX_APPLIED: ${{ inputs.max_applied }}
         run: |
           args=(--max-applied "$REQUESTED_MAX_APPLIED" --max-candidates 300 --cohort-size 5 --max-queries 20000 --audit-workers 4)
           if [ "$REQUESTED_MODE" = "live" ]; then

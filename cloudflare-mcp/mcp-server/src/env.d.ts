@@ -23,6 +23,9 @@ declare global {
 		// Simple source-first read path. When on, get_index/get_context/search/get_deep
 		// serve immutable evidence generations and never write access signals.
 		SOURCE_FIRST_MODE?: "off" | "on";
+		// Maximum age of the promoted source-first generation before health reports
+		// the serving state as stale/degraded. Defaults to 36 hours.
+		SOURCE_FIRST_MAX_AGE_SECONDS?: string;
 		// Insight synthesis (CMA-dreaming parity). "on" enables nightly cluster
 		// detection + judge enqueue; verdicts apply additively next cycle.
 		// See docs/pks-dream-insight-synthesis-prd-2026-07-02.md.

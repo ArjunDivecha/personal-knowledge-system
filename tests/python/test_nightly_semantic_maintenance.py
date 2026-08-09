@@ -138,7 +138,7 @@ class NightlySemanticMaintenanceTests(unittest.TestCase):
     def test_workflow_targets_100_merges_with_candidate_headroom(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "nightly-semantic-maintenance.yml").read_text()
         self.assertIn("default: \"100\"", workflow)
-        self.assertIn("github.event_name == 'schedule' && '100'", workflow)
+        self.assertNotIn("github.event_name == 'schedule'", workflow)
         self.assertIn("--max-candidates 300 --cohort-size 5", workflow)
 
     def test_redis_lock_accepts_boolean_upstash_success(self) -> None:
@@ -285,17 +285,18 @@ class NightlySemanticMaintenanceTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue(result["passed"])
 
-    def test_workflows_schedule_safe_driver_and_never_repair_legacy_dream(self) -> None:
+    def test_workflows_keep_legacy_maintenance_manual_only(self) -> None:
         maintenance = (ROOT / ".github" / "workflows" / "nightly-semantic-maintenance.yml").read_text()
         report = (ROOT / ".github" / "workflows" / "nightly-sleep-report.yml").read_text()
-        self.assertIn('cron: "20 7 * * *"', maintenance)
+        self.assertNotIn('cron: "20 7 * * *"', maintenance)
         self.assertIn("nightly_semantic_maintenance.py", maintenance)
         self.assertIn("--live", maintenance)
-        self.assertIn("github.event_name == 'schedule' && '100'", maintenance)
+        self.assertNotIn("github.event_name == 'schedule'", maintenance)
         self.assertIn("--audit-workers 4", maintenance)
         self.assertIn('SEMANTIC_SLICE_SIZE"] == 0', maintenance)
         self.assertNotIn("ensure_overnight_dream_run.py", report)
-        self.assertIn("--check-latest", report)
+        self.assertIn("workflow_dispatch:", report)
+        self.assertNotIn("schedule:", report)
 
     # --- PKS-MAINT-ORPHAN-RECONCILE-001 -----------------------------------
 

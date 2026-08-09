@@ -166,7 +166,13 @@ def load_probes() -> list[dict[str, Any]]:
 
 
 def result_text(r: dict[str, Any]) -> str:
-    return " ".join(str(r.get(k) or "") for k in ("label", "summary", "domain")).lower()
+    # Legacy entries expose label/summary/domain; source-first evidence exposes
+    # title/text/project/source_path. Normalize both shapes so the same probe
+    # suite measures retrieval quality across the cutover instead of reporting
+    # false zeroes merely because the response schema changed.
+    return " ".join(str(r.get(k) or "") for k in (
+        "label", "summary", "domain", "title", "text", "project", "source_path", "source_kind",
+    )).lower()
 
 
 def score_probe(probe: dict[str, Any], results: list[dict[str, Any]],
@@ -234,7 +240,7 @@ def run_eval(args: argparse.Namespace) -> int:
             results = payload.get("results", [])
             row["latency_s"] = round(time.time() - t0, 2)
             row["token_estimate"] = sum(
-                len(str(r.get("label") or "") + str(r.get("summary") or "")) // 4
+                len(result_text(r)) // 4
                 for r in results[: probe.get("min_rank", args.k)])
             row.update(score_probe(probe, results, args.k, args.negative_threshold))
         except Exception as exc:  # noqa: BLE001 — recorded, run continues, exit non-zero
@@ -288,7 +294,7 @@ def run_eval(args: argparse.Namespace) -> int:
                                    "honoring the flag write no access signals for this run — "
                                    "older Workers strip the arg and apply legacy rank-1 "
                                    "reconsolidation; baseline runs are not organic usage",
-        "note_tokens": "token_estimate = chars/4 of returned label+summary; search response has no usage field",
+        "note_tokens": "token_estimate = chars/4 of normalized legacy or source-first result text; search response has no usage field",
         "n_enabled": len(scored), "n_drafts": len(drafts), "errors": errors,
         "axes": axes,
         "tokens_per_query": {"median": tok[len(tok) // 2] if tok else None,

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -15,6 +17,7 @@ from .models import EvidenceRecord, ProjectRecord
 
 
 CURRENT_GENERATION_KEY = "sf:current_generation"
+HEARTBEAT_KEY = "sf:heartbeat"
 MANIFEST_KEY_PREFIX = "sf:manifest:"
 EMBEDDING_MODEL = "text-embedding-3-large"
 EMBEDDING_DIMENSIONS = 3072
@@ -46,6 +49,20 @@ def batched(values: list[Any], size: int) -> Iterable[list[Any]]:
 def embedding_text(record: EvidenceRecord) -> str:
     project = f"Project: {record.project}\n" if record.project else ""
     return f"{record.title}\n{project}Source: {record.source_path}\n\n{record.text}"
+
+
+def lexical_terms(record: EvidenceRecord) -> set[str]:
+    """Identifier/path terms for exact candidate lookup beside vector search."""
+    haystack = "\n".join((record.title, record.project or "", record.source_path, record.text))
+    terms: set[str] = set()
+    for value in re.findall(r"[A-Za-z0-9][A-Za-z0-9._/-]{2,}", haystack):
+        terms.update(part for part in re.split(r"[^a-z0-9]+", value.lower()) if len(part) >= 3)
+        normalized = re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+        terms.update(token for token in normalized.split() if len(token) >= 3)
+        compact = re.sub(r"[^a-z0-9]", "", value.lower())
+        if len(compact) >= 3:
+            terms.add(compact)
+    return terms
 
 
 class SourceFirstPublisher:
@@ -137,10 +154,12 @@ class SourceFirstPublisher:
             }
             self.redis.mset(values)
 
+        published_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         full_manifest = dict(manifest)
         full_manifest["record_ids"] = [record.id for record in records]
         full_manifest["record_checksums"] = {record.id: record.content_checksum for record in records}
         full_manifest["previous_generation"] = previous
+        full_manifest["published_at"] = published_at
         full_manifest["embedding_model"] = EMBEDDING_MODEL
         full_manifest["embedding_dimensions"] = EMBEDDING_DIMENSIONS
         self.redis.set(f"{MANIFEST_KEY_PREFIX}{generation}", json.dumps(full_manifest, sort_keys=True))
@@ -159,6 +178,18 @@ class SourceFirstPublisher:
                 f"sf:{generation}:project_evidence:{project.id}",
                 json.dumps(evidence_ids_by_project.get(project.id, []), sort_keys=True),
             )
+        # Embeddings routinely miss opaque identifiers (for example 1MTR or a
+        # DuckDB filename). Publish a bounded inverted index so the Worker can
+        # add exact source candidates without scanning the evidence store.
+        lexical_ids: dict[str, list[str]] = {}
+        for record in records:
+            for term in lexical_terms(record):
+                lexical_ids.setdefault(term, []).append(record.id)
+        for batch in batched(list(lexical_ids.items()), 100):
+            self.redis.mset({
+                f"sf:{generation}:lex:{term}": json.dumps(ids[:200], sort_keys=True)
+                for term, ids in batch
+            })
         self.redis.set(f"sf:{generation}:suppressions", json.dumps(suppressions, sort_keys=True))
 
         missing_vectors: list[str] = []
@@ -185,6 +216,13 @@ class SourceFirstPublisher:
 
         # This is the only serving-state mutation. It happens after the candidate
         # generation is complete in both stores and has passed strict count checks.
+        self.redis.set(HEARTBEAT_KEY, json.dumps({
+            "generation": generation,
+            "built_at": full_manifest.get("built_at"),
+            "published_at": published_at,
+            "source_checksum": full_manifest.get("source_checksum"),
+            "evidence_count": len(records),
+        }, sort_keys=True))
         self.redis.set(CURRENT_GENERATION_KEY, generation)
         return {
             "generation": generation,
@@ -196,7 +234,13 @@ class SourceFirstPublisher:
             "promoted": True,
         }
 
-    def verify_current(self) -> dict[str, Any]:
+    def verify_current(
+        self,
+        *,
+        max_age_seconds: int | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        now = now or datetime.now(timezone.utc)
         generation = self.current_generation()
         if not generation:
             return {"passed": False, "issues": ["current_generation_missing"]}
@@ -230,6 +274,32 @@ class SourceFirstPublisher:
             issues.append(f"redis_count:{redis_count}!={len(ids)}")
         if project_map_count != len(project_ids):
             issues.append(f"project_map_count:{project_map_count}!={len(project_ids)}")
+        raw_heartbeat = self.redis.get(HEARTBEAT_KEY)
+        try:
+            heartbeat = json.loads(raw_heartbeat) if isinstance(raw_heartbeat, str) else raw_heartbeat
+        except (TypeError, ValueError):
+            heartbeat = None
+        if not isinstance(heartbeat, dict) or heartbeat.get("generation") != generation:
+            issues.append("heartbeat_missing_or_mismatched")
+        freshness: dict[str, Any] = {"status": "unmeasured"}
+        freshness_at = (
+            heartbeat.get("published_at") if isinstance(heartbeat, dict) else None
+        ) or manifest.get("published_at") or manifest.get("built_at")
+        if isinstance(freshness_at, str):
+            try:
+                age_seconds = max(0, int((now - datetime.fromisoformat(freshness_at)).total_seconds()))
+                freshness = {"status": "fresh", "age_seconds": age_seconds, "as_of": freshness_at}
+                if max_age_seconds is not None and age_seconds > max_age_seconds:
+                    freshness["status"] = "stale"
+                    freshness["max_age_seconds"] = max_age_seconds
+                    issues.append(f"generation_stale:{age_seconds}>{max_age_seconds}")
+            except (TypeError, ValueError):
+                freshness = {"status": "invalid", "as_of": freshness_at}
+                issues.append("generation_timestamp_invalid")
+        else:
+            freshness = {"status": "missing"}
+            if max_age_seconds is not None:
+                issues.append("generation_timestamp_missing")
         return {
             "passed": not issues,
             "generation": generation,
@@ -238,5 +308,7 @@ class SourceFirstPublisher:
             "redis_count": redis_count,
             "expected_project_map_count": len(project_ids),
             "project_map_count": project_map_count,
+            "heartbeat": heartbeat if isinstance(heartbeat, dict) else None,
+            "freshness": freshness,
             "issues": issues,
         }

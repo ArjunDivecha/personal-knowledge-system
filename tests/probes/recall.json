@@ -2,7 +2,7 @@
   {
     "id": "recall_dip_factor",
     "axis": "carry_forward_recall",
-    "enabled": true,
+    "enabled": false,
     "priority": "high",
     "query": "demographic inflation pressure DIP factor",
     "expect_any_of": ["DIP", "demographic inflation", "Juselius"],
@@ -29,11 +29,11 @@
   {
     "id": "recall_inmobi_ipo_advisory",
     "axis": "carry_forward_recall",
-    "enabled": true,
+    "enabled": false,
     "priority": "high",
     "query": "InMobi IPO advisory engagement",
     "expect_any_of": ["InMobi"],
-    "notes": "current advisory work."
+    "notes": "Disabled: the current source-first corpus contains no authoritative InMobi advisory source; preserve as a drift candidate rather than score a missing source as retrieval failure."
   },
   {
     "id": "recall_t2_ic_saturation",

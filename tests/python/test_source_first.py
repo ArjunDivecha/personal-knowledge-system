@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from ingestion.source_first.models import EvidenceRecord, ProjectRecord
-from ingestion.source_first.publisher import CURRENT_GENERATION_KEY, SourceFirstPublisher
+from ingestion.source_first.publisher import CURRENT_GENERATION_KEY, HEARTBEAT_KEY, SourceFirstPublisher
 from ingestion.source_first.scanner import (
     SourceFile,
     build_projects,
@@ -178,6 +178,50 @@ class SourceFirstPublisherTests(unittest.TestCase):
                 suppressions={"schema_version": 1, "rules": []},
             )
         self.assertEqual(redis.get(CURRENT_GENERATION_KEY), "sf_working")
+
+    def test_publish_records_a_generation_heartbeat(self):
+        redis = FakeRedis()
+        publisher = SourceFirstPublisher(
+            redis=redis,
+            vector=FakeVector(),
+            openai=SimpleNamespace(embeddings=FakeEmbeddings()),
+        )
+        publisher.publish(
+            generation="sf_heartbeat",
+            manifest={"generation": "sf_heartbeat", "built_at": "2026-08-08T00:00:00+00:00"},
+            records=[self.make_record()],
+            projects=[],
+            suppressions={"schema_version": 1, "rules": []},
+        )
+        heartbeat = json.loads(redis.get(HEARTBEAT_KEY))
+        self.assertEqual(heartbeat["generation"], "sf_heartbeat")
+        self.assertTrue(heartbeat["published_at"])
+
+    def test_verify_current_fails_stale_generation(self):
+        redis = FakeRedis()
+        publisher = SourceFirstPublisher(
+            redis=redis,
+            vector=FakeVector(),
+            openai=SimpleNamespace(embeddings=FakeEmbeddings()),
+        )
+        publisher.publish(
+            generation="sf_old",
+            manifest={"generation": "sf_old", "built_at": "2026-08-08T00:00:00+00:00"},
+            records=[self.make_record()],
+            projects=[],
+            suppressions={"schema_version": 1, "rules": []},
+        )
+        redis.set(HEARTBEAT_KEY, json.dumps({
+            "generation": "sf_old",
+            "published_at": "2026-08-08T00:00:00+00:00",
+        }))
+        report = publisher.verify_current(
+            max_age_seconds=60,
+            now=datetime(2026, 8, 9, tzinfo=UTC),
+        )
+        self.assertFalse(report["passed"])
+        self.assertEqual(report["freshness"]["status"], "stale")
+        self.assertTrue(any(issue.startswith("generation_stale:") for issue in report["issues"]))
 
 
 if __name__ == "__main__":

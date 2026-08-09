@@ -69,8 +69,10 @@ import {
 	setKillFlag,
 } from "./tripwires";
 import {
+	evaluateSourceFirstFreshness,
 	getSourceFirstEvidence,
 	getSourceFirstGeneration,
+	getSourceFirstHeartbeat,
 	getSourceFirstIndex,
 	sourceFirstSearch,
 } from "./sourceFirst";
@@ -185,9 +187,21 @@ const SCHEDULED_DREAM_OPERATION_LIMITS: Record<string, number> = {
 };
 const DEFAULT_TWEET_TIMEOUT_MS = 4000;
 const DEFAULT_TWEET_CACHE_TTL_SECONDS = 300;
+const DEFAULT_SOURCE_FIRST_MAX_AGE_SECONDS = 36 * 60 * 60;
 
 function isEnabledEnvFlag(value: unknown): boolean {
 	return typeof value === "string" && ["1", "true", "on", "yes"].includes(value.toLowerCase());
+}
+
+function sourceFirstWritesDisabled(env: Pick<Env, "SOURCE_FIRST_MODE">): boolean {
+	return env.SOURCE_FIRST_MODE === "on";
+}
+
+function sourceFirstMaxAgeSeconds(env: Pick<Env, "SOURCE_FIRST_MAX_AGE_SECONDS">): number {
+	const configured = Number(env.SOURCE_FIRST_MAX_AGE_SECONDS);
+	return Number.isFinite(configured) && configured > 0
+		? Math.floor(configured)
+		: DEFAULT_SOURCE_FIRST_MAX_AGE_SECONDS;
 }
 
 const AUTHORIZATION_SERVER_METADATA_PATHS = new Set([
@@ -544,12 +558,12 @@ function withCors(request: Request, response: Response): Response {
 	});
 }
 
-function getProtectedResourceConfig(pathname: string): ProtectedResourceConfig | null {
+function getProtectedResourceConfig(pathname: string, allowWriteScope = true): ProtectedResourceConfig | null {
 	switch (pathname) {
 		case "/mcp/.well-known/oauth-protected-resource":
-			return { resourcePath: "/mcp", scopes: ["mcp:read", "mcp:write"] };
+			return { resourcePath: "/mcp", scopes: allowWriteScope ? ["mcp:read", "mcp:write"] : ["mcp:read"] };
 		case "/sse/.well-known/oauth-protected-resource":
-			return { resourcePath: "/sse", scopes: ["mcp:read", "mcp:write"] };
+			return { resourcePath: "/sse", scopes: allowWriteScope ? ["mcp:read", "mcp:write"] : ["mcp:read"] };
 		case "/openai/mcp/.well-known/oauth-protected-resource":
 			return { resourcePath: "/openai/mcp", scopes: ["mcp:read"] };
 		case "/openai/sse/.well-known/oauth-protected-resource":
@@ -568,13 +582,13 @@ function buildProtectedResourceMetadata(baseUrl: string, config: ProtectedResour
 	};
 }
 
-function buildAuthorizationServerMetadata(baseUrl: string): Record<string, unknown> {
+function buildAuthorizationServerMetadata(baseUrl: string, allowWriteScope = true): Record<string, unknown> {
 	return {
 		issuer: baseUrl,
 		authorization_endpoint: `${baseUrl}/authorize`,
 		token_endpoint: `${baseUrl}/token`,
 		registration_endpoint: `${baseUrl}/register`,
-		scopes_supported: ["mcp:read", "mcp:write"],
+		scopes_supported: allowWriteScope ? ["mcp:read", "mcp:write"] : ["mcp:read"],
 		response_types_supported: ["code"],
 		response_modes_supported: ["query"],
 		grant_types_supported: ["authorization_code", "refresh_token"],
@@ -925,18 +939,29 @@ async function buildHealthPayload(env: Env): Promise<Record<string, unknown>> {
 	const sourceFirstManifest = sourceFirstGeneration
 		? parseStoredObject(await redis.get(`sf:manifest:${sourceFirstGeneration}`))
 		: null;
+	const sourceFirstHeartbeat = await getSourceFirstHeartbeat(redis);
+	const sourceFirstEnabled = env.SOURCE_FIRST_MODE === "on";
+	const sourceFirstFreshness = evaluateSourceFirstFreshness(
+		sourceFirstManifest,
+		sourceFirstHeartbeat,
+		new Date(),
+		sourceFirstMaxAgeSeconds(env),
+	);
 
 	return {
-		status: "ok",
+		status: sourceFirstEnabled && sourceFirstFreshness.status !== "fresh" ? "degraded" : "ok",
 		retrieved_at: new Date().toISOString(),
 		schema_version: MEMORY_SCHEMA_VERSION,
 		migration_backfill_complete: backfillComplete,
 		pending_classification_count: pendingClassificationCount || 0,
 		reconsolidation_error_count_today: reconsolidationErrorCount || 0,
 		source_first: {
-			enabled: env.SOURCE_FIRST_MODE === "on",
+			enabled: sourceFirstEnabled,
 			generation: sourceFirstGeneration,
 			built_at: sourceFirstManifest?.built_at ?? null,
+			published_at: sourceFirstManifest?.published_at ?? sourceFirstHeartbeat?.published_at ?? null,
+			heartbeat: sourceFirstHeartbeat,
+			freshness: sourceFirstFreshness,
 			evidence_count: sourceFirstManifest?.evidence_count ?? null,
 			project_count: sourceFirstManifest?.project_count ?? null,
 		},
@@ -1794,7 +1819,10 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 	});
 
 	protected includeWriteTools(): boolean {
-		return true;
+		// Source-first is an immutable serving mode. The legacy write tools remain
+		// in the code for historical compatibility/tests, but are not registered
+		// against the live source-first surface.
+		return !sourceFirstWritesDisabled(this.env);
 	}
 
 	private getRedis(env: Env): Redis {
@@ -1865,6 +1893,9 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 	}
 
 	private async requireWriteAccess(action: string, limit: number = WRITE_TOOL_RATE_LIMIT): Promise<string> {
+		if (sourceFirstWritesDisabled(this.env)) {
+			throw new Error(`legacy_write_surface_disabled: source-first mode is immutable (${action})`);
+		}
 		const authProps = this.getAuthProps();
 		const userId = authProps.userId;
 		if (!userId) {
@@ -3316,7 +3347,9 @@ const defaultHandler = {
 			return Response.json({
 				resource,
 				authorization_servers: [baseUrl],
-				scopes_supported: isOpenAIResource ? ["mcp:read"] : ["mcp:read", "mcp:write"],
+				scopes_supported: isOpenAIResource || env.SOURCE_FIRST_MODE === "on"
+					? ["mcp:read"]
+					: ["mcp:read", "mcp:write"],
 				bearer_methods_supported: ["header"],
 			});
 		}
@@ -3339,7 +3372,7 @@ const defaultHandler = {
 					requestedResource.startsWith(`${baseUrl}${OPENAI_ROUTE_PREFIX}`);
 				const approvedScopes = getApprovedAuthorizationScopes(
 					requestedScopes,
-					!requestsOpenAIResource,
+					!requestsOpenAIResource && env.SOURCE_FIRST_MODE !== "on",
 				);
 				if (approvedScopes.length === 0) {
 					return new Response("No supported scopes requested", { status: 403 });
@@ -3891,7 +3924,7 @@ const defaultHandler = {
 
 		// OAuth discovery endpoints for MCP clients and OIDC-style probes used by some connector UIs.
 		if (AUTHORIZATION_SERVER_METADATA_PATHS.has(url.pathname)) {
-			return new Response(JSON.stringify(buildAuthorizationServerMetadata(baseUrl)), {
+			return new Response(JSON.stringify(buildAuthorizationServerMetadata(baseUrl, env.SOURCE_FIRST_MODE !== "on")), {
 				headers: { "Content-Type": "application/json" }
 			});
 		}
@@ -3941,13 +3974,25 @@ export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const url = new URL(request.url);
 		const baseUrl = getBaseUrl(url);
+		if (sourceFirstWritesDisabled(env) && request.method !== "GET" && url.pathname.startsWith("/ops/dream/")) {
+			return withCors(
+				request,
+				Response.json(
+					{ error: "legacy_write_surface_disabled", mode: "source_first", immutable: true },
+					{ status: 410 },
+				),
+			);
+		}
 		if (AUTHORIZATION_SERVER_METADATA_PATHS.has(url.pathname)) {
 			return withCors(
 				request,
-				Response.json(buildAuthorizationServerMetadata(baseUrl)),
+				Response.json(buildAuthorizationServerMetadata(baseUrl, env.SOURCE_FIRST_MODE !== "on")),
 			);
 		}
-		const protectedResourceConfig = getProtectedResourceConfig(url.pathname);
+		const protectedResourceConfig = getProtectedResourceConfig(
+			url.pathname,
+			env.SOURCE_FIRST_MODE !== "on",
+		);
 		if (protectedResourceConfig) {
 			return withCors(
 				request,
@@ -3983,6 +4028,11 @@ export default {
 		return withCors(request, response);
 	},
 	async queue(batch: MessageBatch<MaintenanceMessage>, env: Env): Promise<void> {
+		if (sourceFirstWritesDisabled(env)) {
+			for (const message of batch.messages) message.ack();
+			console.log("[maintenance] source-first mode: legacy mutation queue held");
+			return;
+		}
 		for (const message of batch.messages) {
 			const parsed = validateMaintenanceMessage(message.body);
 			if (!parsed.ok) {
@@ -4006,6 +4056,10 @@ export default {
 		}
 	},
 	async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+		if (sourceFirstWritesDisabled(env)) {
+			console.log("[maintenance] source-first mode: legacy scheduled mutation path disabled");
+			return;
+		}
 		if (env.DREAM_QUEUE_MODE === "live") {
 			// Trigger-only cutover is fail-closed: the old corpus-scale Dream is
 			// never used as a fallback when queue maintenance is live.

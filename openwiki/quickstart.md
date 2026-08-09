@@ -74,7 +74,7 @@ When changing code, start in the subsystem that owns the behavior:
 - **Semantic candidate guard or lossless merge gates:** `cloudflare-mcp/mcp-server/src/dream.ts` (`processSemanticCandidateTask`), `semanticMaintenance.ts`, `mergeGates.ts`, `semanticCursor.ts`, `maintenanceJournal.ts`, `maintenanceQueue.ts` — see [Cloudflare MCP and Dream control plane](architecture/mcp-and-dream.md)
 - **Nightly scheduling and run control:** `orchestrator/engine.py`, `orchestrator/stages.py`, `orchestrator/dream.py`
 - **Launchd behavior:** `scripts/run_orchestrator_launchd.sh`, `scripts/install_orchestrator_launchd_shadow.sh`
-- **CI and remote scheduling:** `.github/workflows/` (worker-runtime-tests, agent-session/github/twitter ingestion, nightly-semantic-maintenance, nightly-sleep-report) — see [Operations and local workflow](operations.md)
+- **CI and remote scheduling:** `.github/workflows/` (worker-runtime-tests, source-first rebuild/promotion, agent-session/github/twitter ingestion) — see [Operations and local workflow](operations.md)
 - **Validation and regression checks:** `tests/python/`, `tests/probes/`, `cloudflare-mcp/mcp-server/test/`, `orchestrator/tests/`, `scripts/run_eval.py`, `Makefile` targets `worker-typecheck` / `worker-test`
 
 ## Important cautions

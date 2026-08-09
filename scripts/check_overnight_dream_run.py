@@ -88,9 +88,24 @@ def load_scheduled_archive_limit(policy_path: Path | None = None) -> int:
 
 
 def parse_sse_json(text: str) -> dict[str, Any]:
+    # Cloudflare's MCP stream can wrap a large JSON-RPC data line without
+    # repeating the SSE `data:` prefix. Join those continuation lines before
+    # decoding; taking only the first physical line truncates source-first
+    # evidence payloads and makes the retrieval regression gate report false
+    # zeroes/errors.
+    payload: str | None = None
     for line in text.splitlines():
         if line.startswith("data: "):
-            return json.loads(line[6:])
+            if payload is not None:
+                break
+            payload = line[6:]
+            continue
+        if payload is not None:
+            if not line or line.startswith("event:"):
+                break
+            payload += line
+    if payload is not None:
+        return json.loads(payload)
     raise RuntimeError("No JSON payload found in SSE response")
 
 

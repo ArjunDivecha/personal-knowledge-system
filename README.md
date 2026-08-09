@@ -353,22 +353,15 @@ Dream is the long-horizon maintenance loop. The idea is:
 - archive low-value memories with reversible pointers
 - rebuild the current self-model without re-injecting everything forever
 
-Dream is Phase 5 work. The live scheduler, audit output, proposal artifacts, deterministic grading, reversible apply/rollback path, judge queue, and write-capable operator tools are implemented. The deployed scheduler now runs governed live maintenance with policy-driven archive and promotion caps loaded from `shared/memory_policy.json`. Scheduled Dream is expected to record `dry_run=false`, `trigger=scheduled`, and `auto_apply_mode=governed`.
+Dream is retained as legacy governance code and audit history. With the source-first cutover (`SOURCE_FIRST_MODE=on`), its MCP tools, operator mutation routes, scheduler, and maintenance queue are disabled; new memory is rebuilt from authoritative source files and promoted atomically by `.github/workflows/source-first-rebuild.yml`.
 
 ### Current Scheduling Model
 
-> **In migration (2026-06-16):** the multi-scheduler model below is being replaced
-> by a single M4-owned production controller — see
-> `docs/pks-nightly-orchestrator-redesign-2026-06-16.md`. The new orchestrator
-> (`orchestrator/` package, entrypoint `scripts/nightly_orchestrator.py`) is being
-> built in phases and is **shadow-only / non-mutating** until cutover. The
-> schedulers listed here remain the production source of truth until Phase 5.
-
-The system currently uses three schedulers for three different jobs:
+The active source-first schedule is deliberately small:
 
 - GitHub Actions runs Twitter ingestion remotely at `05:40 UTC`
 - GitHub Actions runs GitHub ingestion, including repo-attached agent context, at `06:10 UTC`
-- Cloudflare Workers runs the remote Dream job at `07:10 UTC`
+- The source-first rebuild workflow runs remotely at `06:30 UTC`; the retired Dream scheduler is not part of the live source-first path.
 
 Repo-attached AI context is exported locally at commit time into
 `.pks/agent-context/` and then picked up by the nightly GitHub ingestion job.
@@ -445,6 +438,27 @@ bash scripts/deploy_cloudflare_worker.sh
 The script sources `.env`, requires `CLOUDFLARE_API_TOKEN`, and deploys the
 production Worker with `npx wrangler deploy --env=""`.
 
+## Source-First Serving Mode
+
+The current cutover path is the source-first generation served by
+`SOURCE_FIRST_MODE=on`. It is intentionally read-only: legacy MCP write tools,
+Dream mutation routes, the scheduled mutation loop, and the maintenance queue
+are disabled while this mode is active. New memory enters through the
+source-backed rebuild workflow at `.github/workflows/source-first-rebuild.yml`.
+
+Every promoted generation writes an immutable manifest plus the `sf:heartbeat`
+record. `/health` reports the current generation, publication time, age, and a
+`fresh`/`stale`/`missing` freshness status. The rebuild workflow refuses to
+accept a generation older than 36 hours and runs the committed eight-axis
+retrieval regression gate against `tests/baselines/retrieval_baseline.json`
+before promotion. That baseline was re-established on 2026-08-09 after the
+source-first cutover and the probe suite was aligned to current authoritative
+files. The latest production run has 50 enabled probes and 7 drafts: all eight
+measured axes passed (retrieval, project, explicit-save, exact-lexical,
+supersession, negative, and paraphrase at 1.000; stale-leak rate at 0.000)
+with zero transport errors. Retired legacy facts remain preserved as disabled
+drift candidates rather than being treated as current truth.
+
 ## What Is Live Today
 
 As of June 3, 2026, the live system has:
@@ -456,9 +470,9 @@ As of June 3, 2026, the live system has:
 - `0` pending classifications in `classification:pending`
 - thin-index counts of `887` Tier 1, `1,125` Tier 2, `2,642` Tier 3
 - `4,968` archived entries at the time of the latest health check
-- latest deployed Dream code is governed-live scheduled maintenance
-- the Dream judge queue is empty in production
-- strict overnight checks require the latest post-cron scheduled Dream run to be governed/live, not proposal-only
+- latest deployed source-first code serves an immutable promoted generation
+- the legacy Dream judge queue and mutation scheduler are disabled in production
+- generation freshness and retrieval regression checks are promotion gates
 
 Operationally, the following are live:
 
@@ -468,7 +482,7 @@ Operationally, the following are live:
 - rebuilt thin index with tier/salience metadata
 - OAuth-enabled Cloudflare MCP server
 - background reconsolidation on retrieval
-- write-capable MCP tools for `restore_archived` and `set_context_type`
+- legacy write-capable MCP tools retained only for staging/rollback compatibility; disabled in the live source-first mode
 - remote scheduled Twitter/X ingestion with Redis-backed incremental state
 - remote scheduled GitHub ingestion with repo-attached Claude Code, Codex CLI, and Cursor context
 - local nightly ingestion for local-only AI session logs, with Redis-backed checkpointing and local checkpoint fallback
@@ -546,34 +560,28 @@ The public Worker exposes:
 - schema version
 - migration completion state
 - pending classification count
-- last Dream run timestamp
+- source-first generation, heartbeat, and freshness status
 - thin-index totals
 - tier counts
 - archived count
 
-### Dream Run Checks
+### Source-First Freshness Check
 
-The strict overnight check is:
+The source-first freshness check is:
 
 ```bash
 set -a; source .env; set +a
-ingestion/.venv/bin/python scripts/check_overnight_dream_run.py
+ingestion/.venv/bin/python scripts/source_first_rebuild.py --verify-current --max-age-hours 36
 ```
 
-It validates the latest scheduled Dream run against the policy source of truth
-in `shared/memory_policy.json`. A passing post-cron run must be scheduled,
-governed, live (`dry_run=false`), and within the expected time window.
-It reads the Dream run ledger rather than only `dream:last_run`, so a cautious
-fully-held governed run is still visible to the check. Each run writes both a
-JSON diagnostic and a Markdown sleep report:
+It validates the promoted source-first generation against its manifest and
+`sf:heartbeat`; a passing generation must be complete and no more than 36 hours
+old. Retrieval quality is checked separately by the eight-axis regression gate
+before each source-first promotion.
 
-```bash
-scripts/reports/check_overnight_dream_run_*.json
-scripts/reports/dream-sleep-YYYY-MM-DD.md
-```
-
-GitHub Actions also runs `.github/workflows/nightly-sleep-report.yml` nightly at
-08:45 UTC and uploads those sleep-report artifacts after the Worker Dream cron.
+The rebuild workflow uploads the manifest, project map, suppression rules, and
+retrieval-eval report as durable run artifacts. The retired Dream sleep-report
+workflow is not part of the source-first serving path.
 
 The live judge queue can be inspected through the operator endpoint:
 
@@ -686,13 +694,11 @@ negative, paraphrase) read-only against production or staging and writes
 `../PRD-eval-baseline-v1.md`. Rule: no ranking/forgetting/admission change ships
 without a before/after eval diff.
 
-First production baseline (2026-07-06, 51 probes): carry_forward_recall 0.90,
-project_recall 0.86, exact_lexical 0.67, stale_leak_rate 0.25, supersession 0.50,
-negative_precision 1.00, paraphrase_consistency 0.67, ~254 tokens/query median.
-The lexical and stale/supersession gaps are the expected targets of upgrade-plan
-items 1 and 5. The LLM-judge for future answer-mode scoring is DeepSeek V4 Flash
-via the direct API (validated 26/26 vs Sonnet 4.6 and V4 Pro; escalation to Sonnet
-on uncertainty).
+Current source-first baseline (2026-08-09, 50 enabled probes): all measured
+retrieval axes pass at 1.00, stale-leak rate is 0.00, and the run completed with
+zero errors. Opaque identifiers and paths are covered by the source-first exact
+term index; probes no longer assert retired legacy facts. The LLM-judge for
+future answer-mode scoring is DeepSeek V4 Flash via the direct API.
 
 The long-term rule is simple: production is not the default test bed.
 

@@ -42,7 +42,18 @@ jobs:
           "$PYTHON_BIN" -m venv ingestion/.venv-source-first
           . ingestion/.venv-source-first/bin/activate
           python -m pip install --upgrade pip
-          python -m pip install openai upstash-redis upstash-vector python-dotenv
+          python -m pip install openai upstash-redis upstash-vector python-dotenv requests
+
+      - name: Run retrieval regression gate before promotion
+        env:
+          BASE_URL: https://mcp.dancing-ganesh.com
+        run: |
+          . ingestion/.venv-source-first/bin/activate
+          python scripts/run_eval.py --base-url "$BASE_URL" --config-tag source-first-promotion-gate > /tmp/source-first-retrieval-gate.log 2>&1
+          cat /tmp/source-first-retrieval-gate.log
+          fresh=$(grep -oE 'wrote .*\.json' /tmp/source-first-retrieval-gate.log | sed 's/^wrote //')
+          test -n "$fresh" && test -f "$fresh"
+          python scripts/run_eval.py --compare tests/baselines/retrieval_baseline.json "$fresh" --fail-on-regression
 
       - name: Build candidate and atomically promote
         env:
@@ -59,7 +70,7 @@ jobs:
         if: ${{ github.event_name == 'schedule' || inputs.publish }}
         run: |
           . ingestion/.venv-source-first/bin/activate
-          python scripts/source_first_rebuild.py --verify-current
+          python scripts/source_first_rebuild.py --verify-current --max-age-hours 36
 
       - name: Upload build evidence
         if: always()
@@ -70,5 +81,6 @@ jobs:
             scripts/reports/source_first/*/manifest.json
             scripts/reports/source_first/*/projects.json
             scripts/reports/source_first/*/suppressions.json
+            scripts/reports/eval_baseline_*.json
           if-no-files-found: error
           retention-days: 30

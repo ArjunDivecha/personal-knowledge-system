@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+import json
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -42,9 +43,27 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import run_eval  # noqa: E402
+from check_overnight_dream_run import parse_sse_json  # noqa: E402
 
 
 class SearchArgumentsTests(unittest.TestCase):
+    def test_result_text_covers_source_first_evidence_fields(self) -> None:
+        text = run_eval.result_text({
+            "title": "Tracker",
+            "text": "Current source-backed project evidence",
+            "project": "Tracker",
+            "source_path": "/projects/Tracker/README.md",
+        })
+        self.assertIn("source-backed project evidence", text)
+        self.assertIn("/projects/tracker/readme.md", text)
+
+    def test_large_wrapped_sse_payload_is_reassembled_before_json_decode(self) -> None:
+        inner = json.dumps({"mode": "source_first", "results": [{"id": "ev_1"}]})
+        outer = json.dumps({"result": {"content": [{"type": "text", "text": inner}]}})
+        wrapped = "event: message\ndata: " + outer[:35] + "\n" + outer[35:] + "\n\n"
+        decoded = parse_sse_json(wrapped)
+        self.assertEqual(decoded["result"]["content"][0]["type"], "text")
+
     def test_every_probe_query_is_marked_as_synthetic_traffic(self) -> None:
         args = run_eval.build_search_arguments("what is the PKS architecture?")
         self.assertEqual(args["query"], "what is the PKS architecture?")

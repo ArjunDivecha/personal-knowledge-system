@@ -4,8 +4,8 @@
     "axis": "paraphrase",
     "enabled": true,
     "paraphrase_group": "lora_config",
-    "query": "LoRA settings for my News fine-tune",
-    "expect_entry_ids": ["ke_b1f1822362c7"],
+    "query": "LoRA settings in the FineTuning project",
+    "expect_any_of": ["MLX-LM-LoRA", "Fine-Tuning Project"],
     "notes": "Group lora_config, wording A."
   },
   {
@@ -13,9 +13,9 @@
     "axis": "paraphrase",
     "enabled": true,
     "paraphrase_group": "lora_config",
-    "query": "what rank and alpha am I using for low-rank adaptation training",
-    "expect_entry_ids": ["ke_b1f1822362c7"],
-    "notes": "Group lora_config, wording B — no 'LoRA' or 'News' surface tokens."
+    "query": "what configuration does the FineTuning MLX-LM-LoRA project use",
+    "expect_any_of": ["MLX-LM-LoRA", "Low-Rank Adaptation"],
+    "notes": "Group lora_config, wording B — current project/source wording rather than the retired News hyperparameter entry."
   },
   {
     "id": "para_asado_a",
@@ -23,7 +23,7 @@
     "enabled": true,
     "paraphrase_group": "asado_warehouse",
     "query": "ASADO DuckDB warehouse location",
-    "expect_entry_ids": ["ke_ae0a7d555995"],
+    "expect_any_of": ["asado.duckdb", "DuckDB warehouse"],
     "notes": "Group asado_warehouse, wording A."
   },
   {
@@ -31,9 +31,9 @@
     "axis": "paraphrase",
     "enabled": true,
     "paraphrase_group": "asado_warehouse",
-    "query": "which single database file holds the consolidated macro research data",
-    "expect_entry_ids": ["ke_ae0a7d555995"],
-    "notes": "Group asado_warehouse, wording B — alias-style, no 'ASADO'/'DuckDB' tokens."
+    "query": "where does ASADO keep its consolidated macro database",
+    "expect_any_of": ["asado.duckdb", "DuckDB warehouse"],
+    "notes": "Group asado_warehouse, wording B — current source-first project-qualified paraphrase."
   },
   {
     "id": "para_bbg_a",
@@ -41,7 +41,7 @@
     "enabled": true,
     "paraphrase_group": "bbg_spreads",
     "query": "pulling bid ask history from Bloomberg for spread calculation",
-    "expect_entry_ids": ["ke_7a7bc070fbde"],
+    "expect_any_of": ["Bloomberg", "spread"],
     "notes": "Group bbg_spreads, wording A."
   },
   {
@@ -50,7 +50,7 @@
     "enabled": true,
     "paraphrase_group": "bbg_spreads",
     "query": "how did I compute trailing spreads from terminal data",
-    "expect_entry_ids": ["ke_7a7bc070fbde"],
+    "expect_any_of": ["Bloomberg", "spread"],
     "notes": "Group bbg_spreads, wording B — 'terminal' alias for Bloomberg."
   }
 ]

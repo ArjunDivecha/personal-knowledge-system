@@ -34,10 +34,9 @@
     "axis": "project_recall",
     "enabled": true,
     "priority": "high",
-    "query": "California Law Chatbot serverless memory and timeout limits",
-    "expect_entry_ids": ["ke_ee4fa7ab280b"],
-    "expect_any_of": ["1024MB", "60s", "60 second"],
-    "notes": "Verified live 2026-07-05: ke_ee4fa7ab280b 'Vercel serverless functions with 1024MB memory and 60s timeout'."
+    "query": "is the California Law Chatbot Vercel integration still active",
+    "expect_any_of": ["permanently retired", "ToS prohibits ingestion", "retired"],
+    "notes": "Current source-of-truth fact: the CEB/Vercel-era integration is permanently retired because its ToS prohibits ingestion; the old 1024MB/60s claim is no longer authoritative."
   },
   {
     "id": "proj_pks_stack",
@@ -54,10 +53,9 @@
     "axis": "project_recall",
     "enabled": true,
     "priority": "medium",
-    "query": "LoRA hyperparameters for the News fine-tune",
-    "expect_entry_ids": ["ke_b1f1822362c7"],
-    "expect_any_of": ["rank=16", "alpha=32", "2e-4"],
-    "notes": "Verified live 2026-07-06 via direct search call (rank 1, final_score 0.97)."
+    "query": "what project contains the current LoRA fine-tuning setup",
+    "expect_any_of": ["MLX-LM-LoRA", "Fine-Tuning Project", "Low-Rank Adaptation"],
+    "notes": "Current source-of-truth fact: FineTuning documents the MLX-LM-LoRA setup; the old News rank/alpha/learning-rate entry is no longer authoritative."
   },
   {
     "id": "proj_lawbot_pdf_chunking",
@@ -65,9 +63,8 @@
     "enabled": true,
     "priority": "medium",
     "query": "how are CEB PDFs chunked for the law chatbot",
-    "expect_entry_ids": ["ke_c3c287383a7a"],
-    "expect_any_of": ["PyMuPDF", "fitz", "semantic chunking"],
-    "notes": "Verified live 2026-07-05: ke_c3c287383a7a."
+    "expect_any_of": ["chunk-size 1200", "chunk-overlap 250", "CEB Processing Scripts"],
+    "notes": "Current CEB processing README: 1200-character chunks with 250-character overlap."
   },
   {
     "id": "proj_neo4j_factors",

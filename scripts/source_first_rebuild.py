@@ -84,10 +84,18 @@ def main() -> int:
     parser.add_argument("--artifact-root", type=Path, default=DEFAULT_ARTIFACT_ROOT)
     parser.add_argument("--publish", action="store_true", help="publish verified generation to Upstash and promote it")
     parser.add_argument("--verify-current", action="store_true", help="verify the currently promoted remote generation")
+    parser.add_argument(
+        "--max-age-hours",
+        type=float,
+        default=36.0,
+        help="with --verify-current, fail if the promoted generation is older than this many hours",
+    )
     args = parser.parse_args()
 
     if args.verify_current:
-        report = SourceFirstPublisher().verify_current()
+        if args.max_age_hours <= 0:
+            raise ValueError("--max-age-hours must be positive")
+        report = SourceFirstPublisher().verify_current(max_age_seconds=int(args.max_age_hours * 3600))
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0 if report.get("passed") else 1
 
