@@ -60,3 +60,12 @@ Anything below not run by you this session: treat as **(unverified)** and confir
 - **Active.** Recent work: nightly orchestrator hardening, SDK auth/billing routing, Dream insight synthesis, and an **eval-baseline** effort (8-axis probe suite + `run_eval.py`).
 - **In flight (uncommitted):** `ingestion/core/config.py` env-override fix; untracked `scripts/benchmark_openrouter_extraction_models.py` (extraction-model benchmarking).
 - **Known gap:** the eval runner measures retrieval quality but nothing *enforces* a no-regression baseline (see `FABLE.md` P0).
+
+
+## Cross-session messaging
+
+Claude Code sessions can message each other directly. `ListAgents` (or `/list-agents`, `/peers`)
+lists reachable sessions; `SendMessage` delivers plain text to one by name. Same-machine delivery
+uses a local socket; cross-machine is reply-only via Remote Control. Use it to hand off a finding
+to a session working elsewhere instead of relaying it through the user. A message is text only —
+never conversation history or files; to share full context, resume the session instead.
