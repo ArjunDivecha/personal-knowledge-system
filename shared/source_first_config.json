@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "max_file_bytes": 750000,
+  "chunk_chars": 3200,
+  "chunk_overlap_chars": 240,
+  "recent_days": 365,
+  "authoritative_names": [
+    "README.md",
+    "README.markdown",
+    "FABLE.md",
+    "ARJUN.md"
+  ],
+  "authoritative_name_contains": [
+    "PRD",
+    "SPEC",
+    "REPORT",
+    "HANDOFF"
+  ],
+  "include_relative_globs": [],
+  "exclude_directories": [
+    ".git",
+    ".venv",
+    "venv",
+    "node_modules",
+    "dist",
+    "build",
+    "archive",
+    "backups",
+    "site-packages",
+    "__pycache__",
+    ".next",
+    ".cache"
+  ],
+  "roots": [
+    {
+      "path": "/Users/arjundivecha/Dropbox/AAA Backup/A Working",
+      "source_kind": "working_project",
+      "max_depth": 4
+    },
+    {
+      "path": "/Users/arjundivecha/Dropbox/AAA Backup/A Complete",
+      "source_kind": "completed_project",
+      "max_depth": 3
+    }
+  ],
+  "explicit_files": [
+    {
+      "path": "/Users/arjundivecha/AGENT_MEMORY.md",
+      "source_kind": "curated_memory",
+      "pinned": true
+    },
+    {
+      "path": "/Users/arjundivecha/AGENTS.md",
+      "source_kind": "operating_policy",
+      "pinned": true
+    }
+  ],
+  "required_projects": [
+    "/Users/arjundivecha/Dropbox/AAA Backup/A Working/Tracker",
+    "/Users/arjundivecha/Dropbox/AAA Backup/A Working/WSH",
+    "/Users/arjundivecha/Dropbox/AAA Backup/A Working/Futures",
+    "/Users/arjundivecha/Dropbox/AAA Backup/A Working/Kronos"
+  ],
+  "source_authority": {
+    "curated_memory": 1.0,
+    "operating_policy": 1.0,
+    "working_project": 0.9,
+    "completed_project": 0.7
+  }
+}

@@ -1,10 +1,8 @@
 name: Nightly Semantic Maintenance
 
 on:
-  schedule:
-    # The Cloudflare cron at 07:10 UTC is trigger-only. The external planner
-    # starts afterward and feeds bounded candidate clusters to the Worker queue.
-    - cron: "20 7 * * *"
+  # Retired from automatic operation by the source-first cutover. Keep a
+  # manual-only rollback path while the legacy index remains archived.
   workflow_dispatch:
     inputs:
       mode:

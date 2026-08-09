@@ -120,7 +120,10 @@ def call_operator_unauthorized(base_url: str) -> dict[str, Any]:
 
 
 def parse_sse_json(text: str) -> dict[str, Any]:
-    for line in text.splitlines():
+    # Split only on the SSE line delimiter. str.splitlines() also treats
+    # Unicode NEL/line-separator characters inside JSON string values as
+    # physical boundaries, truncating source-first evidence payloads.
+    for line in text.split("\n"):
         if line.startswith("data: "):
             return json.loads(line[6:])
     raise RuntimeError("No JSON payload found in SSE response")
@@ -202,7 +205,11 @@ def mcp_post(
     }
     if session_id:
         headers["Mcp-Session-Id"] = session_id
-    return session.post(f"{base_url.rstrip('/')}{path}", json=payload, headers=headers, timeout=30)
+    response = session.post(f"{base_url.rstrip('/')}{path}", json=payload, headers=headers, timeout=30)
+    # Some Worker/SSE responses omit an explicit charset. requests otherwise
+    # falls back to ISO-8859-1 and corrupts UTF-8 evidence punctuation.
+    response.encoding = "utf-8"
+    return response
 
 
 def call_mcp_tool(

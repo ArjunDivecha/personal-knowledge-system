@@ -7,20 +7,10 @@
 		"nodejs_compat"
 	],
 	"triggers": {
-		"crons": [
-			"10 7 * * *"
-		]
+		"crons": []
 	},
 	"limits": {
 		"cpu_ms": 30000
-	},
-	"queues": {
-		"producers": [
-			{ "binding": "DREAM_MAINTENANCE_QUEUE", "queue": "pks-dream-maintenance" }
-		],
-		"consumers": [
-			{ "queue": "pks-dream-maintenance", "max_batch_size": 1, "max_batch_timeout": 5, "max_retries": 5, "dead_letter_queue": "pks-dream-maintenance-dlq" }
-		]
 	},
 	"migrations": [
 		{
@@ -59,7 +49,7 @@
 	},
 	"workers_dev": true,
 	"vars": {
-		"DREAM_QUEUE_MODE": "live"
+		"SOURCE_FIRST_MODE": "on"
 	},
 	"routes": [
 		{
@@ -72,7 +62,8 @@
 			"name": "arjun-knowledge-mcp-staging",
 			"workers_dev": true,
 			"vars": {
-				"DREAM_QUEUE_MODE": "live"
+				"DREAM_QUEUE_MODE": "live",
+				"SOURCE_FIRST_MODE": "off"
 			},
 			"routes": [],
 			"triggers": {

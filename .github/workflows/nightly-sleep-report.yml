@@ -1,10 +1,8 @@
 name: Nightly Semantic Maintenance Report
 
 on:
-  schedule:
-    # Automatic semantic maintenance starts at 07:20 UTC; verify its durable
-    # completion record after the bounded cohort window.
-    - cron: "45 8 * * *"
+  # Retired from automatic operation by the source-first cutover. This remains
+  # manual-only for inspecting the archived legacy system.
   workflow_dispatch:
 
 permissions:

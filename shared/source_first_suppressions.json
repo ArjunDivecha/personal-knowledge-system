@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "rules": [
+    {
+      "id": "suppress_looppilot_throwaway",
+      "terms": ["looppilot", "loop pilot"],
+      "source_path_contains": ["/Loop Pilot/"],
+      "reason": "User explicitly identified LoopPilot as a throwaway reference, not durable identity or an active priority.",
+      "allow_explicit_query": true,
+      "created_at": "2026-08-08T00:00:00-07:00"
+    }
+  ]
+}

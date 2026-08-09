@@ -1,0 +1,74 @@
+name: Source-First Memory Rebuild
+
+on:
+  schedule:
+    - cron: "30 6 * * *"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish and atomically promote the verified generation"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-first-memory-rebuild
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    # The schedule is remote (GitHub), while this runner can read the
+    # authoritative Dropbox folders on the Mac. No local LaunchAgent exists.
+    runs-on: [self-hosted, macOS, knowledge-agent-sessions]
+    timeout-minutes: 90
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+      UPSTASH_VECTOR_REST_URL: ${{ secrets.UPSTASH_VECTOR_REST_URL }}
+      UPSTASH_VECTOR_REST_TOKEN: ${{ secrets.UPSTASH_VECTOR_REST_TOKEN }}
+      PYTHON_BIN: /opt/homebrew/bin/python3.12
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Create minimal runtime
+        run: |
+          "$PYTHON_BIN" -m venv ingestion/.venv-source-first
+          . ingestion/.venv-source-first/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install openai upstash-redis upstash-vector python-dotenv
+
+      - name: Build candidate and atomically promote
+        env:
+          SHOULD_PUBLISH: ${{ github.event_name == 'schedule' && 'true' || inputs.publish }}
+        run: |
+          . ingestion/.venv-source-first/bin/activate
+          args=()
+          if [ "$SHOULD_PUBLISH" = "true" ]; then
+            args+=(--publish)
+          fi
+          caffeinate -i python scripts/source_first_rebuild.py "${args[@]}"
+
+      - name: Verify the serving generation
+        if: ${{ github.event_name == 'schedule' || inputs.publish }}
+        run: |
+          . ingestion/.venv-source-first/bin/activate
+          python scripts/source_first_rebuild.py --verify-current
+
+      - name: Upload build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-first-memory-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            scripts/reports/source_first/*/manifest.json
+            scripts/reports/source_first/*/projects.json
+            scripts/reports/source_first/*/suppressions.json
+          if-no-files-found: error
+          retention-days: 30

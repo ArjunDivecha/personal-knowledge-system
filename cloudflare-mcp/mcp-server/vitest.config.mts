@@ -14,6 +14,9 @@ export default defineConfig({
 					OPENAI_API_KEY: "test-openai-key",
 					GITHUB_TOKEN: "test-github-token",
 					DREAM_OPERATOR_TOKEN: "test-dream-operator-token",
+					// The broad historical suite verifies the archived legacy contract.
+					// Source-first behavior is covered by sourceFirst.test.ts and live E2E.
+					SOURCE_FIRST_MODE: "off",
 				},
 			},
 		}),

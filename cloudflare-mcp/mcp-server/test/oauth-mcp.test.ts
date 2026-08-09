@@ -72,6 +72,9 @@ function getTestEnv(): Env {
 		OPENAI_API_KEY: "test-openai-key",
 		GITHUB_TOKEN: "test-github-token",
 		DREAM_OPERATOR_TOKEN: "test-dream-operator-token",
+		// This suite preserves the archived legacy MCP contract. Source-first has
+		// its own focused contract tests and is exercised against production E2E.
+		SOURCE_FIRST_MODE: "off",
 	};
 }
 

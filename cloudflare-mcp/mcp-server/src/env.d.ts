@@ -20,6 +20,9 @@ declare global {
 		// selection switches from sort-and-slice to greedy MMR diversity
 		// selection (mmr.ts). Default off/unset -> byte-identical to today.
 		RANKING_V2?: "off" | "on";
+		// Simple source-first read path. When on, get_index/get_context/search/get_deep
+		// serve immutable evidence generations and never write access signals.
+		SOURCE_FIRST_MODE?: "off" | "on";
 		// Insight synthesis (CMA-dreaming parity). "on" enables nightly cluster
 		// detection + judge enqueue; verdicts apply additively next cycle.
 		// See docs/pks-dream-insight-synthesis-prd-2026-07-02.md.

@@ -68,6 +68,12 @@ import {
 	recordSearchQuery,
 	setKillFlag,
 } from "./tripwires";
+import {
+	getSourceFirstEvidence,
+	getSourceFirstGeneration,
+	getSourceFirstIndex,
+	sourceFirstSearch,
+} from "./sourceFirst";
 
 // GitHub accounts to query
 const GITHUB_ACCOUNTS = ['arjun-via', 'ArjunDivecha'];
@@ -915,6 +921,10 @@ async function buildHealthPayload(env: Env): Promise<Record<string, unknown>> {
 	const reconsolidationErrorCount = await redis.llen(getReconsolidationErrorKey()) as number;
 	const topics = Array.isArray(rawIndex.topics) ? rawIndex.topics : [];
 	const projects = Array.isArray(rawIndex.projects) ? rawIndex.projects : [];
+	const sourceFirstGeneration = await getSourceFirstGeneration(redis);
+	const sourceFirstManifest = sourceFirstGeneration
+		? parseStoredObject(await redis.get(`sf:manifest:${sourceFirstGeneration}`))
+		: null;
 
 	return {
 		status: "ok",
@@ -923,6 +933,13 @@ async function buildHealthPayload(env: Env): Promise<Record<string, unknown>> {
 		migration_backfill_complete: backfillComplete,
 		pending_classification_count: pendingClassificationCount || 0,
 		reconsolidation_error_count_today: reconsolidationErrorCount || 0,
+		source_first: {
+			enabled: env.SOURCE_FIRST_MODE === "on",
+			generation: sourceFirstGeneration,
+			built_at: sourceFirstManifest?.built_at ?? null,
+			evidence_count: sourceFirstManifest?.evidence_count ?? null,
+			project_count: sourceFirstManifest?.project_count ?? null,
+		},
 		last_dream_run: typeof dreamSummary?.run_at === "string" ? dreamSummary.run_at : null,
 		last_dream_status: typeof dreamSummary?.status === "string" ? dreamSummary.status : null,
 		last_dream_dry_run: typeof dreamSummary?.dry_run === "boolean" ? dreamSummary.dry_run : null,
@@ -2039,6 +2056,9 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 			READ_ONLY_TOOL_ANNOTATIONS,
 			async () => {
 				const redis = this.getRedis(this.env);
+				if (this.env.SOURCE_FIRST_MODE === "on") {
+					return { content: [{ type: "text", text: JSON.stringify(await getSourceFirstIndex(redis)) }] };
+				}
 				const rawIndex = parseStoredObject(await redis.get("index:current")) as {
 					topics?: Array<{ id: string; domain: string; current_view_summary?: string; state?: string; confidence?: string; last_updated?: string; context_type?: string; injection_tier?: number; salience_score?: number; mention_count?: number; archived?: boolean; top_repo?: string }>;
 					projects?: Array<{ id: string; name: string; goal_summary?: string; status?: string; current_phase?: string; last_touched?: string; context_type?: string; injection_tier?: number; salience_score?: number; mention_count?: number; archived?: boolean }>;
@@ -2771,6 +2791,11 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 						const msg = embErr instanceof Error ? embErr.message : String(embErr);
 						return { content: [{ type: "text", text: JSON.stringify({ error: `Embedding step failed: ${msg}` }) }] };
 					}
+					if (this.env.SOURCE_FIRST_MODE === "on") {
+						return {
+							content: [{ type: "text", text: JSON.stringify(await sourceFirstSearch(redis, vector, queryEmbedding, topic, 5)) }],
+						};
+					}
 
 					let results;
 					try {
@@ -2831,6 +2856,9 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 			READ_ONLY_TOOL_ANNOTATIONS,
 			async ({ id }) => {
 				const redis = this.getRedis(this.env);
+				if (this.env.SOURCE_FIRST_MODE === "on" && id.startsWith("ev_")) {
+					return { content: [{ type: "text", text: JSON.stringify(await getSourceFirstEvidence(redis, id)) }] };
+				}
 				const type: EntryType = id.startsWith("pe_") ? "project" : "knowledge";
 				const entry = await this.loadEntry(redis, type, id);
 				if (entry) {
@@ -2843,7 +2871,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 		// Tool: search
 		this.server.tool(
 			"search",
-			"Tier-aware semantic search across all knowledge and project entries. Archived entries are excluded by default. Results are scored by semantic match, salience, recency, source weight, and retrieval-tier multiplier, then ranked by final score.",
+			"Search personal knowledge. In source-first mode results are immutable evidence excerpts ranked by semantic match, lexical overlap, source authority, and source date, with exact provenance returned.",
 			{
 				query: z.string().describe("Search query"),
 				limit: z.number().optional().describe("Max results (default 5)"),
@@ -2860,6 +2888,14 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 					const queryEmbedding = await this.getEmbedding(this.env, query);
 
 					const requestedLimit = Math.max(1, Math.min(limit || 5, 20));
+					if (this.env.SOURCE_FIRST_MODE === "on") {
+						return {
+							content: [{
+								type: "text",
+								text: JSON.stringify(await sourceFirstSearch(redis, vector, queryEmbedding, query, requestedLimit)),
+							}],
+						};
+					}
 					const fetchLimit = Math.min(requestedLimit * 8, 60);
 
 					// RANKING_V2: query-time selection cutover (mmr.ts). Off by default
