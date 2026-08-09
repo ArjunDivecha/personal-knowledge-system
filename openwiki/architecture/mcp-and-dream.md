@@ -1,29 +1,49 @@
 ---
 type: "Reference"
 title: "Cloudflare MCP and Dream control plane"
-description: "Production Cloudflare Worker MCP server for retrieval, salience scoring, Dream lifecycle, judge queue, scheduled async Dream, semantic candidate authority with stale-row guard, and lossless merge gates."
+description: "Cloudflare Worker MCP server. In production it serves the source-first read path; in staging it owns the legacy Dream lifecycle, salience scoring, judge queue, scheduled async Dream, semantic candidate authority, and lossless merge gates. Covers the SOURCE_FIRST_MODE cutover and which subsystems are retired from automatic operation."
 ---
 
 # Cloudflare MCP and Dream control plane
 
-`cloudflare-mcp/mcp-server/` is the current production runtime for retrieval and memory governance.
+`cloudflare-mcp/mcp-server/` is the Worker implementation. Its role changed
+with the source-first cutover:
 
-It is a Cloudflare Worker implementation that uses the MCP SDK, Upstash Redis, Upstash Vector, OpenAI embeddings, and a small set of policy modules to shape both search and mutation behavior.
+- **Production** (`wrangler.json` top-level `vars`: `SOURCE_FIRST_MODE: "on"`,
+  `triggers.crons: []`) serves the [source-first read path](../domain/source-first-memory.md)
+  for `get_index`, `get_context`, `get_deep`, and `search`. It has no Dream
+  cron and no scheduled mutation.
+- **Staging** (`env.staging.vars`: `SOURCE_FIRST_MODE: "off"`,
+  `DREAM_QUEUE_MODE: "live"`) still exercises the legacy Dream, retrieval
+  policy, salience, and semantic-consolidation control plane documented
+  below.
+
+The modules on this page describe the **legacy/staging** control plane. They
+remain in the codebase and are still tested, but production serving no
+longer depends on Dream mutation, salience scoring, or retrieval policy
+shaping. The nightly semantic-maintenance and sleep-report workflows are
+retired from automatic schedule (manual `workflow_dispatch` only); see
+[Operations and local workflow](../operations.md) and
+[Source-first rebuild workflow](../workflows/source-first-rebuild.md).
+
+It is a Cloudflare Worker implementation that uses the MCP SDK, Upstash Redis, Upstash Vector, OpenAI embeddings, and a small set of policy modules to shape both search and mutation behavior in the legacy path.
 
 ## What lives here
 
-This server is the live control plane for:
+In production (`SOURCE_FIRST_MODE === "on"`), this server serves the
+source-first read path (see [Source-first memory model](../domain/source-first-memory.md)).
+The legacy control plane below is the staging path:
 
-- MCP tool serving
-- retrieval ranking and policy shaping
-- salience computation
-- Dream proposal generation, grading, apply, rollback, and verification
-- judge queue management
-- scheduled async Dream support
+- MCP tool serving (source-first in production, legacy ranking in staging)
+- retrieval ranking and policy shaping (legacy/staging)
+- salience computation (legacy/staging)
+- Dream proposal generation, grading, apply, rollback, and verification (legacy/staging)
+- judge queue management (legacy/staging)
+- scheduled async Dream support (legacy/staging)
 - OpenAI-compatible read surfaces
 - Twitter and GitHub helper flows — see [Tweets reader subsystem](#tweets-reader-subsystem) for the Worker-side tweet URL reader
 
-The top-level `AGENTS.md` says this is the current production path and should be inspected first for live MCP behavior.
+The top-level `AGENTS.md` says this is the Worker implementation to inspect first for live MCP behavior. Check `wrangler.json` (`SOURCE_FIRST_MODE`) and `env.d.ts` to determine which path is active in a given environment.
 
 ## Main entrypoints
 
@@ -38,8 +58,12 @@ The main server file wires together:
 - judge queue utilities
 - tripwires and rate limiting
 - source-specific helpers such as tweets and GitHub lookup
+- the **source-first read-path gating**: when `SOURCE_FIRST_MODE === "on"`,
+  `get_index`, `get_context`, `get_deep`, and `search` dispatch to
+  `sourceFirst.ts` and never touch the legacy ranking, salience, or access
+  reinforcement path
 
-The file is large because it owns the full tool surface, but its major responsibilities are still fairly coherent: route, authorize, rank, and delegate to the right memory operation.
+The file is large because it owns the full tool surface, but its major responsibilities are still fairly coherent: route, authorize, rank (or serve source-first), and delegate to the right memory operation.
 
 ### `src/dream.ts`
 
@@ -92,9 +116,13 @@ These modules are where the repo encodes its memory-specific heuristics, thresho
 
 ## Retrieval behavior
 
-Retrieval is not a plain vector lookup.
+Retrieval is not a plain vector lookup — in the **legacy/staging** path.
 
-The code uses additional policy shaping such as:
+In production (`SOURCE_FIRST_MODE === "on"`), retrieval is the source-first
+fixed-score path documented in [Source-first memory model](../domain/source-first-memory.md);
+the policy shaping below does not run.
+
+The legacy path uses additional policy shaping such as:
 
 - topic bucket classification
 - cross-context penalties
@@ -375,16 +403,17 @@ Worker Vitest suite (`make worker-test`); a narrow run target is
 
 ## Important caution
 
-There are two MCP implementations in the repo.
+There are two MCP implementations in the repo, and the Worker itself has two serving modes.
 
-- `cloudflare-mcp/mcp-server/` is the current production Worker path.
+- `cloudflare-mcp/mcp-server/` is the Worker implementation. Production serves source-first (`SOURCE_FIRST_MODE: "on"`); staging serves the legacy Dream/retrieval-policy path (`SOURCE_FIRST_MODE: "off"`, `DREAM_QUEUE_MODE: "live"`).
 - `mcp-server/` is the older Vercel-style implementation.
 
-Do not treat them as interchangeable. They share intent, but their runtime environment and current responsibilities differ.
+Do not treat them as interchangeable. They share intent, but their runtime environment and current responsibilities differ. Before assuming a retrieval behavior is live, check `wrangler.json` for the active `SOURCE_FIRST_MODE`.
 
 ## Main source anchors
 
 - `cloudflare-mcp/mcp-server/src/index.ts`
+- `cloudflare-mcp/mcp-server/src/sourceFirst.ts`
 - `cloudflare-mcp/mcp-server/src/dream.ts`
 - `cloudflare-mcp/mcp-server/src/judgeQueue.ts`
 - `cloudflare-mcp/mcp-server/src/scheduledDreamAsync.ts`
