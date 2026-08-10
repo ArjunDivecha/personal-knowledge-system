@@ -142,6 +142,8 @@ bash scripts/deploy_cloudflare_worker.sh
   operational health;
 - `tests/probes/` — deterministic retrieval probes;
 - `docs/source-first-memory.md` — detailed product and operator contract;
+- `docs/pks-source-first-cutover-completion-2026-08-10.md` — deployed-state
+  verification and acceptance evidence;
 - `openwiki/quickstart.md` — code-grounded navigation.
 
 ## Legacy boundary
