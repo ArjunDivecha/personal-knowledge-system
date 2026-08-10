@@ -7,14 +7,13 @@ description: "How the system ingests GitHub, Gmail, Twitter/X, and agent-session
 # Ingestion and distillation workflow
 
 > **Serving cutover.** The source-first serving path
-<!-- openwiki: broken internal link [source-first-memory.md] file "source-first-memory.md" does not exist. Fix the href or restore the target, then delete this comment. -->
-> ([Source-first memory model](source-first-memory.md)) does not consume these
-> ingestion pipelines. The GitHub, Gmail, Twitter/X, and agent-session
-> ingestion runners below feed the **legacy** self-modifying memory model,
-> which is retired from production and remains in staging. They are still
-> dispatched manually or externally for backfill/audit purposes. The
-> source-first index is built directly from authoritative source files by
-> `ingestion/source_first/` (see
+> ([Source-first memory model](../domain/source-first-memory.md)) does not
+> consume these ingestion pipelines. The GitHub, Gmail, Twitter/X, and
+> agent-session ingestion runners below feed the **legacy** self-modifying
+> memory model, which is retired from production and remains in staging.
+> They are still dispatched manually or externally for backfill/audit
+> purposes. The source-first index is built directly from authoritative
+> source files by `ingestion/source_first/` (see
 > [Source-first rebuild workflow](source-first-rebuild.md)).
 
 This repository ingests multiple source types and normalizes them into structured memory entries for the legacy memory model.
