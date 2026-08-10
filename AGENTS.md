@@ -1,353 +1,92 @@
 # AGENTS.md
 
-## Purpose
-
-This repository implements a personal knowledge system that ingests multiple sources of personal and project context, distills them into structured entries, stores them in Upstash Redis + Upstash Vector, and exposes retrieval tools over MCP.
-
-The repo is partly historical and partly active. There are design docs describing earlier planned architectures, plus two MCP server implementations. Read the sections below before changing anything.
-
-## What Is In This Repo
-
-### Active high-level flow
-
-1. Raw sources are ingested locally:
-   - Claude / ChatGPT export files via `distillation/`
-   - GitHub repos via `ingestion/github/`, including repo-attached AI context under `.pks/agent-context/`
-   - Gmail mbox exports via `ingestion/gmail/`
-   - Legacy manual backfill of Claude Code / Codex raw logs via `ingestion/agent_sessions/`
-2. Python ingestion/distillation code writes entries into:
-   - Upstash Redis for canonical entry storage and indexes
-   - Upstash Vector for embeddings and semantic search
-3. MCP servers read from Upstash and expose:
-   - `get_index`
-   - `get_context`
-   - `get_deep`
-   - `search`
-   - `github`
-
-### Key directories
-
-- `README.md`: best starting point for the current shipped system.
-- `distillation/`: original Python pipeline for Claude/GPT export distillation.
-- `ingestion/`: newer Python ingestion pipelines for GitHub, Gmail, and agent session logs.
-- `mcp-server/`: older Vercel-style TypeScript MCP implementation.
-- `cloudflare-mcp/mcp-server/`: Cloudflare Workers MCP implementation and current production path.
-- `docs/`: copies of product/design docs.
-- `skill/`: MCP/skill packaging artifacts.
-- `archive/`: archived compressed entries; large and not a good place to start reading.
-
-## Source Of Truth And Important Caveats
-
-### 1. There are two MCP server implementations
-
-Be careful here.
-
-- `mcp-server/` is a Vercel-style implementation using `mcp-handler`.
-- `cloudflare-mcp/mcp-server/` is a Cloudflare Workers implementation using `agents/mcp`.
-
-The old root-level probe scripts have been moved to `legacy/probes/` because they target the older workers.dev deployment shape and can mislead operators:
-- `legacy/probes/test_mcp.py`
-- `legacy/probes/test_mcp_simple.py`
-- `legacy/probes/test_mcp_tools.py`
-- `legacy/probes/test_sse_connection.py`
-
-If the task is about the live remote MCP service, inspect `cloudflare-mcp/mcp-server/` first.
-Per the updated README, `cloudflare-mcp/mcp-server/` is production and `mcp-server/` is legacy and not used.
-
-### 2. The docs include older planned architecture
-
-Files like:
-- `knowledge-system-implementation-readme.md`
-- `knowledge-distillation-prd-v1.1.md`
-- `knowledge-retrieval-prd-v1.0_1.md`
-
-describe earlier or aspirational designs. They are useful context, but they do not fully match the code currently in this repo. Prefer actual runtime code over the PRDs when they conflict.
-
-### 3. The repo depends heavily on external credentials and personal local paths
-
-Both Python pipelines and MCP servers require env vars and external services. Many defaults point at this machine's Dropbox exports and local home directories. Do not "clean up" these paths unless explicitly asked.
-
-## How The Code Is Organized
-
-### `distillation/`
-
-This is the original export-processing pipeline.
-
-Important files:
-- `distillation/main.py`: richer CLI entrypoint with `--run`, `--dry-run`, and `--status`.
-- `distillation/run.py`: simpler checkpointed runner for the full pipeline.
-- `distillation/config.py`: env loading, Dropbox export paths, model names, thresholds.
-- `distillation/pipeline/`: stages such as parse, filter, extract, merge, compress, index.
-- `distillation/storage/`: Redis and Vector clients.
-- `distillation/models/`: Pydantic/data models for entries and thin index.
-- `distillation/prompts/`: prompt templates used by extraction/compression.
-- `distillation/runs/`: persisted run reports.
-
-Operational notes:
-- Uses Anthropic for extraction and OpenAI for embeddings.
-- Uses checkpointing heavily.
-- `run.py` currently clears existing entries before re-storing them, so treat it as a destructive full refresh path.
-
-### `ingestion/`
-
-This is the newer source-specific ingestion layer.
-
-Shared code:
-- `ingestion/core/config.py`: env loading and shared settings.
-- `ingestion/core/storage.py`: unified Upstash Redis/Vector/OpenAI storage client.
-- `ingestion/core/extractor.py`: extraction logic used by ingestion jobs.
-
-Source-specific runners:
-- `ingestion/github/run.py`: ingests README, commits, and code comments from GitHub repos.
-- `ingestion/gmail/run.py`: ingests substantive Gmail sent messages from an mbox export.
-- `ingestion/agent_sessions/run.py`: legacy manual backfill for Claude Code and Codex raw session logs.
-- `ingestion/twitter/run.py`: ingests Twitter/X timeline knowledge incrementally.
-
-Agent session ingestion details:
-- Reads `~/.claude/projects/**/*.jsonl`
-- Reads `~/.codex/sessions/**/*.jsonl`
-- Tracks byte offsets in `ingestion/checkpoints/agent_sessions_state.json`
-- Mirrors checkpoint state into Upstash Redis under `ingestion:agent_sessions:state`
-- Optionally links cwd to GitHub repo context via `agent_sessions/github_linker.py`
-- Distills sessions with Anthropic and stores durable knowledge only
-- Manual backfill only via `.github/workflows/agent-session-ingestion.yml` on the self-hosted macOS runner labeled `knowledge-agent-sessions`
-
-Repo-attached agent context details:
-- Exported into `.pks/agent-context/` by the shared pre-commit hook
-- Current supported surfaces: Claude Code, Codex CLI, and Cursor
-- Ingested remotely through `.github/workflows/github-ingestion.yml`
-
-Twitter ingestion details:
-- Reads your X timeline through the API with `TWITTER_BEARER_TOKEN`
-- Persists incremental state in Upstash Redis under `ingestion:twitter:state`
-- Scheduled remotely via `.github/workflows/twitter-ingestion.yml`
-- Do not install a local LaunchAgent for Twitter ingestion
-
-### `mcp-server/`
-
-Older TypeScript MCP implementation.
-
-Relevant files:
-- `mcp-server/api/mcp/[transport]/route.ts`: transport handler and tool wiring.
-- `mcp-server/src/tools/`: per-tool implementations.
-- `mcp-server/src/storage/`: Redis/Vector wrappers.
-
-Important mismatch:
-- This server uses `text-embedding-3-small` at 1536 dimensions in `api/mcp/[transport]/route.ts`.
-- The Python pipelines are configured for `text-embedding-3-large` at 3072 dimensions.
-
-Treat that as a potential bug/risk area if work touches retrieval quality or index compatibility.
-Unless a task explicitly targets the legacy server, do not make it your default edit target.
-
-### `cloudflare-mcp/mcp-server/`
-
-Cloudflare Worker MCP implementation and current production server.
-
-Relevant files:
-- `cloudflare-mcp/mcp-server/src/index.ts`: all MCP tool definitions and retrieval logic.
-- `cloudflare-mcp/mcp-server/wrangler.jsonc`: Worker configuration.
-- `cloudflare-mcp/mcp-server/package.json`: deploy/dev/type-check commands.
-
-Notable behavior:
-- Adds recency scoring and source weighting on top of vector similarity.
-- Includes live GitHub helper logic for querying Arjun's GitHub accounts.
-- Uses `text-embedding-3-large` at 3072 dimensions, matching the Python pipelines.
-- Exposes read-only tools (always available): `get_index`, `get_context`, `get_deep`,
-  `search`, `github`, `get_dream_summary`, `get_validation_status`, `read_tweet`,
-  `read_thread`, `health`, `list_dream_runs`, `get_dream_run`, `get_dream_events`.
-- Exposes write tools (require mcp:write scope): `run_dream_proposal`,
-  `grade_dream_proposal`, `apply_dream_proposal`, `rollback_dream_apply`,
-  `restore_archived`, `create_entry`, `set_context_type`, `archive_entry`,
-  `restore_entry`, `consolidate_entries`, `add_insight`, `update_entry`.
-
-## Environment And Dependencies
-
-### Python
-
-Install from:
-- `distillation/requirements.txt`
-
-Core dependencies:
-- `anthropic`
-- `openai`
-- `upstash-redis`
-- `upstash-vector`
-- `python-dotenv`
-- `pydantic`
-- `rich`
-
-The README also documents a minimal direct install path:
-- `pip install anthropic openai upstash-redis upstash-vector python-dotenv requests`
-
-### Node / TypeScript
-
-There are separate Node environments:
-- `mcp-server/package.json`
-- `cloudflare-mcp/mcp-server/package.json`
-
-Do not assume one lockfile or one package manager covers the whole repo.
-
-### Required environment variables
-
-Across the repo, common required vars include:
-- `UPSTASH_REDIS_REST_URL`
-- `UPSTASH_REDIS_REST_TOKEN`
-- `UPSTASH_VECTOR_REST_URL`
-- `UPSTASH_VECTOR_REST_TOKEN`
-- `OPENAI_API_KEY`
-- `ANTHROPIC_API_KEY`
-
-Source-specific additions:
-- `GITHUB_API_KEY`
-- `GITHUB_USERNAME`
-- `GMAIL_MBOX_PATH`
-- `CLAUDE_EXPORT_PATH`
-- `GPT_EXPORT_PATH`
-- `ARCHIVE_PATH`
-
-Env loading is flexible and a little inconsistent by subsystem. Check the relevant `config.py` before assuming where `.env` should live.
-
-## Recommended Workflow For Agents
-
-### When asked to work on ingestion
-
-Start with:
-- `ingestion/core/config.py`
-- the relevant source runner in `ingestion/`
-- `ingestion/core/storage.py`
-
-Then verify whether the change also affects retrieval metadata in the Worker.
-
-### When asked to work on retrieval or MCP
-
-Start with:
-- `cloudflare-mcp/mcp-server/src/index.ts`
-- repo-root test scripts
-
-Only touch `mcp-server/` if the user explicitly wants the Vercel implementation or you confirm that path is still in use.
-
-### When asked about architecture
-
-Use:
-- `README.md` for current implementation
-- PRDs for intent and upcoming direction
-- live code to resolve conflicts
-
-Explicitly call out when the docs and code disagree.
-
-### When asked about automation or background ingestion
-
-Start with:
-- `ingestion/agent_sessions/run.py`
-- `cloudflare-mcp/mcp-server/src/index.ts`
-- `cloudflare-mcp/mcp-server/src/dream.ts`
-
-The intended setup is:
-- remote scheduling on GitHub Actions for `ingestion/agent_sessions/run.py` at `06:10 UTC`
-- remote scheduling on Cloudflare Workers for Dream at `07:10 UTC`
-- remote scheduling on GitHub Actions for Twitter at `05:40 UTC`
-
-Do not add local macOS `launchd` jobs for ingestion. If the source files must
-be read from this machine, use a self-hosted runner and keep the scheduler
-itself remote.
-
-## Commands That Are Usually Relevant
-
-### Python distillation
+## Production truth
+
+PKS production is the source-first Cloudflare Worker under
+`cloudflare-mcp/mcp-server/`, with `SOURCE_FIRST_MODE=on`. Read `README.md`,
+`docs/source-first-memory.md`, and `openwiki/quickstart.md` before changing the
+runtime.
+
+The production corpus is one immutable generation built by
+`scripts/source_first_rebuild.py` from:
+
+- authoritative files discovered by `ingestion/source_first/scanner.py`;
+- curated/pinned sources in `shared/source_first_config.json`;
+- recent Claude Code and Codex conversations parsed and redacted directly by
+  `ingestion/source_first/session_scanner.py`.
+
+The old `ke_*` store, thin index, tiers, salience, reconsolidation, Dream,
+distillation, and source-specific legacy ingesters do not maintain production.
+Do not use their validation ledgers to report source-first health.
+
+## Invariants
+
+- One corpus, evidence contract, generation, and search calculation.
+- Sessions are `working_context`, not canonical truth or a second result lane.
+- Redaction occurs before text normalization, checksums, embeddings, reports,
+  Redis, or Vector metadata.
+- Developer/system/tool content is excluded from session evidence.
+- The public Worker resolves only `sf:current_generation`; arbitrary generation
+  search is confined to the authenticated CI harness.
+- A candidate is staged and retrieval-tested before the heartbeat or live
+  pointer moves.
+- General retrieval abstains below the relevance floor.
+- Byte-identical chunks collapse by checksum; source-family maps power
+  `get_deep`.
+- No production ranking uses access signals, salience, tiers, classification,
+  or Dream state.
+- Project status derives only from authoritative files, never session activity.
+- GitHub Actions is the scheduler. Do not add a local PKS LaunchAgent or cron.
+
+## Active source locations
+
+- `shared/source_first_config.json` — roots, authority, required projects,
+  recent-session bounds and scoring policy.
+- `ingestion/source_first/models.py` — evidence/project/manifest schema.
+- `ingestion/source_first/scanner.py` — authoritative source scanner.
+- `ingestion/source_first/session_scanner.py` — recent-session integration.
+- `ingestion/source_first/publisher.py` — staged publish and promotion.
+- `scripts/source_first_rebuild.py` — builder/operator CLI.
+- `.github/workflows/source-first-rebuild.yml` — two-hour remote schedule and
+  candidate gate.
+- `cloudflare-mcp/mcp-server/src/sourceFirst.ts` — live retrieval.
+- `cloudflare-mcp/mcp-server/src/index.ts` — MCP tool wiring.
+- `cloudflare-mcp/mcp-server/wrangler.json` — production/staging runtime config.
+- `tests/python/test_source_first.py` and
+  `cloudflare-mcp/mcp-server/test/sourceFirst.test.ts` — focused invariants.
+- `tests/probes/` — candidate and live retrieval contract.
+
+`mcp-server/` is the older Vercel implementation. Do not edit it unless the
+task explicitly targets that legacy surface.
+
+## Verification order
 
 ```bash
-cd /Users/arjundivecha/Dropbox/AAA\ Backup/A\ Working/Memory/knowledge-system/distillation
-pip install -r requirements.txt
-python main.py --status
-python main.py --dry-run
-python main.py --run
-```
-
-### Agent session ingestion
-
-```bash
-cd /Users/arjundivecha/Dropbox/AAA\ Backup/A\ Working/Memory/knowledge-system/ingestion
-python agent_sessions/run.py --dry-run
-python agent_sessions/run.py --backfill
-python agent_sessions/run.py --source claude_code
-python agent_sessions/run.py --source codex_cli
-python agent_sessions/run.py --sync-state-only
-python agent_sessions/run.py --require-redis-state --limit 1
-```
-
-### GitHub ingestion
-
-```bash
-cd /Users/arjundivecha/Dropbox/AAA\ Backup/A\ Working/Memory/knowledge-system/ingestion/github
-python run.py --dry-run
-python run.py --repos "repo1,repo2"
-```
-
-### Gmail ingestion
-
-```bash
-cd /Users/arjundivecha/Dropbox/AAA\ Backup/A\ Working/Memory/knowledge-system/ingestion/gmail
-python run.py --dry-run
-python run.py --since 2022
-```
-
-### Cloudflare MCP server
-
-```bash
-cd /Users/arjundivecha/Dropbox/AAA\ Backup/A\ Working/Memory/knowledge-system/cloudflare-mcp/mcp-server
-npm install
+ingestion/.venv/bin/python -m unittest discover -s tests/python -p 'test_source_first.py'
+ingestion/.venv/bin/python scripts/source_first_rebuild.py
+cd cloudflare-mcp/mcp-server
 npm run type-check
-npm run dev
+npm run test:worker -- test/sourceFirst.test.ts
 ```
 
-### Legacy Vercel MCP server
+For a deployment, also stage and evaluate a real generation, deploy with
+`bash scripts/deploy_cloudflare_worker.sh`, run the GitHub source-first workflow,
+and exercise the live MCP tools. Static tests alone are not an end-to-end claim.
 
-```bash
-cd /Users/arjundivecha/Dropbox/AAA\ Backup/A\ Working/Memory/knowledge-system/mcp-server
-npm install
-npm run type-check
-```
+## Credentials and safety
 
-## Testing Guidance
+Prefer the global `oprun` helper for commands that need API credentials. Never
+print raw session content or matched secret values. Build artifacts uploaded by
+CI may include manifests, counts, checksums, project metadata, suppressions, and
+candidate-evaluation rows, but never `evidence.jsonl`.
 
-### Existing tests are mostly integration scripts, not a formal test suite
-
-The root Python test files are manual/integration checks against the deployed Worker URL, not isolated unit tests.
-
-Use them carefully:
-- they hit live infrastructure
-- they depend on valid deployed endpoints
-- they may fail because of credentials, network state, or deployed data rather than local code defects
-
-### Safest validation order
-
-1. Run static/type checks in the subsystem you changed.
-2. Run the most local dry-run path available.
-3. Use live MCP tests only if the change actually affects the deployed retrieval service.
-
-## Practical Warnings
-
-- `distillation/run.py` performs a clear-and-rewrite flow for stored entries.
-- The repo contains personal data paths and archived outputs; avoid broad refactors or bulk formatting.
-- `archive/` is large and mostly output data; avoid scanning it unless the task is specifically about archived entries.
-- The nested git repo is `knowledge-system/`, not the parent workspace folder.
-- The repo root may include operational reports such as `INGESTION_REPORT_2026-03-15.md`; treat them as user files, not generated scratch output.
-
-## If You Need A Fast Mental Model
-
-Think of this repo as:
-- Python pipelines for ingestion/distillation
-- Upstash as the storage backbone
-- Cloudflare Worker as the likely live MCP surface
-- PRDs as strategy documents, not guaranteed implementation truth
+This repo contains personal paths and old data. Avoid broad cleanup of legacy
+stores or generated history unless explicitly requested. `distillation/run.py`
+contains a destructive clear-and-rewrite path and is not part of source-first.
 
 ## OpenWiki
 
-This repository has documentation located in the /openwiki directory.
-
-Start here:
-- [OpenWiki quickstart](openwiki/quickstart.md)
-
-OpenWiki includes repository overview, architecture notes, workflows, domain concepts, operations, integrations, testing guidance, and source maps.
-
-When working in this repository, read the OpenWiki quickstart first, then follow its links to the relevant architecture, workflow, domain, operation, and testing notes.
+Start at [OpenWiki quickstart](openwiki/quickstart.md), then use the source-first
+domain and workflow pages. Pages about Dream, memory tiers, nightly
+orchestration, and old ingesters describe legacy code unless they explicitly
+say otherwise.

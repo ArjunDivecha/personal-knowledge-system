@@ -28,8 +28,8 @@ query against the MCP `search` tool (read-only), and scores:
   stale_leak_rate        stale_fact axis: share of probes where a forbidden
                          (obsolete) string surfaced in top-k
   supersession_accuracy  supersession axis: new value present AND old absent
-  negative_precision     negative axis: share of generic queries whose top
-                         final_score stays below --negative-threshold
+  negative_precision     negative axis: share of irrelevant queries where the
+                         serving layer explicitly abstains and returns no evidence
   paraphrase_consistency paraphrase axis: share of paraphrase groups whose
                          variants share at least one common top-k entry id
   tokens_per_query       ESTIMATE (chars/4 of returned label+summary text) —
@@ -133,8 +133,8 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="PKS retrieval-mode eval runner")
     p.add_argument("--base-url", default=DEFAULT_BASE_URL)
     p.add_argument("--k", type=int, default=5, help="default top-k cutoff")
-    p.add_argument("--negative-threshold", type=float, default=0.85,
-                   help="negative probes pass if top final_score < this")
+    p.add_argument("--negative-threshold", type=float, default=0.65,
+                   help="deprecated compatibility field; source-first negatives must return no results")
     p.add_argument("--config-tag", default="baseline",
                    help="label stored in the report (e.g. shadow-hybrid)")
     p.add_argument("--only-axis", default=None)
@@ -202,7 +202,7 @@ def score_probe(probe: dict[str, Any], results: list[dict[str, Any]],
 
     if axis == "negative":
         top_score = results[0].get("final_score") if results else 0.0
-        detail["passed"] = (top_score or 0.0) < negative_threshold
+        detail["passed"] = len(results) == 0
         detail["top_score"] = top_score
     elif axis == "stale_fact":
         detail["passed"] = not leaks

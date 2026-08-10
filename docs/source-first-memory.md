@@ -1,7 +1,7 @@
 # Source-First Memory
 
-Source-First Memory is the serving replacement for the self-modifying PKS
-memory model. It retrieves recent, authoritative evidence without trying to
+Source-First Memory is the production replacement for the self-modifying PKS
+memory model. It retrieves source-backed evidence without trying to
 infer Arjun's identity, assign salience, reinforce accessed results, or rewrite
 the corpus overnight.
 
@@ -16,6 +16,9 @@ Each evidence record is immutable and contains:
 - project and source kind;
 - deterministic record ID.
 
+Every record also has a stable `source_id`, which groups all chunks from the
+same file or logical session for `get_deep`.
+
 The index contains no context classifier, injection tier, salience score,
 access count, or LLM-generated canonical view.
 
@@ -24,6 +27,12 @@ report, handoff, FABLE, and ARJUN files. Per-project `CLAUDE.md`, `AGENTS.md`,
 and generated `.pks/agent-context` views are excluded so global instruction
 updates cannot masquerade as recent project facts. The global
 `AGENT_MEMORY.md` and `AGENTS.md` remain explicit pinned sources.
+
+Recent Claude Code and Codex conversational turns are integrated directly as
+`working_context` evidence. System/developer messages, tool calls, and tool
+outputs are excluded. Credentials are redacted before checksums, embeddings,
+artifacts, or remote writes. Session records use logical
+`session://<surface>/<session_id>` locators rather than local raw-log paths.
 
 ## Atomic generations
 
@@ -34,9 +43,10 @@ Every rebuild writes a complete candidate generation into:
 - a generation manifest, project catalog, exact-project evidence maps, and
   suppression policy.
 
-The builder verifies that every expected Redis record, vector, and project map
-exists. Only then does it update `sf:current_generation`. A failed build cannot
-replace the last working generation.
+The builder stages without touching `sf:current_generation`, verifies storage,
+then executes the exact production search implementation against the staged
+generation. Only a candidate that passes every retrieval probe is promoted.
+A failed build or evaluation cannot replace the last working generation.
 
 ## Retrieval
 
@@ -48,6 +58,19 @@ fixed and inspectable:
 - 15% lexical overlap;
 - 10% source authority;
 - 5% source recency.
+
+For `working_context` only, retrieval adds:
+
+```text
+0.08 * semantic_similarity * exp(-ln(2) * age_days / 3)
+```
+
+The lift describes attention, not authority. It cannot rescue unrelated session
+text because it is multiplied by semantic relevance.
+
+Byte-identical results collapse by `content_checksum` while preserving
+alternate provenance. General results below `0.65` are omitted; if none remain,
+the response explicitly abstains rather than returning confident-looking noise.
 
 Explicit suppression rules are applied before results are returned. A rule can
 permit direct historical lookup while preventing the topic from appearing in
@@ -68,10 +91,17 @@ Local build without publishing:
 ingestion/.venv/bin/python scripts/source_first_rebuild.py
 ```
 
-Build, verify, and atomically promote:
+Stage without promoting:
 
 ```bash
-ingestion/.venv/bin/python scripts/source_first_rebuild.py --publish
+ingestion/.venv/bin/python scripts/source_first_rebuild.py --stage
+```
+
+Verify and promote the staged generation:
+
+```bash
+ingestion/.venv/bin/python scripts/source_first_rebuild.py --verify-generation sf_YYYYMMDDTHHMMSSZ
+ingestion/.venv/bin/python scripts/source_first_rebuild.py --promote-generation sf_YYYYMMDDTHHMMSSZ
 ```
 
 Verify the currently serving generation:
@@ -81,6 +111,7 @@ ingestion/.venv/bin/python scripts/source_first_rebuild.py --verify-current
 ```
 
 The GitHub Actions workflow `Source-First Memory Rebuild` is the only scheduled
-maintenance job after cutover. GitHub owns the schedule; its self-hosted Mac
-runner provides read access to the Dropbox sources. There is no local scheduled
-job.
+maintenance job after cutover. It runs every two hours, meeting the recent
+session freshness SLA. GitHub owns the schedule; its self-hosted Mac runner
+provides read access to Dropbox and raw agent sessions. There is no local
+scheduled job.

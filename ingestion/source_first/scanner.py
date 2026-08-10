@@ -59,6 +59,11 @@ def project_for_path(path: Path, root: Path) -> str | None:
     return relative.parts[0] if len(relative.parts) > 1 else root.name
 
 
+def source_id_for_path(path: str | Path) -> str:
+    """Stable logical ID used to retrieve every chunk from one source."""
+    return f"src_{hashlib.sha256(str(path).encode()).hexdigest()[:20]}"
+
+
 def is_authoritative(path: Path, root: Path, config: dict[str, Any]) -> bool:
     name_upper = path.name.upper()
     if path.name in set(config.get("authoritative_names") or []):
@@ -97,10 +102,21 @@ def iter_source_files(config: dict[str, Any], *, now: datetime | None = None) ->
             continue
         kind = str(root_item.get("source_kind") or "working_project")
         max_depth = int(root_item.get("max_depth", 4))
+        exclude_git_worktrees = bool(config.get("exclude_git_worktrees", True))
         for current, dirnames, filenames in os.walk(root):
             current_path = Path(current)
             depth = len(current_path.relative_to(root).parts)
-            dirnames[:] = [name for name in dirnames if name not in excluded and not name.startswith(".")]
+            dirnames[:] = [
+                name
+                for name in dirnames
+                if name not in excluded
+                and not name.startswith(".")
+                and not (
+                    exclude_git_worktrees
+                    and depth == 0
+                    and (current_path / name / ".git").is_file()
+                )
+            ]
             if depth >= max_depth:
                 dirnames[:] = []
             for filename in filenames:
@@ -181,6 +197,7 @@ def evidence_from_files(files: Iterable[SourceFile], config: dict[str, Any]) -> 
             record_id = f"ev_{hashlib.sha256(identity).hexdigest()[:24]}"
             records.append(EvidenceRecord(
                 id=record_id,
+                source_id=source_id_for_path(source.path),
                 title=title,
                 text=chunk,
                 source_path=str(source.path),

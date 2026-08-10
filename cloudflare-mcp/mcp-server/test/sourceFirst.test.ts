@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
 	getSourceFirstIndex,
+	getSourceFirstEvidence,
+	getSourceFirstOperationalStatus,
 	findExplicitProject,
 	evaluateSourceFirstFreshness,
 	isSuppressed,
@@ -9,6 +11,7 @@ import {
 	scoreSourceFirstResult,
 	sourceFirstSearch,
 	sourceRecencyScore,
+	workingContextAttentionScore,
 	type SourceFirstEvidence,
 } from "../src/sourceFirst";
 
@@ -47,6 +50,35 @@ describe("source-first scoring", () => {
 		const now = new Date("2026-08-08T00:00:00.000Z");
 		expect(sourceRecencyScore("2026-08-01T00:00:00.000Z", now))
 			.toBeGreaterThan(sourceRecencyScore("2025-08-01T00:00:00.000Z", now));
+	});
+
+	it("gives recent relevant working context a transparent decaying lift", () => {
+		const session = {
+			...evidence,
+			evidence_role: "working_context" as const,
+			session_surface: "codex" as const,
+			attention_observed_at: "2026-08-10T00:00:00.000Z",
+		};
+		const now = new Date("2026-08-10T00:00:00.000Z");
+		const fresh = scoreSourceFirstResult("Tracker portfolio signals", session, 0.8, now);
+		const authoritative = scoreSourceFirstResult("Tracker portfolio signals", evidence, 0.8, now);
+		expect(fresh.attention_score).toBe(0.8);
+		expect(fresh.working_context_bonus).toBe(0.064);
+		expect(fresh.final_score).toBeGreaterThan(authoritative.final_score);
+		expect(workingContextAttentionScore(
+			{ ...session, attention_observed_at: "2026-08-07T00:00:00.000Z" },
+			0.8,
+			now,
+		)).toBeCloseTo(0.4, 6);
+	});
+
+	it("cannot boost unrelated recent context without semantic relevance", () => {
+		const session = {
+			...evidence,
+			evidence_role: "working_context" as const,
+			attention_observed_at: "2026-08-10T00:00:00.000Z",
+		};
+		expect(workingContextAttentionScore(session, 0, new Date("2026-08-10T00:00:00.000Z"))).toBe(0);
 	});
 
 	it("lexical overlap is query transparent", () => {
@@ -91,6 +123,129 @@ describe("explicit suppression rules", () => {
 });
 
 describe("source-first project index", () => {
+	it("abstains when no evidence clears the relevance floor", async () => {
+		const values = new Map<string, unknown>([
+			["sf:current_generation", "sf_test"],
+			["sf:sf_test:suppressions", JSON.stringify({ rules: [] })],
+			["sf:sf_test:projects", JSON.stringify([])],
+			["sf:sf_test:evidence:ev_tracker", JSON.stringify(evidence)],
+		]);
+		const redis = {
+			get: async (key: string) => values.get(key) ?? null,
+			mget: async (...keys: string[]) => keys.map((key) => values.get(key) ?? null),
+		};
+		const vector = { query: async () => [{ id: "ev_tracker", score: 0.55 }] };
+		const result = await sourceFirstSearch(redis as any, vector as any, [0.1], "sourdough fermentation recipe", 5);
+		expect(result.abstained).toBe(true);
+		expect(result.results).toEqual([]);
+	});
+
+	it("does not mistake ordinary sentence capitalization for an exact identifier", async () => {
+		const franceEvidence = {
+			...evidence,
+			id: "ev_france",
+			text: "A project report briefly mentions France.",
+		};
+		const values = new Map<string, unknown>([
+			["sf:current_generation", "sf_test"],
+			["sf:sf_test:suppressions", JSON.stringify({ rules: [] })],
+			["sf:sf_test:projects", JSON.stringify([])],
+			["sf:sf_test:evidence:ev_france", JSON.stringify(franceEvidence)],
+		]);
+		const redis = {
+			get: async (key: string) => values.get(key) ?? null,
+			mget: async (...keys: string[]) => keys.map((key) => values.get(key) ?? null),
+		};
+		const vector = { query: async () => [{ id: "ev_france", score: 0.2 }] };
+		const result = await sourceFirstSearch(redis as any, vector as any, [0.1], "What is the capital of France?", 5);
+		expect(result.abstained).toBe(true);
+		expect(result.results).toEqual([]);
+	});
+
+	it("does not treat a plain quantity as an exact source identifier", async () => {
+		const numericEvidence = { ...evidence, id: "ev_numeric", text: "A report contains the value 100." };
+		const values = new Map<string, unknown>([
+			["sf:current_generation", "sf_test"],
+			["sf:sf_test:suppressions", JSON.stringify({ rules: [] })],
+			["sf:sf_test:projects", JSON.stringify([])],
+			["sf:sf_test:evidence:ev_numeric", JSON.stringify(numericEvidence)],
+		]);
+		const redis = {
+			get: async (key: string) => values.get(key) ?? null,
+			mget: async (...keys: string[]) => keys.map((key) => values.get(key) ?? null),
+		};
+		const vector = { query: async () => [{ id: "ev_numeric", score: 0.5 }] };
+		const result = await sourceFirstSearch(redis as any, vector as any, [0.1], "convert 100 fahrenheit to celsius", 5);
+		expect(result.abstained).toBe(true);
+	});
+
+	it("collapses byte-identical evidence and retains alternate provenance", async () => {
+		const duplicate = {
+			...evidence,
+			id: "ev_duplicate",
+			project: "Tracker-worktree",
+			source_path: "/projects/Tracker-worktree/README.md",
+		};
+		const values = new Map<string, unknown>([
+			["sf:current_generation", "sf_test"],
+			["sf:sf_test:suppressions", JSON.stringify({ rules: [] })],
+			["sf:sf_test:projects", JSON.stringify([])],
+			["sf:sf_test:evidence:ev_tracker", JSON.stringify(evidence)],
+			["sf:sf_test:evidence:ev_duplicate", JSON.stringify(duplicate)],
+		]);
+		const redis = {
+			get: async (key: string) => values.get(key) ?? null,
+			mget: async (...keys: string[]) => keys.map((key) => values.get(key) ?? null),
+		};
+		const vector = { query: async () => [
+			{ id: "ev_tracker", score: 0.9 },
+			{ id: "ev_duplicate", score: 0.89 },
+		] };
+		const result = await sourceFirstSearch(redis as any, vector as any, [0.1], "Tracker portfolio signals", 5);
+		const results = result.results as Array<Record<string, unknown>>;
+		expect(results).toHaveLength(1);
+		expect(results[0]?.duplicate_count).toBe(2);
+		expect(results[0]?.alternate_sources).toEqual([
+			expect.objectContaining({ source_path: "/projects/Tracker-worktree/README.md" }),
+		]);
+	});
+
+	it("returns every sibling chunk for get_deep", async () => {
+		const first = { ...evidence, source_id: "src_tracker", chunk_index: 0, chunk_count: 2 };
+		const second = { ...first, id: "ev_tracker_2", chunk_index: 1, text: "Second source chunk." };
+		const values = new Map<string, unknown>([
+			["sf:current_generation", "sf_test"],
+			["sf:sf_test:evidence:ev_tracker", JSON.stringify(first)],
+			["sf:sf_test:evidence:ev_tracker_2", JSON.stringify(second)],
+			["sf:sf_test:source_evidence:src_tracker", JSON.stringify(["ev_tracker", "ev_tracker_2"])],
+		]);
+		const redis = {
+			get: async (key: string) => values.get(key) ?? null,
+			mget: async (...keys: string[]) => keys.map((key) => values.get(key) ?? null),
+		};
+		const result = await getSourceFirstEvidence(redis as any, "ev_tracker");
+		expect(result.chunk_count).toBe(2);
+		expect(result.complete_source).toBe(true);
+		expect((result.chunks as SourceFirstEvidence[]).map((chunk) => chunk.chunk_index)).toEqual([0, 1]);
+	});
+
+	it("reports active source-first validation without inheriting Dream status", async () => {
+		const values = new Map<string, unknown>([
+			["sf:current_generation", "sf_test"],
+			["sf:manifest:sf_test", JSON.stringify({
+				generation: "sf_test",
+				built_at: "2026-08-08T11:55:00.000Z",
+				published_at: "2026-08-08T11:55:00.000Z",
+				evidence_count: 10,
+			})],
+			["sf:heartbeat", JSON.stringify({ generation: "sf_test", published_at: "2026-08-08T11:55:00.000Z" })],
+		]);
+		const redis = { get: async (key: string) => values.get(key) ?? null };
+		const result = await getSourceFirstOperationalStatus(redis as any, 36 * 60 * 60);
+		expect(result.mode).toBe("source_first");
+		expect((result.gates as any).legacy_dream.status).toBe("retired");
+	});
+
 	it("adds exact identifier candidates that vector search misses", async () => {
 		const exact: SourceFirstEvidence = {
 			...evidence,

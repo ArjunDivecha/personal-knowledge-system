@@ -74,6 +74,7 @@ import {
 	getSourceFirstGeneration,
 	getSourceFirstHeartbeat,
 	getSourceFirstIndex,
+	getSourceFirstOperationalStatus,
 	sourceFirstSearch,
 } from "./sourceFirst";
 
@@ -927,6 +928,21 @@ function buildReconsolidatedVectorMetadata(entry: Record<string, unknown>): Reco
 
 async function buildHealthPayload(env: Env): Promise<Record<string, unknown>> {
 	const redis = createRedisClient(env);
+	const sourceFirstEnabled = env.SOURCE_FIRST_MODE === "on";
+	if (sourceFirstEnabled) {
+		const sourceFirst = await getSourceFirstOperationalStatus(redis, sourceFirstMaxAgeSeconds(env));
+		return {
+			status: sourceFirst.overall_passed === true ? "ok" : "degraded",
+			retrieved_at: new Date().toISOString(),
+			schema_version: 2,
+			build: env.BUILD_SHA ?? env.VERSION_METADATA?.id ?? "unknown",
+			build_tag: env.VERSION_METADATA?.tag ?? null,
+			build_timestamp: env.VERSION_METADATA?.timestamp ?? null,
+			source_first: sourceFirst,
+			active_maintenance: "source_first_rebuild",
+			legacy_dream: { status: "retired", note: "Historical audit only; not production maintenance." },
+		};
+	}
 	const rawIndex = parseStoredObject(await redis.get("index:current")) ?? {};
 	const dreamSummary = parseStoredObject(await redis.get("dream:last_run"));
 	const dreamProposal = parseStoredObject(await redis.get("dream:proposal:last"));
@@ -940,7 +956,6 @@ async function buildHealthPayload(env: Env): Promise<Record<string, unknown>> {
 		? parseStoredObject(await redis.get(`sf:manifest:${sourceFirstGeneration}`))
 		: null;
 	const sourceFirstHeartbeat = await getSourceFirstHeartbeat(redis);
-	const sourceFirstEnabled = env.SOURCE_FIRST_MODE === "on";
 	const sourceFirstFreshness = evaluateSourceFirstFreshness(
 		sourceFirstManifest,
 		sourceFirstHeartbeat,
@@ -965,9 +980,13 @@ async function buildHealthPayload(env: Env): Promise<Record<string, unknown>> {
 			evidence_count: sourceFirstManifest?.evidence_count ?? null,
 			project_count: sourceFirstManifest?.project_count ?? null,
 		},
-		last_dream_run: typeof dreamSummary?.run_at === "string" ? dreamSummary.run_at : null,
-		last_dream_status: typeof dreamSummary?.status === "string" ? dreamSummary.status : null,
-		last_dream_dry_run: typeof dreamSummary?.dry_run === "boolean" ? dreamSummary.dry_run : null,
+		active_maintenance: sourceFirstEnabled ? "source_first_rebuild" : "legacy_dream",
+		legacy_dream: sourceFirstEnabled
+			? { status: "retired", note: "Historical audit only; not production maintenance." }
+			: { status: "active" },
+		last_dream_run: sourceFirstEnabled ? null : (typeof dreamSummary?.run_at === "string" ? dreamSummary.run_at : null),
+		last_dream_status: sourceFirstEnabled ? "retired" : (typeof dreamSummary?.status === "string" ? dreamSummary.status : null),
+		last_dream_dry_run: sourceFirstEnabled ? null : (typeof dreamSummary?.dry_run === "boolean" ? dreamSummary.dry_run : null),
 		last_dream_archive_candidate_count:
 			typeof dreamSummary?.counts === "object" &&
 			dreamSummary.counts &&
@@ -2195,11 +2214,22 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 		// Tool: get_dream_summary
 		this.server.tool(
 			"get_dream_summary",
-			"Get the most recent Dream job audit summary, including dry-run status and archive-candidate counts.",
+			"Report the active source-first maintenance status. In legacy mode, return the most recent Dream audit summary.",
 			{},
 			READ_ONLY_TOOL_ANNOTATIONS,
 			async () => {
 				const redis = this.getRedis(this.env);
+				if (this.env.SOURCE_FIRST_MODE === "on") {
+					const status = await getSourceFirstOperationalStatus(redis, sourceFirstMaxAgeSeconds(this.env));
+					return {
+						content: [{ type: "text", text: JSON.stringify({
+							...status,
+							maintenance: "source_first_rebuild",
+							legacy_dream: "retired_not_applicable",
+							note: "Dream does not maintain the production source-first corpus.",
+						}) }],
+					};
+				}
 				const dreamSummary = parseStoredObject(await redis.get("dream:last_run"));
 				if (!dreamSummary) {
 					return {
@@ -2215,13 +2245,17 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 
 		this.server.tool(
 			"get_validation_status",
-			"Get the latest validation ledger status. Use this to distinguish runtime health from memory correctness.",
+			"Get validation status for the active serving mode. Source-first mode reports generation, heartbeat, and freshness; legacy Dream gates are marked retired.",
 			{},
 			READ_ONLY_TOOL_ANNOTATIONS,
 			async () => {
 				const redis = this.getRedis(this.env);
 				return {
-					content: [{ type: "text", text: JSON.stringify(await getValidationStatus(redis)) }],
+					content: [{ type: "text", text: JSON.stringify(
+						this.env.SOURCE_FIRST_MODE === "on"
+							? await getSourceFirstOperationalStatus(redis, sourceFirstMaxAgeSeconds(this.env))
+							: await getValidationStatus(redis)
+					) }],
 				};
 			},
 		);
@@ -2264,13 +2298,20 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 
 		this.server.tool(
 			"health",
-			"Check the Personal Knowledge MCP and tweet reader upstream health. Returns build metadata and FxTwitter/VxTwitter/ADHX probe statuses.",
+			"Check PKS serving health, Worker build identity, active source-first generation, and file/session freshness, plus tweet-reader upstream status.",
 			{},
 			READ_ONLY_TOOL_ANNOTATIONS,
 			async () => {
+				const redis = this.getRedis(this.env);
+				const sourceFirst = this.env.SOURCE_FIRST_MODE === "on"
+					? await getSourceFirstOperationalStatus(redis, sourceFirstMaxAgeSeconds(this.env))
+					: null;
 				const payload = {
-					status: "ok",
-					build: this.env.BUILD_SHA ?? "unknown",
+					status: sourceFirst && sourceFirst.overall_passed !== true ? "degraded" : "ok",
+					build: this.env.BUILD_SHA ?? this.env.VERSION_METADATA?.id ?? "unknown",
+					build_tag: this.env.VERSION_METADATA?.tag ?? null,
+					build_timestamp: this.env.VERSION_METADATA?.timestamp ?? null,
+					source_first: sourceFirst,
 					tweet_reader: {
 						timeout_ms: getTweetTimeoutMs(this.env),
 						cache_ttl_seconds: getTweetCacheTtlSeconds(this.env),
@@ -2284,7 +2325,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 
 		this.server.tool(
 			"list_dream_runs",
-			"List recent Dream run summaries from the run ledger.",
+			"List archived legacy Dream run summaries. Dream is retired and does not maintain production source-first memory.",
 			{
 				limit: z.number().int().min(1).max(50).default(10),
 				status_filter: z.string().min(1).max(80).optional(),
@@ -2292,15 +2333,18 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 			READ_ONLY_TOOL_ANNOTATIONS,
 			async ({ limit, status_filter }) => {
 				const redis = this.getRedis(this.env);
+				const result = await listDreamRuns(redis, limit, status_filter);
 				return {
-					content: [{ type: "text", text: JSON.stringify(await listDreamRuns(redis, limit, status_filter)) }],
+					content: [{ type: "text", text: JSON.stringify(this.env.SOURCE_FIRST_MODE === "on"
+						? { ...result, mode: "legacy_retired", note: "Historical audit only; not production maintenance." }
+						: result) }],
 				};
 			},
 		);
 
 		this.server.tool(
 			"get_dream_run",
-			"Get a Dream run record by run_id.",
+			"Get an archived legacy Dream run record by run_id. It does not describe current source-first maintenance.",
 			{
 				run_id: z.string().min(1).max(200),
 			},
@@ -2315,7 +2359,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 
 		this.server.tool(
 			"get_dream_events",
-			"Get retained Dream run events by run_id.",
+			"Get retained events for an archived legacy Dream run.",
 			{
 				run_id: z.string().min(1).max(200),
 			},
@@ -2807,7 +2851,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 		// Tool: get_context
 		this.server.tool(
 			"get_context",
-			"Get the current view and key insights for a topic or project. Use when you need to understand a specific topic quickly.",
+			"Retrieve up to five relevant immutable source excerpts for a topic or project, with exact provenance and transparent ranking.",
 			{ topic: z.string().describe("Topic domain or project name to look up") },
 			READ_ONLY_TOOL_ANNOTATIONS,
 			async ({ topic }) => {
@@ -2882,13 +2926,17 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 		// Tool: get_deep
 		this.server.tool(
 			"get_deep",
-			"Get the full entry including all evidence and evolution history. Use when you need detailed provenance.",
-			{ id: z.string().describe("Entry ID (ke_xxx for knowledge, pe_xxx for project)") },
+			"Get every chunk from the source document containing an evidence result. In legacy mode, return the stored knowledge or project entry.",
+			{ id: z.string().describe("Evidence ID ev_xxx in source-first mode; legacy ke_xxx or pe_xxx IDs remain available only in legacy mode") },
 			READ_ONLY_TOOL_ANNOTATIONS,
 			async ({ id }) => {
 				const redis = this.getRedis(this.env);
-				if (this.env.SOURCE_FIRST_MODE === "on" && id.startsWith("ev_")) {
-					return { content: [{ type: "text", text: JSON.stringify(await getSourceFirstEvidence(redis, id)) }] };
+				if (this.env.SOURCE_FIRST_MODE === "on") {
+					return { content: [{ type: "text", text: JSON.stringify(
+						id.startsWith("ev_")
+							? await getSourceFirstEvidence(redis, id)
+							: { error: "source_first_evidence_id_required", expected_prefix: "ev_", id }
+					) }] };
 				}
 				const type: EntryType = id.startsWith("pe_") ? "project" : "knowledge";
 				const entry = await this.loadEntry(redis, type, id);
@@ -2902,14 +2950,14 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 		// Tool: search
 		this.server.tool(
 			"search",
-			"Search personal knowledge. In source-first mode results are immutable evidence excerpts ranked by semantic match, lexical overlap, source authority, and source date, with exact provenance returned.",
+			"Search immutable source-first evidence with exact provenance, checksum deduplication, a relevance floor with explicit abstention, and a transparent relevance-gated attention lift for recent Claude Code/Codex working context.",
 			{
 				query: z.string().describe("Search query"),
 				limit: z.number().optional().describe("Max results (default 5)"),
-				tier_filter: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional()
-					.describe("Optional tier filter: 1, 2, or 3"),
-				suppress_access_signals: z.boolean().optional()
-					.describe("Set true for synthetic/benchmark traffic (e.g. eval probes): skips the access-count/last-accessed reinforcement write so the query does not count as organic use"),
+					tier_filter: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional()
+						.describe("Legacy-mode compatibility only; ignored by source-first retrieval"),
+					suppress_access_signals: z.boolean().optional()
+						.describe("Legacy-mode compatibility only; source-first retrieval never writes access signals"),
 			},
 			READ_ONLY_TOOL_ANNOTATIONS,
 			async ({ query, limit, tier_filter, suppress_access_signals }) => {
@@ -3974,7 +4022,11 @@ export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const url = new URL(request.url);
 		const baseUrl = getBaseUrl(url);
-		if (sourceFirstWritesDisabled(env) && request.method !== "GET" && url.pathname.startsWith("/ops/dream/")) {
+		if (
+			sourceFirstWritesDisabled(env)
+			&& request.method !== "GET"
+			&& (url.pathname.startsWith("/ops/dream/") || url.pathname.startsWith("/ops/maintenance/"))
+		) {
 			return withCors(
 				request,
 				Response.json(

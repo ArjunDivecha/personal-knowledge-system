@@ -1,817 +1,159 @@
 # Personal Knowledge System
 
-This repository is building a personal memory layer for AI assistants.
+PKS is Arjun's source-backed memory service for AI assistants. Production is a
+single read-only, source-first system: it builds immutable evidence generations
+from authoritative project files, explicit operating-memory files, curated
+records, and a bounded window of recent Claude Code and Codex sessions.
 
-The goal is not just to store past conversations. The goal is to turn a long stream of chats, coding sessions, repositories, and email into a living memory system that can:
+The older entry store, tiers, salience, reconsolidation, and Dream machinery
+remain in the repository as legacy code and audit history. They do not maintain
+or validate the production corpus.
 
-- remember stable identity and project context
-- surface the right memories for the current question
-- avoid flooding the model with one-off facts
-- gradually consolidate what matters
-- eventually "dream" over old material and keep only the useful residue
+## Production architecture
 
-This README is meant to explain the system, not to present it as a turnkey template. The codebase is private, opinionated, and tied to one operator's local machine, Cloudflare account, and Upstash databases.
+One complete generation contains:
 
-## What We Are Building
+- authoritative README, PRD, spec, report, handoff, FABLE, and ARJUN files;
+- explicitly configured operating-policy and curated-memory files;
+- recent redacted Claude Code and Codex conversational context;
+- a project catalog derived from real source folders and timestamps;
+- vectors, exact-identifier maps, project maps, source-family maps, checksums,
+  suppressions, and a manifest under the same generation ID.
 
-At a high level, the system has five layers:
+Recent sessions are not a second memory lane. They use the same
+`EvidenceRecord`, publication transaction, vector namespace, Redis namespace,
+and search calculation as durable files. They are marked `working_context`,
+retain lower authority than durable sources, and receive only a small
+semantic-relevance-gated attention lift with a three-day half-life.
 
-1. Ingestion
-   It pulls raw material from AI conversation exports, coding-agent sessions, GitHub, and Gmail.
-2. Distillation
-   It turns raw material into structured memory entries with provenance.
-3. Storage
-   It stores those entries in Redis and their embeddings in Upstash Vector.
-4. Retrieval
-   It serves the memory through a Cloudflare-hosted MCP server with tier-aware search and thin-index summaries.
-5. Maintenance
-   It will promote, demote, consolidate, and archive memories over time through reconsolidation and Dream jobs.
+## Retrieval contract
 
-The end state is a memory system that behaves less like a document archive and more like a selective autobiographical memory.
+The live Cloudflare Worker is under `cloudflare-mcp/mcp-server/` and production
+sets `SOURCE_FIRST_MODE=on`.
 
-## The Full System Vision
-
-The target system has these behaviors:
-
-- durable identity and long-lived project context should be available by default
-- recurring but lower-priority context should appear when it is relevant
-- one-off facts should stay retrievable without constantly taking up context window space
-- repeated retrieval should strengthen memories
-- stale or low-value memories should be archived, not deleted blindly
-- nightly or scheduled "Dream" runs should reconcile the current self-model from accumulated experience
-
-That full design is larger than what is currently live. Some parts are already running in production; some are the next phases.
-
-## Why Forgetting Matters
-
-There is a specific kind of irritation that comes from watching an intelligent system confidently misread you.
-
-I was deep in a conversation about country equity rotation signals, the kind of technical discussion that represents the actual center of my professional life, when Claude helpfully suggested that I might want to think about the question through the lens of Ayurvedic medicine because I had apparently expressed interest in Panchakarma once, in a single conversation, three months earlier.
-
-I had asked one question. I did not need that interest preserved in perpetuity.
-
-This is not Claude's fault. It is the fault of how AI memory systems are usually designed.
-
-Most deployed AI memory systems run on what I think of as single-gate ingestion:
-
-- did something appear in a conversation?
-- yes
-- store it forever
-- full weight
-- no decay
-- no frequency threshold
-
-There is no mechanism to distinguish between something discussed across a hundred professional conversations spanning decades and something mentioned once on a slow Tuesday. Everything that clears the gate is treated as equally durable, equally salient, and equally worthy of surfacing later.
-
-The brain does not work this way.
-
-Modern memory research makes the point clearly: optimal memory is not maximal memory. During slow-wave sleep, the hippocampus replays recent experience selectively, not uniformly. Weak signals do not consolidate like strong ones. The Synaptic Homeostasis Hypothesis proposes that sleep globally downscales synaptic strength while preserving stronger connections proportionally better, improving signal-to-noise ratio. The goal of memory is not to retain everything. The goal is to improve future decisions.
-
-That is the design principle behind this repository.
-
-The system is being rebuilt around a simple premise:
-
-- forgetting is not failure
-- forgetting is how a memory system becomes useful
-
-### What The Old System Got Wrong
-
-Before the current upgrade, the memory layer behaved too much like a write-only archive.
-
-Entries such as:
-
-- "Ayurvedic medicine — Panchakarma therapy"
-- "NFL playoff psychology"
-
-could sit at effectively the same retrieval weight as:
-
-- "30 years in quantitative investing"
-- "Senior Advisor at GMO"
-
-The system had no real evidence model. It had almost no way to distinguish durable identity from incidental curiosity. It also was not properly learning from use: access counters and last-accessed timestamps were not wired into retrieval behavior, so the store could accumulate entries without any feedback loop telling it which ones continued to matter.
-
-The result was completeness without judgment.
-
-### Evidence Strength
-
-The first structural change was to make the system aware of what it does not yet know: how strong the evidence is behind any given memory.
-
-Every entry now carries a `context_type`, a classification of why the information is being stored. The taxonomy runs from stable identity and active project context down to task-query and passing-reference material.
-
-Every entry also carries a `mention_count`, which tracks how many independent source conversations or source clusters surfaced that topic. This is the frequency signal the system uses to distinguish a durable pattern from a one-off appearance.
-
-From there, the system derives an `injection_tier`:
-
-- Tier 1
-  Stable identity, stated preferences, and active projects.
-- Tier 2
-  Recurring patterns and medium-priority topic-adjacent context.
-- Tier 3
-  Passing references and direct-query-only material.
-
-The important property is that Tier 3 material does not need to vanish to stop being intrusive. It can remain fully retrievable while no longer surfacing uninvited.
-
-### The Salience Function
-
-Evidence strength is not binary. It is continuous, and it changes over time.
-
-The salience model in this repository combines:
-
-- recency decay, with different half-lives by context type
-- mention frequency, with diminishing returns
-- type multipliers, so identity and project context are not treated like passing references
-- a small retrieval bonus, so repeatedly used memories can strengthen over time
-
-This lets the system represent a practical difference between:
-
-- a core professional identity fact that should remain available indefinitely
-- a one-off query that should become functionally invisible unless reinforced
-
-This is the software analog of strategic forgetting: preserve what matters, but stop letting weak traces compete for attention forever.
-
-### The Dream Job
-
-The most ambitious part of the design is the Dream job.
-
-Dream is live as a governed maintenance path. The scheduler, audit trail,
-candidate discovery loop, proposal generation, deterministic grading, bounded
-apply, rollback mechanics, deterministic duplicate merge, contradiction
-handling, judge queue, and write-capable operator tools are implemented. The
-nightly Worker runs governed live apply directly from the schedule; it is not
-controlled by proposal-only/off-mode environment switches.
-
-The intended structure is:
-
-1. Survey
-   Load active entries, compute salience, and bucket them into stable, active, weak, and decay candidates.
-2. Replay
-   Scan recent activity for repeated topics, contradictions, promotion candidates, and duplicates.
-3. Propose
-   Create a bounded mutation plan with evidence, expected revisions, and rollback metadata.
-4. Grade
-   Run deterministic hard gates before any live mutation is allowed.
-5. Apply And Verify
-   Apply only explicitly approved operations, then verify index/search/vector consistency.
-6. Roll Back
-   Restore from apply artifacts when current revisions still match the expected post-apply state.
-
-The point of Dream is not to erase the past. The point is to keep the active memory layer aligned with what remains useful.
-
-### Reconsolidation On Retrieval
-
-The shorter-horizon companion to Dream is reconsolidation on retrieval.
-
-This is now live. The behavior is straightforward:
-
-- every meaningful retrieval becomes a write event
-- access count increments
-- last accessed updates
-- the system can reconsider whether the memory has earned a stronger context type or tier
-
-In other words, use matters. A memory that continues to be retrieved across different conversations should not be treated the same way as one that was never touched again after ingestion.
-
-### The Larger Point
-
-The problem here is not specific to Claude. It is a design philosophy problem that shows up across AI memory systems.
-
-Most systems are optimized for recall coverage:
-
-- do not miss anything
-- do not forget anything
-- preserve everything forever
-
-But a memory system that never forgets is not automatically intelligent. It may simply be a system that traded judgment for completeness.
-
-The brain solved this a long time ago:
-
-- fast encoding
-- slow integration
-- selective replay
-- active weakening of noise
-- durable retention for what survives repeated relevance
-
-That is the model this repository is trying to approximate.
-
-The goal is not a perfect record.
-
-The goal is a memory system that gets better at representing what matters.
-
-## System Model
-
-Current high-level schema:
-
-![Personal Knowledge System architecture](docs/assets/pks-architecture-schema.png)
+Search uses one transparent score:
 
 ```text
-Raw Sources
-  Claude exports
-  ChatGPT exports
-  GitHub repos
-    README / commits / code comments
-    repo-attached Claude Code / Codex CLI / Cursor context
-  Gmail
+base_score =
+    0.70 * semantic_similarity
+  + 0.15 * lexical_overlap
+  + 0.10 * source_authority
+  + 0.05 * source_recency
 
-        |
-        v
+working_context_bonus =
+    0.08 * semantic_similarity * exp(-ln(2) * age_days / 3)
 
-Ingestion + Distillation
-  Python pipelines extract structured entries
-  Models assign provenance, summaries, and embeddings
-  Migration/backfill scripts normalize old data
-
-        |
-        v
-
-Memory Store
-  Upstash Redis
-    knowledge:{id}
-    project:{id}
-    index:current
-    migration flags
-    future Dream/reconsolidation state
-
-  Upstash Vector
-    one embedding per active entry
-    metadata for retrieval filters and scoring
-
-        |
-        v
-
-Retrieval Layer
-  Cloudflare Worker MCP server
-  OAuth-enabled public interface
-  thin index
-  semantic search
-  context retrieval
-  health/status endpoint
-
-        |
-        v
-
-Future Maintenance Layer
-  reconsolidation on repeated access
-  Dream coordinator and archive pipeline
-  operator tools for restoration and overrides
+final_score = min(1, base_score + working_context_bonus)
 ```
 
-## Memory Model
+Exact identifiers and explicitly named projects retain ordering priority.
+Byte-identical evidence collapses on `content_checksum`, with alternate source
+paths retained. General results must clear a `0.65` final-score floor; otherwise
+the service explicitly abstains and returns no evidence.
 
-The system stores two primary entry types:
+The main read tools are:
 
-- `KnowledgeEntry` (`ke_*`)
-  A durable belief, skill, preference, technique, or topic model.
-- `ProjectEntry` (`pe_*`)
-  An ongoing effort with goals, status, phase, blockers, and decisions.
+- `get_index` — current generation and project catalog;
+- `search` / `get_context` — source-backed excerpts and score components;
+- `get_deep` — every sibling chunk from one `ev_*` evidence source;
+- `get_validation_status` — current source-first generation and freshness;
+- `get_dream_summary` — the same source-first status plus explicit notice that
+  Dream is retired from production maintenance;
+- `health` — Worker build identity, generation, and source/session freshness.
 
-Each entry has a `schema_version` and migration-safe metadata. The important fields in the current design are:
+Legacy write and Dream tools may remain in the MCP schema for compatibility.
+They are disabled or non-authoritative in production source-first mode.
 
-- `context_type`
-  What kind of memory this is: identity, project, pattern, task-query, and so on.
-- `injection_tier`
-  How aggressively this memory should be surfaced.
-- `salience_score`
-  A score derived from confidence, recency decay, mention frequency, context type, and recent retrieval.
-- `classification_status`
-  Whether the entry has been backfilled/classified yet.
-- `archived`
-  Whether the entry should be excluded from normal retrieval.
+## Atomic rebuild and scheduling
 
-### Retrieval Tiers
+`.github/workflows/source-first-rebuild.yml` is the only scheduled production
+maintenance path. GitHub schedules it every two hours on the self-hosted macOS
+runner that can read the local Dropbox and agent-session sources. There is no
+PKS serving LaunchAgent or local cron.
 
-The system is moving toward a three-tier memory model:
+Each run:
 
-- Tier 1
-  Durable identity, long-running projects, and context that should often be available.
-- Tier 2
-  Recurring, topic-adjacent, or medium-priority context.
-- Tier 3
-  One-off or direct-query-only context that should stay searchable but not dominate context injection.
+1. scans, redacts, chunks, and checksums all configured evidence;
+2. stages a complete candidate without moving `sf:current_generation`;
+3. verifies Redis records, vectors, project maps, and source maps;
+4. runs the exact production Worker retrieval implementation against the staged
+   generation, including negative-control abstention;
+5. promotes by writing the heartbeat and live pointer only after every gate
+   passes;
+6. verifies the now-serving generation and uploads text-free build diagnostics.
 
-This tiering is the main mechanism for preventing the memory system from becoming a pile of equally weighted notes.
+A failed scan, publish, verification, or retrieval evaluation leaves the last
+good generation live.
 
-## Retrieval Model
+## Commands
 
-The production MCP server exposes:
+Build local artifacts without remote writes:
 
-- `get_index`
-  Returns the thin-index subset plus true totals and tier counts.
-- `get_context`
-  Returns the current view of the best matching active topic or project.
-- `get_deep`
-  Returns the full stored entry with provenance.
-- `search`
-  Performs tier-aware semantic retrieval.
-- `github`
-  Queries linked GitHub repositories live.
+```bash
+ingestion/.venv/bin/python scripts/source_first_rebuild.py
+```
 
-Search no longer uses a simple "70% relevance + 30% recency" rule. The current design scores and ranks results using:
+Stage a remote candidate without moving the serving pointer:
 
-- semantic similarity
-- recency
-- salience
-- source weights
-- retrieval tier
+```bash
+ingestion/.venv/bin/python scripts/source_first_rebuild.py --stage
+```
 
-Archived entries remain in storage but are excluded from normal retrieval by default.
+Verify or promote a staged generation:
 
-## Thin Index
+```bash
+ingestion/.venv/bin/python scripts/source_first_rebuild.py --verify-generation sf_YYYYMMDDTHHMMSSZ
+ingestion/.venv/bin/python scripts/source_first_rebuild.py --promote-generation sf_YYYYMMDDTHHMMSSZ
+```
 
-The thin index is the compressed map of the memory system.
+Verify production freshness and storage completeness:
 
-It is intentionally not a full dump of every entry. It stores:
+```bash
+ingestion/.venv/bin/python scripts/source_first_rebuild.py --verify-current --max-age-hours 36
+```
 
-- a tier-stratified subset of topics and projects (up to 100 total: 15 T1 slots, 25 T2 slots, 60 T3 slots)
-- true total topic/project counts
-- tier counts
-- archive counts
-- recent evolution summaries (carried forward from the prior index)
+Run focused tests:
 
-This lets a client get a fast overview of the memory landscape without paying the cost of loading the entire store.
+```bash
+ingestion/.venv/bin/python -m unittest discover -s tests/python -p 'test_source_first.py'
+cd cloudflare-mcp/mcp-server
+npm run type-check
+npm run test:worker -- test/sourceFirst.test.ts
+```
 
-## Dream And Reconsolidation
-
-These are the main pieces still being built.
-
-### Reconsolidation
-
-Reconsolidation is the short-horizon maintenance loop. The idea is:
-
-- retrieval increments access counters
-- frequently re-accessed memories get promoted or refreshed
-- repeated retrieval can strengthen salience
-- the system records consolidation notes and errors
-
-This is Phase 4 work and is live.
-
-### Dream
-
-Dream is the long-horizon maintenance loop. The idea is:
-
-- run on a schedule
-- revisit the memory graph in batches
-- keep durable context
-- archive low-value memories with reversible pointers
-- rebuild the current self-model without re-injecting everything forever
-
-Dream is retained as legacy governance code and audit history. With the source-first cutover (`SOURCE_FIRST_MODE=on`), its MCP tools, operator mutation routes, scheduler, and maintenance queue are disabled; new memory is rebuilt from authoritative source files and promoted atomically by `.github/workflows/source-first-rebuild.yml`.
-
-### Current Scheduling Model
-
-The active source-first schedule is deliberately small:
-
-- GitHub Actions runs Twitter ingestion remotely at `05:40 UTC`
-- GitHub Actions runs GitHub ingestion, including repo-attached agent context, at `06:10 UTC`
-- The source-first rebuild workflow runs remotely at `06:30 UTC`; the retired Dream scheduler is not part of the live source-first path.
-
-Repo-attached AI context is exported locally at commit time into
-`.pks/agent-context/` and then picked up by the nightly GitHub ingestion job.
-That keeps the automated nightly path remote while still associating the chat
-history with the repository itself. The workflow lives at
-`.github/workflows/github-ingestion.yml`.
-
-Twitter ingestion is scheduled remotely because the source data comes from the
-X API rather than local files. The workflow lives at
-`.github/workflows/twitter-ingestion.yml` and uses a Redis-backed checkpoint so
-scheduled runners do not lose incremental state when the GitHub Actions runner
-is destroyed.
-
-Local machine ingestion still handles local-only AI session sources. The
-launchd wrapper is `scripts/run_nightly_ingestion.sh`; it sources the repo
-root `.env`, expands launchd's minimal `PATH`, verifies the ingestion venv,
-and fails fast if the Claude CLI cannot be found.
-
-#### Nightly resilience (2026-06-10 re-architecture)
-
-- **Upstash storage preflight**: before any stage runs, the wrapper polls the
-  Redis + Vector REST endpoints every 2 minutes for up to 30 minutes. A
-  transient cloud outage at 23:00 becomes a short delay, not a dead night.
-- **Per-stage retry**: a hard-failed stage is retried once after 5 minutes
-  (`NIGHTLY_STAGE_RETRY_DELAY` to tune). Exit code 2 (partial) is not retried.
-- **PARTIAL/WARN semantics**: `ingestion/github/run.py` exits **2** when some
-  repos failed extraction but all successful entries were saved (failed repos
-  auto-retry next night). The night is recorded as OK-with-warnings
-  (`warn_stages` in `nightly_ingestion_success.json`), not FAILED. Only hard
-  failures (storage down, save failed) fail the night.
-- **02:00 second chance**: `scripts/run_second_chance.sh`
-  (launchd `com.arjun.knowledge-ingestion-2am`) re-runs the whole idempotent
-  ingestion if the 23:00 run failed or never completed.
-- **07:00 NightWatch digest**: `/Users/arjundivecha/Dropbox/AAA Backup/A
-  Working/NightWatch/night_supervisor.py` reads the success marker and sends a
-  consolidated morning iMessage covering this and every other overnight system.
-
-#### Claude Billing Route (SDK primary, API fallback, never skip)
-
-Both the local wrapper and all three ingestion workflows
-(`twitter-ingestion.yml`, `github-ingestion.yml`,
-`agent-session-ingestion.yml`) select a Claude billing route before fetching
-any source data:
-
-1. A non-interactive preflight,
-   `scripts/check_claude_sdk_auth_noninteractive.py`, probes whether Claude
-   Agent SDK subscription auth works in this process.
-2. If it does, ingestion uses the SDK subscription route
-   (`PKS_ALLOW_ANTHROPIC_API_FALLBACK=0`).
-3. If it does not, ingestion routes to the project Anthropic API key as a
-   bounded fallback (`PKS_ALLOW_ANTHROPIC_API_FALLBACK=1`, with per-call and
-   per-run budget/call caps). Ingestion is **never** silently skipped, and the
-   wrapper fails loudly if fallback is needed but no `ANTHROPIC_API_KEY` exists.
-
-The preflight is deliberately **no-browser**. A self-hosted runner or launchd
-job has no interactive session, so a naive SDK auth probe could start an OAuth
-login *browser* flow (a listener on `localhost:18043`, `oauth/callback` URLs)
-and, when several jobs run at once, multiply into a session storm. The wrapper
-hardens the child environment (`CI=1`, `BROWSER=/usr/bin/false`,
-`GIT_TERMINAL_PROMPT=0`, and scrubs `ANTHROPIC_API_KEY` so it tests
-subscription auth specifically), runs the probe in its own process group under
-a hard timeout, and SIGKILLs that group if it stalls. The workflows and the
-launchd wrapper also export `BROWSER=/usr/bin/false` for the whole run as a
-second guard. The Dream judge still uses the Claude subscription CLI path and
-does not enable API fallback unless `DREAM_ALLOW_ANTHROPIC_API_FALLBACK=1` is
-set explicitly.
-
-Cloudflare Worker deploys should use:
+Deploy the production Worker:
 
 ```bash
 bash scripts/deploy_cloudflare_worker.sh
 ```
 
-The script sources `.env`, requires `CLOUDFLARE_API_TOKEN`, and deploys the
-production Worker with `npx wrangler deploy --env=""`.
-
-## Source-First Serving Mode
-
-The current cutover path is the source-first generation served by
-`SOURCE_FIRST_MODE=on`. It is intentionally read-only: legacy MCP write tools,
-Dream mutation routes, the scheduled mutation loop, and the maintenance queue
-are disabled while this mode is active. New memory enters through the
-source-backed rebuild workflow at `.github/workflows/source-first-rebuild.yml`.
-
-Every promoted generation writes an immutable manifest plus the `sf:heartbeat`
-record. `/health` reports the current generation, publication time, age, and a
-`fresh`/`stale`/`missing` freshness status. The rebuild workflow refuses to
-accept a generation older than 36 hours and runs the committed eight-axis
-retrieval regression gate against `tests/baselines/retrieval_baseline.json`
-before promotion. That baseline was re-established on 2026-08-09 after the
-source-first cutover and the probe suite was aligned to current authoritative
-files. The latest production run has 50 enabled probes and 7 drafts: all eight
-measured axes passed (retrieval, project, explicit-save, exact-lexical,
-supersession, negative, and paraphrase at 1.000; stale-leak rate at 0.000)
-with zero transport errors. Retired legacy facts remain preserved as disabled
-drift candidates rather than being treated as current truth.
-
-## What Is Live Today
-
-As of June 3, 2026, the live system has:
-
-- `4,620` total topics in the thin-index accounting
-- `34` active projects
-- schema version `2`
-- completed Phase 1, Phase 2, Phase 3, and Phase 4 of the current memory upgrade
-- `0` pending classifications in `classification:pending`
-- thin-index counts of `887` Tier 1, `1,125` Tier 2, `2,642` Tier 3
-- `4,968` archived entries at the time of the latest health check
-- latest deployed source-first code serves an immutable promoted generation
-- the legacy Dream judge queue and mutation scheduler are disabled in production
-- generation freshness and retrieval regression checks are promotion gates
-
-Operationally, the following are live:
-
-- Python ingestion/distillation pipelines
-- shared salience policy between Python and TypeScript
-- vector metadata normalization
-- rebuilt thin index with tier/salience metadata
-- OAuth-enabled Cloudflare MCP server
-- background reconsolidation on retrieval
-- legacy write-capable MCP tools retained only for staging/rollback compatibility; disabled in the live source-first mode
-- remote scheduled Twitter/X ingestion with Redis-backed incremental state
-- remote scheduled GitHub ingestion with repo-attached Claude Code, Codex CLI, and Cursor context
-- local nightly ingestion for local-only AI session logs, with Redis-backed checkpointing and local checkpoint fallback
-- nightly governed-live Dream scheduler and audit records
-- deterministic Dream proposal grading
-- bounded Dream apply and conflict-aware rollback mechanics
-- deterministic duplicate merge and contradiction handling in Dream replay
-- Dream judge queue with local Claude CLI verdicting
-- `/health` and `/status` rollout endpoints
-
-Not live yet:
-
-- external-runner fallback for heavier Dream work
-
-## How The Repo Is Organized
-
-```text
-knowledge-system/
-  ingestion/
-    github/, gmail/, agent_sessions/
-    Python ingestion pipelines for ongoing raw-source intake
-
-  distillation/
-    Original export-processing pipeline for Claude/ChatGPT data
-    Also contains storage clients, models, and thin-index generation
-
-  scripts/
-    Migration, verification, ingestion-billing, and health-monitor scripts
-    backfill_context_type.py
-    backfill_counts.py
-    verify_memory_consistency.py
-    check_claude_sdk_auth_noninteractive.py   no-browser SDK auth preflight
-    nightly_health_monitor.py                 preflight / snapshot / verify
-    oauth_storm_watcher.sh                    OAuth storm tripwire (detect-only)
-
-  shared/
-    Cross-language policy files
-    memory_policy.json
-    salience_fixtures.json
-
-  cloudflare-mcp/mcp-server/
-    Production MCP server
-    Cloudflare Worker, OAuth wrapper, retrieval tools
-
-  mcp-server/
-    Legacy server implementation
-    Not the production target
-
-  docs/
-    PRDs, audit notes, and upgrade checklists
-
-  skill/
-    Claude skill instructions for using the memory system
-```
-
-## Operational Surfaces
-
-### Worker Endpoints
-
-The public Worker exposes:
-
-- `/sse`
-- `/mcp`
-- `/authorize`
-- `/token`
-- `/register`
-- `/.well-known/oauth-authorization-server`
-- `/health`
-- `/status`
-
-### Health Endpoint
-
-`/health` and `/status` are the main operator-facing rollout checks. They report:
-
-- schema version
-- migration completion state
-- pending classification count
-- source-first generation, heartbeat, and freshness status
-- thin-index totals
-- tier counts
-- archived count
-
-### Source-First Freshness Check
-
-The source-first freshness check is:
-
-```bash
-set -a; source .env; set +a
-ingestion/.venv/bin/python scripts/source_first_rebuild.py --verify-current --max-age-hours 36
-```
-
-It validates the promoted source-first generation against its manifest and
-`sf:heartbeat`; a passing generation must be complete and no more than 36 hours
-old. Retrieval quality is checked separately by the eight-axis regression gate
-before each source-first promotion.
-
-The rebuild workflow uploads the manifest, project map, suppression rules, and
-retrieval-eval report as durable run artifacts. The retired Dream sleep-report
-workflow is not part of the source-first serving path.
-
-The live judge queue can be inspected through the operator endpoint:
-
-```bash
-set -a; source .env; set +a
-curl -sS -H "Authorization: Bearer $DREAM_OPERATOR_TOKEN" \
-  https://mcp.dancing-ganesh.com/ops/dream/judge_queue
-```
-
-### Migration Scripts
-
-The upgrade work introduced three important operator scripts:
-
-- `scripts/backfill_context_type.py`
-  LLM classification pass for old entries.
-- `scripts/backfill_counts.py`
-  Deterministic metadata/vector normalization and thin-index rebuild.
-- `scripts/verify_memory_consistency.py`
-  Redis vs Vector vs thin-index verification.
-
-These scripts are how the repo moved from legacy mixed-schema data to the current retrieval model.
-
-### Nightly Ingestion Health Monitoring
-
-`scripts/nightly_health_monitor.py` is the end-to-end health check for the
-nightly ingestion run. It is read-only against production storage and has three
-modes:
-
-```bash
-# Readiness checks (env keys, source dirs, claude CLI, agent-sdk import,
-# Redis/Vector connectivity, and the no-browser SDK preflight). No browser opens.
-ingestion/.venv/bin/python scripts/nightly_health_monitor.py preflight
-
-# Capture observable state (storage counts, per-source dedup counts, checkpoints)
-# once before and once after a run.
-ingestion/.venv/bin/python scripts/nightly_health_monitor.py snapshot --label before --out /tmp/before.json
-ingestion/.venv/bin/python scripts/nightly_health_monitor.py snapshot --label after  --out /tmp/after.json
-
-# Per-pipeline PASS/WARN/FAIL report (also scans the run log for errors and any
-# OAuth/browser-storm references, scoped to the most recent run in the daily log).
-ingestion/.venv/bin/python scripts/nightly_health_monitor.py verify \
-  --before /tmp/before.json --after /tmp/after.json \
-  --log ingestion/logs/nightly/$(date +%F).log --out /tmp/nightly_report
-```
-
-A clean incremental run reports `WARN` when a pipeline simply found nothing new;
-`FAIL` means the run did not complete, the log contained errors, or any
-browser/OAuth-storm reference appeared.
-
-`scripts/oauth_storm_watcher.sh` is a **detect-and-alert-only** tripwire meant
-to run in the background alongside a nightly run. It polls for a new (non-baseline)
-listener on port `18043` or an `oauth/callback` process and logs an `ALERT` if it
-sees one. It deliberately does **not** kill anything: port `18043` is also used
-legitimately by the `mcp-remote` knowledge-Worker client and by the no-browser
-preflight's own sandboxed probe, so killing risks taking down legitimate clients
-(or the run itself). The storm is prevented at the source by the no-browser
-preflight; this watcher is just a secondary tripwire. Stop it by creating
-`<log>.stop` or sending `SIGTERM`. The verification logic and the no-browser
-preflight are covered by `tests/python/test_nightly_health_monitor.py` and
-`tests/python/test_check_claude_sdk_auth_noninteractive.py`.
-
-### Nightly Fault Isolation
-
-`scripts/run_nightly_ingestion.sh` runs each pipeline (Twitter, GitHub, Agent
-sessions, Dream judge) as an isolated **stage**: a stage failure is logged and
-recorded but never aborts the remaining stages. (Previously a single repo's
-malformed-JSON README aborted GitHub, and `set -e` then skipped agent-sessions
-and Dream.) The success marker now always records per-stage exit codes plus an
-`ok` flag and a `failed_stages` list, and the wrapper exits non-zero if any
-hard stage (Twitter/GitHub/Agent sessions) fails — Dream judge is a tolerated
-soft stage. Relatedly, GitHub extraction isolates per-repo failures: a repo
-whose extraction fails is left unmarked (retried next run) while the repos that
-succeeded are still saved, and LLM JSON output is parsed tolerantly via
-`json-repair` so a single malformed model response is repaired rather than
-fatal.
-
-## Validation Strategy
-
-This repo now has an explicit testing plan. The goal is to validate the full memory loop, not just confirm that individual scripts exit successfully.
-
-The three operating layers are:
-
-- fixture tests for deterministic logic and policy behavior
-- staging end-to-end tests against isolated Redis, Vector, and Worker infrastructure
-- production canaries for bounded live verification only
-
-The testing system is documented in [docs/testing-matrix.md](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/knowledge-system/docs/testing-matrix.md).
-
-The root [Makefile](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/knowledge-system/Makefile) is the command surface for this work. The current starter commands are:
-
-- `make worker-typecheck`
-- `make worker-test`
-- `make test-python-checker`
-- `make verify-memory-full`
-- `make check-overnight-dream`
-- `make seed-staging-dry-run`
-- `make staging-smoke-dry-run`
-- `make staging-smoke`
-- `make worker-secrets-staging`
-- `make deploy-staging`
-- `make dream-live-canary`
-
-### Retrieval-quality eval baseline (added 2026-07-06)
-
-`scripts/run_eval.py` runs the probe suite in [tests/probes/](tests/probes/README.md)
-(8 axes: recall, project, explicit-save, exact-lexical, stale-fact, supersession,
-negative, paraphrase) read-only against production or staging and writes
-`scripts/reports/eval_baseline_<UTC>.json`. `--compare OLD NEW` diffs two reports
-(the shadow A/B safety rail for retrieval changes). Design and metric definitions:
-`../PRD-eval-baseline-v1.md`. Rule: no ranking/forgetting/admission change ships
-without a before/after eval diff.
-
-Current source-first baseline (2026-08-09, 50 enabled probes): all measured
-retrieval axes pass at 1.00, stale-leak rate is 0.00, and the run completed with
-zero errors. Opaque identifiers and paths are covered by the source-first exact
-term index; probes no longer assert retired legacy facts. The LLM-judge for
-future answer-mode scoring is DeepSeek V4 Flash via the direct API.
-
-The long-term rule is simple: production is not the default test bed.
-
-The staging smoke path is now governance-shaped. It covers:
-
-- fixture seeding into isolated staging Redis and Vector
-- staging Worker `/health`
-- unauthorized operator rejection
-- Dream proposal generation on staging
-- deterministic Dream proposal grading
-- bounded proposal apply on staging
-- post-apply verification
-- conflict-aware rollback on staging
-- post-rollback verification
-- validation-ledger recording for `staging_e2e`
-- `/openai/mcp` read-only compatibility
-- OAuth discovery, client registration, auth-code exchange, and bearer-token issuance
-- MCP `initialize`, `tools/list`, `get_index`, `search`, `get_context`, and `get_dream_summary`
-- final Redis vs Vector vs thin-index consistency verification
-
-There is now also a local Worker-runtime test layer under [cloudflare-mcp/mcp-server/test](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/knowledge-system/cloudflare-mcp/mcp-server/test). It runs inside Cloudflare's `workerd` runtime and covers:
-
-- `/health`
-- unauthorized operator rejection
-- OAuth discovery, client registration, auth-code exchange, and token issuance
-- MCP `initialize`, `tools/list`, `get_index`, and `get_dream_summary`
-- write-tool rejection without `mcp:write`
-- scheduled governed-live Dream trigger wiring
-
-That local test layer is automated in GitHub Actions at [.github/workflows/worker-runtime-tests.yml](/Users/arjundivecha/Dropbox/AAA%20Backup/A%20Working/Memory/knowledge-system/.github/workflows/worker-runtime-tests.yml).
-
-## Current Upgrade Status
-
-The repository is in the middle of a larger PKS memory upgrade.
-
-Completed:
-
-- Phase 0 audit and gap analysis
-- Phase 1 schema and migration hooks
-- Phase 2 live backfill and normalization
-- Phase 3 tier-aware retrieval and rollout status endpoint
-- Phase 4 reconsolidation on retrieval
-- Phase 5 Dream control plane, archive/restore path, replay heuristics, and staging validation
-- Phase 6 operator tool surface and write-scope enforcement
-
-Next:
-
-- richer Dream replay logic beyond the current deterministic duplicate/contradiction heuristics
-- Phase 7 evidence log and compiled-view separation, so contradictions can be resolved at the source while superseded claims remain preserved as evidence
-- ingestion hardening and source-fusion improvements
-- broader fixture and ranking coverage in the automated test stack
-
-The upgrade checklist lives in `docs/pks-memory-upgrade-checklist.md`.
-
-## Important Reading Order
-
-If you are trying to understand the system, read in this order:
-
-1. this README
-2. `docs/pks-memory-upgrade-checklist.md`
-3. `docs/pks-memory-upgrade-phase0-audit-2026-03-26.md`
-4. `cloudflare-mcp/mcp-server/src/index.ts`
-5. `distillation/models/entries.py`
-6. `distillation/pipeline/index.py`
-7. `shared/memory_policy.json`
-
-That path gives the clearest picture of the actual architecture and the upgrade trajectory.
-
-## Design Principles
-
-The system is trying to enforce a few simple rules:
-
-- memory should be selective, not exhaustive
-- provenance matters
-- retrieval quality matters more than raw storage volume
-- the system should prefer reversible archival over destructive cleanup
-- scoring rules should be shared across languages and runtimes
-- health and migration state should be observable, not implicit
-
-## Version History
-
-- **1.2.2** (June 2026)
-  Nightly reliability: fault-isolated stages (one pipeline failure no longer
-  aborts the night), tolerant `json-repair` parsing of LLM extraction output,
-  per-repo isolation in GitHub ingestion (save good repos, retry failed ones),
-  success marker with per-stage status / `ok` / `failed_stages`, sturdier
-  agent-session Redis mirror retries, and a safer detect-only OAuth storm
-  watcher.
-- **1.2.1** (June 2026)
-  No-browser Claude SDK auth preflight (`check_claude_sdk_auth_noninteractive.py`)
-  to stop the ingestion OAuth/browser session storm; SDK-primary / API-fallback /
-  never-skip billing route across all three ingestion workflows and the launchd
-  wrapper; end-to-end nightly health monitor and OAuth storm watcher with tests.
-- **1.2.0** (March 2026)
-  Schema v2 migration, context-type backfill, tier-aware retrieval, shared salience policy, `/health` endpoint, OAuth-enabled Worker deployment.
-- **1.1.0** (March 2026)
-  Agent session ingestion, GitHub repo linking, remote scheduling transition groundwork, model upgrade to Claude Sonnet 4.6.
-- **1.0.1** (March 2026)
-  GitHub and Gmail ingestion pipelines, recency weighting, source-based scoring, thin-index compaction.
-- **1.0.0** (December 2024)
-  Initial implementation with distillation pipeline, Cloudflare MCP server, and Claude integration.
-
-## Current Upgrade Program (2026-07)
-
-`docs/pks-foundational-upgrade-spec-2026-07-07.md` is the active foundational
-upgrade spec (Fable 5 commission): Phase 0 diagnosis of the live store,
-injection/ranking redesign, consolidation + lossless-merge gating, contradiction
-resolution, evaluation harness, and a staged reversible rollout. Its executable
-half lives in `contracts/*.spec.md` — seven Divecha-gated implementation
-contracts (author-validated) meant to be handed to cheaper coding models in
-Build Mode. Start with `contracts/retrieval-regression-gate.spec.md` (stage 0),
-then `usage-signal-loop`, per the rollout table in the spec §6.
-
-## License
-
-Private repository. Not for redistribution.
+## Source map
+
+- `shared/source_first_config.json` — source roots, bounds, authority, and
+  recent-session policy;
+- `ingestion/source_first/scanner.py` — authoritative file discovery;
+- `ingestion/source_first/session_scanner.py` — direct session parsing,
+  mapping, bounds, and pre-persistence redaction;
+- `ingestion/source_first/models.py` — unified immutable evidence contract;
+- `ingestion/source_first/publisher.py` — staged storage, verification, and
+  promotion;
+- `scripts/source_first_rebuild.py` — build/operator CLI;
+- `cloudflare-mcp/mcp-server/src/sourceFirst.ts` — production retrieval and
+  operational health;
+- `tests/probes/` — deterministic retrieval probes;
+- `docs/source-first-memory.md` — detailed product and operator contract;
+- `openwiki/quickstart.md` — code-grounded navigation.
+
+## Legacy boundary
+
+The following are not production-serving sources of truth:
+
+- `ke_*` entries and the old thin index;
+- tier counts, salience, access-count reinforcement, and reconsolidation;
+- Dream runs, validation ledgers over the old entry store, and local nightly
+  ingestion success markers;
+- `mcp-server/`, the older Vercel MCP implementation.
+
+Use them only for explicit legacy investigation. A green legacy gate does not
+prove the production source-first corpus is healthy, and a red legacy Dream
+ledger does not make the production corpus unhealthy.

@@ -1,7 +1,7 @@
 ---
 type: Reference
 title: Source-first rebuild workflow
-description: Nightly build, verify, and atomic-promote lifecycle for source-first memory generations, driven by scripts/source_first_rebuild.py and the GitHub Actions Source-First Memory Rebuild workflow on a self-hosted macOS runner.
+description: Two-hour staged build, retrieval verification, and atomic-promotion lifecycle for source-first memory generations.
 tags: [source-first, workflow, ci, operations]
 openwiki:
   roles: [workflow, operations, delivery]
@@ -45,14 +45,19 @@ the retired nightly semantic-maintenance and sleep-report cron jobs (see
 
 - Scan authoritative source files under configured Dropbox roots and
   explicit pinned files, using `ingestion/source_first/scanner.py`.
-- Chunk, normalize, and checksum each file into immutable `EvidenceRecord`s.
+- Parse and redact recent Claude Code and Codex conversational turns directly,
+  then combine them with file evidence in the same `EvidenceRecord` corpus.
+- Chunk, normalize, and checksum each source into immutable records.
 - Derive a project catalog from real folders and file mtimes.
 - Embed new/changed chunks with `text-embedding-3-large` (3072 dims),
   reusing prior-generation vectors for unchanged checksums.
 - Write the candidate generation into its own Vector namespace and
   generation-scoped Redis keys.
-- Verify every expected vector, Redis record, and project map exists.
-- Only if verification passes, atomically swap `sf:current_generation`.
+- Verify every expected vector, Redis record, project map, and source map exists.
+- Run all enabled retrieval probes against the staged generation using the exact
+  production Worker search implementation.
+- Only if storage and retrieval verification pass, atomically swap
+  `sf:current_generation`.
 - Upload build evidence (manifest, projects, suppressions) as a workflow
   artifact.
 
@@ -72,6 +77,10 @@ Modes:
   `scripts/reports/source_first/<generation>/`). Does not publish.
 - `--publish` — build, publish, and atomically promote. Requires Upstash +
   OpenAI credentials.
+- `--stage` — build and publish an immutable candidate without changing the
+  live pointer.
+- `--verify-generation <id>` — verify a staged generation.
+- `--promote-generation <id>` — promote an already verified candidate.
 - `--verify-current` — verify the currently promoted remote generation
   without building. Exits non-zero if verification fails.
 
@@ -93,7 +102,7 @@ injectable for tests (`redis`, `vector`, `openai` constructor args).
 The `Source-First Memory Rebuild` GitHub Actions workflow is the only
 scheduled maintenance job after cutover:
 
-- `cron: "30 6 * * *"` (06:30 UTC daily), plus `workflow_dispatch` with a
+- `cron: "17 */2 * * *"` (every two hours), plus `workflow_dispatch` with a
   `publish` boolean input (default `true`).
 - Runs on the self-hosted macOS runner (`knowledge-agent-sessions` label)
   because the runner can read the authoritative Dropbox folders on the Mac.
@@ -101,8 +110,8 @@ scheduled maintenance job after cutover:
 - `concurrency.group: source-first-memory-rebuild` with
   `cancel-in-progress: false` so a long run is not interrupted by the next
   schedule.
-- On schedule, `SHOULD_PUBLISH` is `true`; on manual dispatch it follows the
-  `publish` input.
+- Every run stages and candidate-tests a generation. Scheduled runs promote;
+  manual dispatch follows the `publish` input.
 - After a publish, a separate step runs
   `python scripts/source_first_rebuild.py --verify-current`.
 - Build evidence (`manifest.json`, `projects.json`, `suppressions.json`
@@ -112,18 +121,21 @@ scheduled maintenance job after cutover:
 
 ```mermaid
 flowchart TD
-    Start["cron 06:30 UTC or workflow_dispatch"] --> Scan["scanner.iter_source_files + evidence_from_files"]
+    Start["every-two-hours cron or workflow_dispatch"] --> Scan["scan files + parse/redact recent sessions"]
     Scan --> Curated["Merge curated_memory entries"]
     Curated --> Projects["build_projects from real folders + mtimes"]
-    Projects --> GenID["generation_id = sf_YYYYMMDDTHHMMSSZ"]
+    Projects --> Sessions["integrate working_context evidence"]
+    Sessions --> GenID["generation_id = sf_YYYYMMDDTHHMMSSZ"]
     GenID --> WriteArtifacts["write_artifacts to scripts/reports/source_first"]
     WriteArtifacts -->|"no --publish"| DoneLocal["Local build only, pointer unchanged"]
-    WriteArtifacts -->|"--publish"| Embed["publisher: reuse prior vectors, embed missing"]
+    WriteArtifacts -->|"--stage/--publish"| Embed["publisher: reuse prior vectors, embed missing"]
     Embed --> UpsertVec["vector.upsert into generation namespace"]
     UpsertVec --> WriteRedis["redis.mset evidence + project maps + manifest"]
     WriteRedis --> VerifyCounts["Verify every vector, redis record, project map present"]
     VerifyCounts -->|"any missing"| Fail["raise candidate_generation_incomplete, pointer unchanged"]
-    VerifyCounts -->|"all present"| Swap["redis.set sf:current_generation = generation"]
+    VerifyCounts -->|"all present"| CandidateEval["run exact Worker retrieval policy against staged generation"]
+    CandidateEval -->|"any probe fails"| Fail
+    CandidateEval -->|"all probes pass"| Swap["write heartbeat + sf:current_generation"]
     Swap --> VerifyServing["source_first_rebuild.py --verify-current"]
     VerifyServing --> Upload["Upload manifest/projects/suppressions artifact"]
 ```

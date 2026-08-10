@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -18,6 +19,7 @@ from .models import EvidenceRecord, ProjectRecord
 
 CURRENT_GENERATION_KEY = "sf:current_generation"
 HEARTBEAT_KEY = "sf:heartbeat"
+GENERATION_HISTORY_KEY = "sf:generation_history"
 MANIFEST_KEY_PREFIX = "sf:manifest:"
 EMBEDDING_MODEL = "text-embedding-3-large"
 EMBEDDING_DIMENSIONS = 3072
@@ -129,6 +131,7 @@ class SourceFirstPublisher:
         records: list[EvidenceRecord],
         projects: list[ProjectRecord],
         suppressions: dict[str, Any],
+        promote: bool = True,
     ) -> dict[str, Any]:
         previous = self.current_generation()
         vectors = self._previous_vectors(records)
@@ -144,6 +147,9 @@ class SourceFirstPublisher:
                     "source_modified_at": record.source_modified_at,
                     "authority": record.authority,
                     "pinned": record.pinned,
+                    "evidence_role": record.evidence_role,
+                    "session_surface": record.session_surface or "",
+                    "attention_observed_at": record.attention_observed_at or "",
                 }))
             self.vector.upsert(vectors=payload, namespace=generation)
 
@@ -154,12 +160,12 @@ class SourceFirstPublisher:
             }
             self.redis.mset(values)
 
-        published_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        staged_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         full_manifest = dict(manifest)
         full_manifest["record_ids"] = [record.id for record in records]
         full_manifest["record_checksums"] = {record.id: record.content_checksum for record in records}
         full_manifest["previous_generation"] = previous
-        full_manifest["published_at"] = published_at
+        full_manifest["staged_at"] = staged_at
         full_manifest["embedding_model"] = EMBEDDING_MODEL
         full_manifest["embedding_dimensions"] = EMBEDDING_DIMENSIONS
         self.redis.set(f"{MANIFEST_KEY_PREFIX}{generation}", json.dumps(full_manifest, sort_keys=True))
@@ -178,6 +184,15 @@ class SourceFirstPublisher:
                 f"sf:{generation}:project_evidence:{project.id}",
                 json.dumps(evidence_ids_by_project.get(project.id, []), sort_keys=True),
             )
+
+        evidence_ids_by_source: dict[str, list[str]] = {}
+        for record in records:
+            evidence_ids_by_source.setdefault(record.source_id, []).append(record.id)
+        for batch in batched(list(evidence_ids_by_source.items()), 100):
+            self.redis.mset({
+                f"sf:{generation}:source_evidence:{source_id}": json.dumps(ids, sort_keys=True)
+                for source_id, ids in batch
+            })
         # Embeddings routinely miss opaque identifiers (for example 1MTR or a
         # DuckDB filename). Publish a bounded inverted index so the Worker can
         # add exact source candidates without scanning the evidence store.
@@ -190,6 +205,19 @@ class SourceFirstPublisher:
                 f"sf:{generation}:lex:{term}": json.dumps(ids[:200], sort_keys=True)
                 for term, ids in batch
             })
+        lexical_term_names = sorted(lexical_ids)
+        missing_lexical_maps: list[str] = []
+        for terms in batched(lexical_term_names, 100):
+            values = self.redis.mget(*(f"sf:{generation}:lex:{term}" for term in terms))
+            missing_lexical_maps.extend(term for term, value in zip(terms, values, strict=True) if value is None)
+        if missing_lexical_maps:
+            raise RuntimeError(
+                f"candidate_generation_incomplete:missing_lexical_maps={len(missing_lexical_maps)}"
+            )
+        full_manifest["lexical_term_count"] = len(lexical_term_names)
+        full_manifest["lexical_terms_checksum"] = hashlib.sha256("\n".join(lexical_term_names).encode()).hexdigest()
+        full_manifest["lexical_verification_sample"] = lexical_term_names[::max(1, len(lexical_term_names) // 200)][:200]
+        self.redis.set(f"{MANIFEST_KEY_PREFIX}{generation}", json.dumps(full_manifest, sort_keys=True))
         self.redis.set(f"sf:{generation}:suppressions", json.dumps(suppressions, sort_keys=True))
 
         missing_vectors: list[str] = []
@@ -214,16 +242,16 @@ class SourceFirstPublisher:
         if missing_project_maps:
             raise RuntimeError(f"candidate_generation_incomplete:missing_project_maps={len(missing_project_maps)}")
 
-        # This is the only serving-state mutation. It happens after the candidate
-        # generation is complete in both stores and has passed strict count checks.
-        self.redis.set(HEARTBEAT_KEY, json.dumps({
-            "generation": generation,
-            "built_at": full_manifest.get("built_at"),
-            "published_at": published_at,
-            "source_checksum": full_manifest.get("source_checksum"),
-            "evidence_count": len(records),
-        }, sort_keys=True))
-        self.redis.set(CURRENT_GENERATION_KEY, generation)
+        missing_source_maps = [
+            source_id
+            for source_id in evidence_ids_by_source
+            if self.redis.get(f"sf:{generation}:source_evidence:{source_id}") is None
+        ]
+        if missing_source_maps:
+            raise RuntimeError(f"candidate_generation_incomplete:missing_source_maps={len(missing_source_maps)}")
+
+        if promote:
+            self.promote_generation(generation)
         return {
             "generation": generation,
             "previous_generation": previous,
@@ -231,19 +259,95 @@ class SourceFirstPublisher:
             "project_count": len(projects),
             "embedded_count": embedded_count,
             "reused_embedding_count": len(records) - embedded_count,
-            "promoted": True,
+            "promoted": promote,
+            "staged": True,
         }
 
-    def verify_current(
+    def promote_generation(self, generation: str) -> dict[str, Any]:
+        """Make a fully staged generation live with the only serving pointer write."""
+        verification = self.verify_generation(generation)
+        if not verification.get("passed"):
+            raise RuntimeError(
+                "candidate_generation_invalid:" + ",".join(verification.get("issues") or ["unknown"])
+            )
+        raw = self.redis.get(f"{MANIFEST_KEY_PREFIX}{generation}")
+        manifest = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(manifest, dict):
+            raise RuntimeError("candidate_generation_manifest_missing")
+        published_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        manifest["published_at"] = published_at
+        self.redis.set(f"{MANIFEST_KEY_PREFIX}{generation}", json.dumps(manifest, sort_keys=True))
+        self.redis.set(HEARTBEAT_KEY, json.dumps({
+            "generation": generation,
+            "built_at": manifest.get("built_at"),
+            "published_at": published_at,
+            "source_checksum": manifest.get("source_checksum"),
+            "evidence_count": manifest.get("evidence_count"),
+        }, sort_keys=True))
+        self.redis.set(CURRENT_GENERATION_KEY, generation)
+        retention = self._record_and_prune_generations(generation, manifest)
+        return {
+            "generation": generation,
+            "published_at": published_at,
+            "promoted": True,
+            "retention": retention,
+        }
+
+    def _record_and_prune_generations(
         self,
+        generation: str,
+        manifest: dict[str, Any],
+        retain: int = 3,
+    ) -> dict[str, Any]:
+        """Retain live plus two rollback generations from the verified chain."""
+        raw = self.redis.get(GENERATION_HISTORY_KEY)
+        try:
+            existing = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, ValueError):
+            existing = []
+        history = [generation]
+        if isinstance(existing, list):
+            history.extend(str(value) for value in existing if value)
+        previous = manifest.get("previous_generation")
+        if isinstance(previous, str) and previous:
+            history.append(previous)
+        history = list(dict.fromkeys(history))
+        keep = history[:retain]
+        prune = history[retain:]
+        self.redis.set(GENERATION_HISTORY_KEY, json.dumps(keep, sort_keys=True))
+
+        pruned: list[str] = []
+        if hasattr(self.redis, "scan") and hasattr(self.redis, "delete") and hasattr(self.vector, "delete_namespace"):
+            for old_generation in prune:
+                if old_generation in keep or old_generation == generation:
+                    continue
+                cursor = 0
+                keys: list[str] = []
+                while True:
+                    cursor, batch_keys = self.redis.scan(
+                        cursor,
+                        match=f"sf:{old_generation}:*",
+                        count=500,
+                    )
+                    keys.extend(str(key) for key in batch_keys)
+                    if int(cursor) == 0:
+                        break
+                keys.append(f"{MANIFEST_KEY_PREFIX}{old_generation}")
+                for batch_keys in batched(list(dict.fromkeys(keys)), 100):
+                    self.redis.delete(*batch_keys)
+                self.vector.delete_namespace(namespace=old_generation)
+                pruned.append(old_generation)
+        return {"retained_generations": keep, "pruned_generations": pruned}
+
+    def verify_generation(
+        self,
+        generation: str,
         *,
         max_age_seconds: int | None = None,
         now: datetime | None = None,
+        require_heartbeat: bool = False,
     ) -> dict[str, Any]:
         now = now or datetime.now(timezone.utc)
-        generation = self.current_generation()
-        if not generation:
-            return {"passed": False, "issues": ["current_generation_missing"]}
         raw = self.redis.get(f"{MANIFEST_KEY_PREFIX}{generation}")
         manifest = json.loads(raw) if isinstance(raw, str) else raw
         if not isinstance(manifest, dict):
@@ -251,11 +355,20 @@ class SourceFirstPublisher:
         ids = [str(value) for value in manifest.get("record_ids") or []]
         vector_count = 0
         redis_count = 0
+        source_ids: set[str] = set()
         for batch_ids in batched(ids, 200):
             vector_count += sum(value is not None for value in self.vector.fetch(ids=batch_ids, namespace=generation))
         for batch_ids in batched(ids, 100):
             keys = [f"sf:{generation}:evidence:{record_id}" for record_id in batch_ids]
-            redis_count += sum(value is not None for value in self.redis.mget(*keys))
+            values = self.redis.mget(*keys)
+            redis_count += sum(value is not None for value in values)
+            for value in values:
+                try:
+                    evidence = json.loads(value) if isinstance(value, str) else value
+                except (TypeError, ValueError):
+                    evidence = None
+                if isinstance(evidence, dict) and evidence.get("source_id"):
+                    source_ids.add(str(evidence["source_id"]))
 
         raw_projects = self.redis.get(f"sf:{generation}:projects")
         try:
@@ -267,6 +380,15 @@ class SourceFirstPublisher:
         for batch_ids in batched(project_ids, 100):
             keys = [f"sf:{generation}:project_evidence:{project_id}" for project_id in batch_ids]
             project_map_count += sum(value is not None for value in self.redis.mget(*keys))
+        source_map_count = 0
+        for batch_ids in batched(sorted(source_ids), 100):
+            keys = [f"sf:{generation}:source_evidence:{source_id}" for source_id in batch_ids]
+            source_map_count += sum(value is not None for value in self.redis.mget(*keys))
+        lexical_sample = [str(term) for term in manifest.get("lexical_verification_sample") or []]
+        lexical_sample_count = 0
+        for terms in batched(lexical_sample, 100):
+            keys = [f"sf:{generation}:lex:{term}" for term in terms]
+            lexical_sample_count += sum(value is not None for value in self.redis.mget(*keys))
         issues: list[str] = []
         if vector_count != len(ids):
             issues.append(f"vector_count:{vector_count}!={len(ids)}")
@@ -279,12 +401,30 @@ class SourceFirstPublisher:
             heartbeat = json.loads(raw_heartbeat) if isinstance(raw_heartbeat, str) else raw_heartbeat
         except (TypeError, ValueError):
             heartbeat = None
-        if not isinstance(heartbeat, dict) or heartbeat.get("generation") != generation:
+        if require_heartbeat and (
+            not isinstance(heartbeat, dict) or heartbeat.get("generation") != generation
+        ):
             issues.append("heartbeat_missing_or_mismatched")
+        matching_heartbeat = (
+            heartbeat if isinstance(heartbeat, dict) and heartbeat.get("generation") == generation else None
+        )
+        if source_map_count != len(source_ids):
+            issues.append(f"source_map_count:{source_map_count}!={len(source_ids)}")
+        if lexical_sample_count != len(lexical_sample):
+            issues.append(f"lexical_sample_count:{lexical_sample_count}!={len(lexical_sample)}")
+        recent_sessions = manifest.get("recent_sessions")
+        if isinstance(recent_sessions, dict) and recent_sessions.get("enabled"):
+            required_session_fields = (
+                "claude_code_sessions", "claude_code_chunks",
+                "codex_sessions", "codex_chunks", "last_successful_scan_at",
+            )
+            missing_session_fields = [field for field in required_session_fields if field not in recent_sessions]
+            if missing_session_fields:
+                issues.append("recent_sessions_manifest_missing:" + ",".join(missing_session_fields))
         freshness: dict[str, Any] = {"status": "unmeasured"}
         freshness_at = (
-            heartbeat.get("published_at") if isinstance(heartbeat, dict) else None
-        ) or manifest.get("published_at") or manifest.get("built_at")
+            matching_heartbeat.get("published_at") if matching_heartbeat else None
+        ) or manifest.get("published_at") or manifest.get("staged_at") or manifest.get("built_at")
         if isinstance(freshness_at, str):
             try:
                 age_seconds = max(0, int((now - datetime.fromisoformat(freshness_at)).total_seconds()))
@@ -308,7 +448,25 @@ class SourceFirstPublisher:
             "redis_count": redis_count,
             "expected_project_map_count": len(project_ids),
             "project_map_count": project_map_count,
-            "heartbeat": heartbeat if isinstance(heartbeat, dict) else None,
+            "expected_source_map_count": len(source_ids),
+            "source_map_count": source_map_count,
+            "heartbeat": matching_heartbeat,
             "freshness": freshness,
             "issues": issues,
         }
+
+    def verify_current(
+        self,
+        *,
+        max_age_seconds: int | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        generation = self.current_generation()
+        if not generation:
+            return {"passed": False, "issues": ["current_generation_missing"]}
+        return self.verify_generation(
+            generation,
+            max_age_seconds=max_age_seconds,
+            now=now,
+            require_heartbeat=True,
+        )

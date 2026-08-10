@@ -9,6 +9,7 @@ openwiki:
   source_paths:
     - ingestion/source_first/models.py
     - ingestion/source_first/scanner.py
+    - ingestion/source_first/session_scanner.py
     - ingestion/source_first/publisher.py
     - cloudflare-mcp/mcp-server/src/sourceFirst.ts
     - shared/source_first_config.json
@@ -28,7 +29,7 @@ openwiki:
     - tests/python/test_source_first.py
   invariants:
     - Evidence records are immutable and carry exact source path, timestamp, text, and content checksum.
-    - The serving pointer sf:current_generation moves only after every Redis record, vector, and project map is verified present.
+    - The serving pointer sf:current_generation moves only after storage verification and staged retrieval evaluation pass.
     - A failed candidate build cannot replace the last working generation.
     - Source-first read path never writes access signals, salience, or classification.
     - Exact named-project matches are selected before general semantic candidates.
@@ -67,25 +68,34 @@ how generations are built and promoted.
 Every evidence record is immutable. The canonical shape is
 `EvidenceRecord` in `ingestion/source_first/models.py`:
 
-- `id` — deterministic, `ev_` + sha256 of `source_path|chunk_index|content_checksum`
+- `id` — deterministic `ev_*` identity derived from logical source, chunk, and checksum.
+- `source_id` — stable family ID used to retrieve all chunks from one source.
   (24 hex chars for scanned files; `ev_curated_<16hex>` for curated entries).
 - `title` — first `#`/`##`/`###` heading in the file, or the parent dir / stem.
 - `text` — a normalized, boilerplate-stripped text chunk.
 - `source_path` — the exact filesystem path (or `curated://<id>` for curated).
 - `source_kind` — `working_project`, `completed_project`, `curated_memory`,
-  or `operating_policy`.
+  `operating_policy`, `claude_code_session`, or `codex_session`.
 - `project` — derived project name, or `null` for curated/global files.
 - `source_modified_at` — file mtime as ISO UTC.
 - `content_checksum` — sha256 of the chunk text.
 - `chunk_index` / `chunk_count` — chunk position within the source file.
 - `authority` — a fixed per-source-kind weight from `source_authority` in
   `shared/source_first_config.json` (curated/policy = 1.0, working = 0.9,
-  completed = 0.7).
+  completed = 0.9; session working context = 0.7).
+- `evidence_role` — `authoritative` or `working_context`.
+- `session_surface`, `session_id`, session timestamps, and
+  `attention_observed_at` — null for normal files and populated for sessions.
 - `pinned` — true for explicit curated/policy files.
 
 The index contains **no** context classifier, injection tier, salience score,
 access count, or LLM-generated canonical view. This is the core product
 difference from the legacy model.
+
+Recent Claude Code and Codex sessions are parsed directly from their raw JSONL
+stores. Only user/assistant conversational text is included; developer/system
+messages and tool traffic are excluded. Redaction precedes every persisted or
+remote representation, and published provenance uses a `session://` locator.
 
 `ProjectRecord` and `SourceFirstManifest` (same file) are the companion
 shapes published alongside evidence.
@@ -110,12 +120,16 @@ state is namespaced under that generation id:
 - `sf:<generation>:projects` — the project catalog.
 - `sf:<generation>:project_evidence:<project_id>` — deterministic
   exact-project evidence id lists (up to 100 each).
+- `sf:<generation>:source_evidence:<source_id>` — every sibling chunk for one
+  source, used by `get_deep`.
 - `sf:<generation>:suppressions` — the suppression policy.
 
-The publish path is fail-closed. `SourceFirstPublisher.publish` writes the
-candidate generation's vectors and Redis records, then **verifies** that
-every expected vector, Redis evidence record, and project map exists before
-it touches `sf:current_generation`. If any count check fails it raises
+The publish path is fail-closed. `SourceFirstPublisher.publish(...,
+promote=False)` stages the candidate vectors and Redis records without touching
+the live pointer. Storage verification is followed by the exact production
+retrieval policy running against that explicit staged generation. Only then
+does `promote_generation` write the heartbeat and live pointer. If any gate
+fails it raises
 `candidate_generation_incomplete` and never moves the pointer. This is the
 structural invariant behind "a failed build cannot replace the last working
 generation." The focused test is
@@ -151,14 +165,17 @@ legacy Redis-thin-index + salience path. The gating lives in
 5. Fetch the evidence records for the unioned id set via `redis.mget`.
 6. Drop any record that `isSuppressed` filters out.
 7. `scoreSourceFirstResult` computes the fixed transparent score.
-8. Sort: exact-project-match first, then `final_score`, then
-   `similarity_score`. Slice to the requested limit (max 20).
+8. Sort: exact identifiers, exact project, final score, then similarity.
+9. Collapse byte-identical results by checksum, retaining alternate provenance.
+10. Apply the 0.65 relevance floor and explicitly abstain if nothing remains.
 
 The fixed score is the product's transparency guarantee, pinned by
 `test/sourceFirst.test.ts`:
 
 ```
-final_score = 0.70*similarity + 0.15*lexical + 0.10*authority + 0.05*recency
+base_score = 0.70*similarity + 0.15*lexical + 0.10*authority + 0.05*recency
+working_context_bonus = 0.08*similarity*exp(-ln(2)*age_days/3)
+final_score = min(1, base_score + working_context_bonus)
 ```
 
 - `similarity` — the Upstash Vector cosine score for that hit.
@@ -169,6 +186,8 @@ final_score = 0.70*similarity + 0.15*lexical + 0.10*authority + 0.05*recency
 - `authority` — the fixed per-source-kind weight (clamped 0–1).
 - `recency` — `sourceRecencyScore`: exponential decay with a 180-day
   half-life from `source_modified_at`.
+- `working_context_bonus` — recent-session attention only, relevance-gated and
+  decayed with a three-day half-life. It never alters authority.
 
 The result object explicitly omits `salience_score`, `injection_tier`, and
 `access_count` — the test asserts these properties are absent. The response

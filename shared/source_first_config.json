@@ -1,9 +1,10 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "max_file_bytes": 750000,
   "chunk_chars": 3200,
   "chunk_overlap_chars": 240,
   "recent_days": 365,
+  "exclude_git_worktrees": true,
   "authoritative_names": [
     "README.md",
     "README.markdown",
@@ -65,6 +66,27 @@
     "curated_memory": 1.0,
     "operating_policy": 1.0,
     "working_project": 0.9,
-    "completed_project": 0.7
+    "completed_project": 0.9
+  },
+  "recent_sessions": {
+    "enabled": true,
+    "retention_days": 30,
+    "attention_half_life_days": 3,
+    "attention_weight": 0.08,
+    "max_sessions_per_surface": 100,
+    "max_total_chunks": 250,
+    "max_turn_chars": 1200,
+    "max_session_chars": 24000,
+    "require_source_roots": true,
+    "surfaces": [
+      {
+        "name": "claude_code",
+        "path": "~/.claude/projects"
+      },
+      {
+        "name": "codex",
+        "path": "~/.codex/sessions"
+      }
+    ]
   }
 }

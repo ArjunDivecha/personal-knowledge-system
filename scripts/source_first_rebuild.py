@@ -19,7 +19,9 @@ from ingestion.source_first.scanner import (  # noqa: E402
     evidence_from_files,
     iter_source_files,
     load_json,
+    source_id_for_path,
 )
+from ingestion.source_first.session_scanner import scan_recent_sessions  # noqa: E402
 
 UTC = timezone.utc
 DEFAULT_CONFIG = REPO_ROOT / "shared" / "source_first_config.json"
@@ -44,6 +46,7 @@ def curated_records(payload: dict[str, Any], now: datetime) -> list[EvidenceReco
         checksum = hashlib.sha256(text.encode()).hexdigest()
         records.append(EvidenceRecord(
             id=f"ev_curated_{hashlib.sha256(entry_id.encode()).hexdigest()[:16]}",
+            source_id=source_id_for_path(f"curated://{entry_id}"),
             title=str(raw.get("title") or entry_id)[:240],
             text=text,
             source_path=f"curated://{entry_id}",
@@ -83,6 +86,9 @@ def main() -> int:
     parser.add_argument("--suppressions", type=Path, default=DEFAULT_SUPPRESSIONS)
     parser.add_argument("--artifact-root", type=Path, default=DEFAULT_ARTIFACT_ROOT)
     parser.add_argument("--publish", action="store_true", help="publish verified generation to Upstash and promote it")
+    parser.add_argument("--stage", action="store_true", help="publish and verify a candidate without changing the live pointer")
+    parser.add_argument("--promote-generation", help="promote an already staged and verified generation")
+    parser.add_argument("--verify-generation", help="verify a staged generation without requiring the live heartbeat")
     parser.add_argument("--verify-current", action="store_true", help="verify the currently promoted remote generation")
     parser.add_argument(
         "--max-age-hours",
@@ -91,6 +97,17 @@ def main() -> int:
         help="with --verify-current, fail if the promoted generation is older than this many hours",
     )
     args = parser.parse_args()
+
+    if args.publish and args.stage:
+        raise ValueError("--publish and --stage are mutually exclusive")
+    if args.promote_generation:
+        report = SourceFirstPublisher().promote_generation(args.promote_generation)
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+    if args.verify_generation:
+        report = SourceFirstPublisher().verify_generation(args.verify_generation)
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0 if report.get("passed") else 1
 
     if args.verify_current:
         if args.max_age_hours <= 0:
@@ -104,8 +121,10 @@ def main() -> int:
     files = iter_source_files(config, now=now)
     records = evidence_from_files(files, config)
     records.extend(curated_records(load_json(args.curated), now))
-    records.sort(key=lambda record: (record.source_path, record.chunk_index))
     projects = build_projects(files, config, now=now)
+    session_records, session_diagnostics = scan_recent_sessions(config, projects, now=now)
+    records.extend(session_records)
+    records.sort(key=lambda record: (record.source_path, record.chunk_index))
     suppressions = load_json(args.suppressions)
 
     required = [str(Path(path).expanduser().resolve()) for path in config.get("required_projects") or []]
@@ -122,7 +141,7 @@ def main() -> int:
         "\n".join(f"{record.id}:{record.content_checksum}" for record in records).encode()
     ).hexdigest()
     manifest = SourceFirstManifest(
-        schema_version=1,
+        schema_version=int(config.get("schema_version", 2)),
         generation=generation,
         built_at=now.replace(microsecond=0).isoformat(),
         evidence_count=len(records),
@@ -131,18 +150,21 @@ def main() -> int:
         source_checksum=source_checksum,
         required_projects_present=present,
         required_projects_missing=missing,
+        recent_sessions=session_diagnostics,
     ).to_dict()
     output = write_artifacts(args.artifact_root, generation, manifest, records, projects, suppressions)
     report: dict[str, Any] = {"artifact_dir": str(output), "manifest": manifest, "published": False}
-    if args.publish:
+    if args.publish or args.stage:
         result = SourceFirstPublisher().publish(
             generation=generation,
             manifest=manifest,
             records=records,
             projects=projects,
             suppressions=suppressions,
+            promote=args.publish,
         )
-        report["published"] = True
+        report["published"] = args.publish
+        report["staged"] = True
         report["publish_result"] = result
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0

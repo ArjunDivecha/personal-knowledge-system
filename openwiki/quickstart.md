@@ -13,7 +13,7 @@ This repository is a personal knowledge system for an individual operator. It in
 > consolidation) is retired from production and remains only in staging and
 > the codebase. The nightly semantic-maintenance and sleep-report crons are
 > retired (manual `workflow_dispatch` only); the only scheduled maintenance
-> job is the daily source-first rebuild. See
+> job is the two-hour source-first rebuild. See
 > [Source-first memory model](domain/source-first-memory.md) and
 > [Source-first rebuild workflow](workflows/source-first-rebuild.md).
 
@@ -44,7 +44,7 @@ At a high level, the production system follows this loop:
 2. Chunk, checksum, and embed them into an immutable evidence generation.
 3. Atomically publish the generation to Upstash Vector (namespaced) and Redis (generation-scoped keys) after strict completeness verification.
 4. Serve retrieval through the Worker MCP server with a fixed, transparent score (semantic + lexical + authority + recency) and exact provenance.
-5. Rebuild daily from source so the index tracks real project activity; a failed build cannot replace the last working generation.
+5. Rebuild every two hours from authoritative files plus bounded, redacted Claude Code and Codex working context; a failed candidate cannot replace the last working generation.
 
 The legacy/staging loop (Dream consolidation, salience, forgetting) is documented in [Cloudflare MCP and Dream control plane](architecture/mcp-and-dream.md) and [Memory model and business logic](domain/memory-model.md).
 
@@ -54,7 +54,7 @@ The main README describes the memory philosophy in more detail, especially the e
 
 ### Source-first build (production)
 
-`ingestion/source_first/` is the Python build pipeline that scans authoritative source files, chunks and checksums them, embeds them with OpenAI `text-embedding-3-large` (3072-dim), and atomically publishes a generation. `scripts/source_first_rebuild.py` is the CLI entrypoint. See [Source-first rebuild workflow](workflows/source-first-rebuild.md).
+`ingestion/source_first/` is the Python build pipeline that scans authoritative source files and recent agent sessions, redacts session secrets before persistence, chunks and checksums the unified evidence, embeds it with OpenAI `text-embedding-3-large` (3072-dim), and atomically publishes a generation. `scripts/source_first_rebuild.py` is the CLI entrypoint. See [Source-first rebuild workflow](workflows/source-first-rebuild.md).
 
 ### Source-first serving (production)
 
@@ -103,7 +103,7 @@ When changing code, start in the subsystem that owns the behavior:
 ## Important cautions
 
 - **Production serves source-first memory.** Check `wrangler.json` (`SOURCE_FIRST_MODE: "on"` in top-level `vars`) before assuming legacy ranking or Dream behavior is live. Staging keeps the legacy path (`SOURCE_FIRST_MODE: "off"`, `DREAM_QUEUE_MODE: "live"`).
-- **The nightly semantic-maintenance and sleep-report crons are retired.** They are manual `workflow_dispatch` only. The only scheduled maintenance job is `source-first-rebuild.yml` (`cron: "30 6 * * *"`).
+- **The nightly semantic-maintenance and sleep-report crons are retired.** They are manual `workflow_dispatch` only. The only scheduled production maintenance job is `source-first-rebuild.yml` (`cron: "17 */2 * * *"`).
 - **The Cloudflare Worker has no Dream cron.** `wrangler.json` top-level `triggers.crons: []`. The legacy `07:10 UTC` Dream trigger is gone.
 - There are **two MCP implementations**. Do not assume the root `mcp-server/` directory is the production path.
 - Many paths and environment defaults are personal and machine-specific (e.g. Dropbox source roots in `shared/source_first_config.json`). Avoid normalizing them unless the task explicitly asks for portability work.

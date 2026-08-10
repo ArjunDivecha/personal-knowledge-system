@@ -7,6 +7,7 @@ from typing import Any
 @dataclass(frozen=True)
 class EvidenceRecord:
     id: str
+    source_id: str
     title: str
     text: str
     source_path: str
@@ -17,6 +18,12 @@ class EvidenceRecord:
     chunk_index: int
     chunk_count: int
     authority: float
+    evidence_role: str = "authoritative"
+    session_surface: str | None = None
+    session_id: str | None = None
+    session_started_at: str | None = None
+    session_ended_at: str | None = None
+    attention_observed_at: str | None = None
     pinned: bool = False
 
     def to_dict(self) -> dict[str, Any]:
@@ -48,6 +55,7 @@ class SourceFirstManifest:
     source_checksum: str
     required_projects_present: list[str]
     required_projects_missing: list[str]
+    recent_sessions: dict[str, Any] = field(default_factory=dict)
     previous_generation: str | None = None
 
     def to_dict(self) -> dict[str, Any]:

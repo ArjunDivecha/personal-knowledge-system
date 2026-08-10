@@ -2,7 +2,7 @@ name: Source-First Memory Rebuild
 
 on:
   schedule:
-    - cron: "30 6 * * *"
+    - cron: "17 */2 * * *"
   workflow_dispatch:
     inputs:
       publish:
@@ -44,27 +44,37 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install openai upstash-redis upstash-vector python-dotenv requests
 
-      - name: Run retrieval regression gate before promotion
-        env:
-          BASE_URL: https://mcp.dancing-ganesh.com
+      - name: Install Worker evaluation runtime
+        working-directory: cloudflare-mcp/mcp-server
         run: |
-          . ingestion/.venv-source-first/bin/activate
-          python scripts/run_eval.py --base-url "$BASE_URL" --config-tag source-first-promotion-gate > /tmp/source-first-retrieval-gate.log 2>&1
-          cat /tmp/source-first-retrieval-gate.log
-          fresh=$(grep -oE 'wrote .*\.json' /tmp/source-first-retrieval-gate.log | sed 's/^wrote //')
-          test -n "$fresh" && test -f "$fresh"
-          python scripts/run_eval.py --compare tests/baselines/retrieval_baseline.json "$fresh" --fail-on-regression
+          npm ci
 
-      - name: Build candidate and atomically promote
-        env:
-          SHOULD_PUBLISH: ${{ github.event_name == 'schedule' && 'true' || inputs.publish }}
+      - name: Build and stage immutable candidate
+        id: stage
         run: |
           . ingestion/.venv-source-first/bin/activate
-          args=()
-          if [ "$SHOULD_PUBLISH" = "true" ]; then
-            args+=(--publish)
-          fi
-          caffeinate -i python scripts/source_first_rebuild.py "${args[@]}"
+          caffeinate -i python scripts/source_first_rebuild.py --stage | tee /tmp/source-first-stage.json
+          generation=$(python -c 'import json; print(json.load(open("/tmp/source-first-stage.json"))["manifest"]["generation"])')
+          test -n "$generation"
+          echo "generation=$generation" >> "$GITHUB_OUTPUT"
+
+      - name: Verify candidate storage completeness
+        run: |
+          . ingestion/.venv-source-first/bin/activate
+          python scripts/source_first_rebuild.py --verify-generation "${{ steps.stage.outputs.generation }}"
+
+      - name: Run exact production retrieval policy against candidate
+        working-directory: cloudflare-mcp/mcp-server
+        run: |
+          npm run test:source-first-candidate -- \
+            "${{ steps.stage.outputs.generation }}" \
+            "$GITHUB_WORKSPACE/scripts/reports/source_first/candidate-eval-${{ steps.stage.outputs.generation }}.json"
+
+      - name: Atomically promote verified candidate
+        if: ${{ github.event_name == 'schedule' || inputs.publish }}
+        run: |
+          . ingestion/.venv-source-first/bin/activate
+          python scripts/source_first_rebuild.py --promote-generation "${{ steps.stage.outputs.generation }}"
 
       - name: Verify the serving generation
         if: ${{ github.event_name == 'schedule' || inputs.publish }}
@@ -81,6 +91,7 @@ jobs:
             scripts/reports/source_first/*/manifest.json
             scripts/reports/source_first/*/projects.json
             scripts/reports/source_first/*/suppressions.json
+            scripts/reports/source_first/candidate-eval-*.json
             scripts/reports/eval_baseline_*.json
           if-no-files-found: error
           retention-days: 30

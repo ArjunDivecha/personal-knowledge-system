@@ -51,6 +51,7 @@ declare global {
 		TWEET_READER_CACHE_TTL_SECONDS?: string;
 		// Wrangler injects this at build time when configured.
 		BUILD_SHA?: string;
+		VERSION_METADATA?: WorkerVersionMetadata;
 		MCP_OBJECT: DurableObjectNamespace<import("./index").KnowledgeMCP>;
 		OPENAI_MCP_OBJECT: DurableObjectNamespace<
 			import("./index").OpenAIKnowledgeMCP

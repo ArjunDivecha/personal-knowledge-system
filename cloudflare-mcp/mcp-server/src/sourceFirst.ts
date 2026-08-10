@@ -3,6 +3,7 @@ import type { Index } from "@upstash/vector";
 
 export const SOURCE_FIRST_CURRENT_KEY = "sf:current_generation";
 export const SOURCE_FIRST_HEARTBEAT_KEY = "sf:heartbeat";
+export const SOURCE_FIRST_MIN_FINAL_SCORE = 0.65;
 
 export interface SourceFirstFreshness {
 	status: "fresh" | "stale" | "missing" | "invalid";
@@ -13,6 +14,7 @@ export interface SourceFirstFreshness {
 
 export interface SourceFirstEvidence {
 	id: string;
+	source_id?: string;
 	title: string;
 	text: string;
 	source_path: string;
@@ -23,6 +25,12 @@ export interface SourceFirstEvidence {
 	chunk_index: number;
 	chunk_count: number;
 	authority: number;
+	evidence_role?: "authoritative" | "working_context";
+	session_surface?: "claude_code" | "codex" | null;
+	session_id?: string | null;
+	session_started_at?: string | null;
+	session_ended_at?: string | null;
+	attention_observed_at?: string | null;
 	pinned: boolean;
 }
 
@@ -38,10 +46,19 @@ export interface SourceFirstSearchResult extends SourceFirstEvidence {
 	similarity_score: number;
 	lexical_score: number;
 	recency_score: number;
+	base_score: number;
+	attention_score: number;
+	working_context_bonus: number;
 	final_score: number;
 	explicit_project_match: boolean;
 	exact_identifier_match: boolean;
 	exact_identifier_count: number;
+	duplicate_count: number;
+	alternate_sources: Array<{
+		project: string | null;
+		source_path: string;
+		source_modified_at: string;
+	}>;
 }
 
 function parseObject(raw: unknown): Record<string, unknown> | null {
@@ -150,7 +167,12 @@ function tokens(text: string): string[] {
 function queryIdentifierTerms(query: string): string[] {
 	const rawTerms = query.match(/[A-Za-z0-9][A-Za-z0-9._/-]{2,}/g) ?? [];
 	return [...new Set(rawTerms
-		.filter((term) => /[A-Z0-9._/-]/.test(term))
+		.filter((term) =>
+			(/[0-9]/.test(term) && /[A-Za-z]/.test(term))
+			|| /[._/-]/.test(term)
+			|| /^[A-Z]{2,}$/.test(term)
+			|| /[a-z][A-Z]/.test(term)
+		)
 		.flatMap((term) => normalizedPhrase(term).match(/[a-z0-9]{3,}/g) ?? []))];
 }
 
@@ -166,6 +188,18 @@ export function sourceRecencyScore(sourceModifiedAt: string, now = new Date()): 
 	if (!Number.isFinite(timestamp)) return 0;
 	const ageDays = Math.max(0, (now.getTime() - timestamp) / 86400000);
 	return Math.exp(-Math.log(2) * ageDays / 180);
+}
+
+export function workingContextAttentionScore(
+	evidence: SourceFirstEvidence,
+	similarityScore: number,
+	now = new Date(),
+): number {
+	if (evidence.evidence_role !== "working_context" || !evidence.attention_observed_at) return 0;
+	const timestamp = Date.parse(evidence.attention_observed_at);
+	if (!Number.isFinite(timestamp)) return 0;
+	const ageDays = Math.max(0, (now.getTime() - timestamp) / 86400000);
+	return Math.max(0, similarityScore) * Math.exp(-Math.log(2) * ageDays / 3);
 }
 
 export function isSuppressed(query: string, evidence: SourceFirstEvidence, rules: SuppressionRule[]): boolean {
@@ -193,21 +227,33 @@ export function scoreSourceFirstResult(
 	const lexicalScore = lexicalOverlap(query, evidence);
 	const recencyScore = sourceRecencyScore(evidence.source_modified_at, now);
 	const authority = Math.max(0, Math.min(1, Number(evidence.authority) || 0));
-	const finalScore = Math.round((
+	const baseScore = (
 		0.70 * similarityScore +
 		0.15 * lexicalScore +
 		0.10 * authority +
 		0.05 * recencyScore
-	) * 10000) / 10000;
+	);
+	const attentionScore = workingContextAttentionScore(evidence, similarityScore, now);
+	const workingContextBonus = 0.08 * attentionScore;
+	const finalScore = Math.round(Math.min(1, baseScore + workingContextBonus) * 10000) / 10000;
 	return {
 		...evidence,
+		evidence_role: evidence.evidence_role ?? "authoritative",
+		session_surface: evidence.session_surface ?? null,
+		session_id: evidence.session_id ?? null,
+		attention_observed_at: evidence.attention_observed_at ?? null,
 		similarity_score: similarityScore,
 		lexical_score: Math.round(lexicalScore * 10000) / 10000,
 		recency_score: Math.round(recencyScore * 10000) / 10000,
+		base_score: Math.round(baseScore * 10000) / 10000,
+		attention_score: Math.round(attentionScore * 10000) / 10000,
+		working_context_bonus: Math.round(workingContextBonus * 10000) / 10000,
 		final_score: finalScore,
 		explicit_project_match: false,
 		exact_identifier_match: false,
 		exact_identifier_count: 0,
+		duplicate_count: 1,
+		alternate_sources: [],
 	};
 }
 
@@ -248,15 +294,14 @@ export function evaluateSourceFirstFreshness(
 	};
 }
 
-export async function sourceFirstSearch(
+export async function sourceFirstSearchGeneration(
 	redis: Redis,
 	vector: Index,
 	queryEmbedding: number[],
 	query: string,
 	limit: number,
+	generation: string,
 ): Promise<Record<string, unknown>> {
-	const generation = await getSourceFirstGeneration(redis);
-	if (!generation) return { error: "source_first_generation_missing", results: [] };
 	const requested = Math.max(1, Math.min(limit, 20));
 	const hits = await vector.query({
 		vector: queryEmbedding,
@@ -321,21 +366,175 @@ export async function sourceFirstSearch(
 		|| right.final_score - left.final_score
 		|| right.similarity_score - left.similarity_score
 	);
+	const diverse: SourceFirstSearchResult[] = [];
+	const byChecksum = new Map<string, SourceFirstSearchResult>();
+	for (const result of results) {
+		const existing = byChecksum.get(result.content_checksum);
+		if (existing) {
+			existing.duplicate_count += 1;
+			existing.alternate_sources.push({
+				project: result.project,
+				source_path: result.source_path,
+				source_modified_at: result.source_modified_at,
+			});
+			continue;
+		}
+		byChecksum.set(result.content_checksum, result);
+		diverse.push(result);
+	}
+	const eligible = diverse.filter((result) =>
+		result.final_score >= SOURCE_FIRST_MIN_FINAL_SCORE
+		|| result.exact_identifier_match
+		|| result.explicit_project_match
+	);
+	const abstained = eligible.length === 0;
 	return {
 		mode: "source_first",
 		generation,
 		query,
 		explicit_project: explicitProject?.name ?? null,
-		results: results.slice(0, requested),
-		scoring: "Exact identifiers and named projects are selected first; within that set: 0.70 semantic + 0.15 lexical + 0.10 source authority + 0.05 source recency. Explicit suppressions apply; no tiers, salience, classification, or access reinforcement.",
+		results: eligible.slice(0, requested),
+		abstained,
+		abstain_reason: abstained ? "no_relevant_evidence_above_threshold" : null,
+		minimum_final_score: SOURCE_FIRST_MIN_FINAL_SCORE,
+		deduplication: "content_checksum",
+		scoring: "Exact identifiers and named projects are selected first; otherwise results must clear 0.65. Base: 0.70 semantic + 0.15 lexical + 0.10 source authority + 0.05 source recency. Working context adds 0.08 * semantic relevance * 3-day attention decay. Byte-identical chunks collapse by content checksum; explicit suppressions apply; no tiers, salience, classification, or access reinforcement.",
 	};
+}
+
+export async function sourceFirstSearch(
+	redis: Redis,
+	vector: Index,
+	queryEmbedding: number[],
+	query: string,
+	limit: number,
+): Promise<Record<string, unknown>> {
+	const generation = await getSourceFirstGeneration(redis);
+	if (!generation) {
+		return {
+			error: "source_first_generation_missing",
+			results: [],
+			abstained: true,
+			abstain_reason: "source_first_generation_missing",
+		};
+	}
+	return sourceFirstSearchGeneration(redis, vector, queryEmbedding, query, limit, generation);
 }
 
 export async function getSourceFirstEvidence(redis: Redis, id: string): Promise<Record<string, unknown>> {
 	const generation = await getSourceFirstGeneration(redis);
 	if (!generation) return { error: "source_first_generation_missing" };
 	const evidence = parseEvidence(await redis.get(`sf:${generation}:evidence:${id}`));
-	return evidence ? { mode: "source_first", generation, evidence } : { error: "not_found", id, generation };
+	if (!evidence) return { error: "not_found", id, generation };
+	let chunkIds: string[] = [];
+	if (evidence.source_id) {
+		try {
+			const raw = await redis.get(`sf:${generation}:source_evidence:${evidence.source_id}`);
+			const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+			if (Array.isArray(parsed)) chunkIds = parsed.map(String);
+		} catch {
+			chunkIds = [];
+		}
+	}
+	if (chunkIds.length === 0) chunkIds = [id];
+	const rawChunks = await redis.mget(...chunkIds.map((chunkId) => `sf:${generation}:evidence:${chunkId}`));
+	const chunks = rawChunks
+		.map(parseEvidence)
+		.filter((value): value is SourceFirstEvidence => value !== null)
+		.sort((left, right) => left.chunk_index - right.chunk_index);
+	return {
+		mode: "source_first",
+		generation,
+		requested_evidence_id: id,
+		evidence,
+		source_id: evidence.source_id ?? null,
+		source_path: evidence.source_path,
+		chunk_count: chunks.length,
+		chunks,
+		complete_source: Boolean(evidence.source_id && chunks.length === evidence.chunk_count),
+	};
+}
+
+export async function getSourceFirstOperationalStatus(
+	redis: Redis,
+	maxAgeSeconds = 36 * 60 * 60,
+): Promise<Record<string, unknown>> {
+	const generation = await getSourceFirstGeneration(redis);
+	const manifest = generation
+		? parseObject(await redis.get(`sf:manifest:${generation}`))
+		: null;
+	const heartbeat = await getSourceFirstHeartbeat(redis);
+	const freshness = evaluateSourceFirstFreshness(manifest, heartbeat, new Date(), maxAgeSeconds);
+	const passed = Boolean(
+		generation
+		&& manifest?.generation === generation
+		&& heartbeat?.generation === generation
+		&& freshness.status === "fresh"
+	);
+	const recentSessions = parseObject(manifest?.recent_sessions) ?? (
+		manifest?.recent_sessions && typeof manifest.recent_sessions === "object"
+			? manifest.recent_sessions as Record<string, unknown>
+			: null
+	);
+	const sessionEnabled = recentSessions?.enabled === true;
+	const sessionAgeSeconds = freshness.age_seconds;
+	const newestSessionTimestamp = [
+		recentSessions?.claude_code_newest_observed_at,
+		recentSessions?.codex_newest_observed_at,
+	]
+		.filter((value): value is string => typeof value === "string" && Number.isFinite(Date.parse(value)))
+		.map((value) => Date.parse(value))
+		.sort((left, right) => right - left)[0];
+	const newestSessionAgeSeconds = newestSessionTimestamp === undefined
+		? null
+		: Math.max(0, Math.floor((Date.now() - newestSessionTimestamp) / 1000));
+	const totalSessionChunks = Number(recentSessions?.claude_code_chunks ?? 0)
+		+ Number(recentSessions?.codex_chunks ?? 0);
+	const sessionFreshness = !sessionEnabled
+		? "disabled"
+		: !passed
+			? "error"
+			: sessionAgeSeconds !== null && sessionAgeSeconds > 4 * 60 * 60
+				? "stale"
+				: totalSessionChunks > 0 ? "fresh" : "empty";
+	return {
+		schema_version: 2,
+		mode: "source_first",
+		enabled: true,
+		overall_status: passed ? "green" : "red",
+		overall_passed: passed,
+		generation,
+		built_at: manifest?.built_at ?? null,
+		published_at: manifest?.published_at ?? heartbeat?.published_at ?? null,
+		evidence_count: manifest?.evidence_count ?? null,
+		project_count: manifest?.project_count ?? null,
+		source_file_count: manifest?.source_file_count ?? null,
+		source_checksum: manifest?.source_checksum ?? null,
+		freshness,
+		recent_sessions: recentSessions ? {
+			...recentSessions,
+			newest_included_age_seconds: newestSessionAgeSeconds,
+			freshness_status: sessionFreshness,
+		} : {
+			enabled: false,
+			freshness_status: "disabled",
+		},
+		gates: {
+			source_first_generation: {
+				status: passed ? "pass" : "fail",
+				passed,
+				generation,
+				manifest_matches: manifest?.generation === generation,
+				heartbeat_matches: heartbeat?.generation === generation,
+				freshness,
+			},
+			legacy_dream: {
+				status: "retired",
+				passed: null,
+				note: "Dream does not maintain the production source-first corpus.",
+			},
+		},
+	};
 }
 
 export async function getSourceFirstIndex(redis: Redis): Promise<Record<string, unknown>> {
