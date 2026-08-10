@@ -1,7 +1,7 @@
 ---
 type: "Reference"
 title: "Operations and local workflow"
-description: "Environment, launchd, scripts, and the automated OpenWiki CI update workflow for the personal-knowledge-system repository."
+description: "Environment, launchd, scripts, GitHub Actions automation (including the source-first rebuild schedule and retired semantic-maintenance crons), and the OpenWiki CI update workflow."
 ---
 
 # Operations and local workflow
@@ -64,26 +64,35 @@ generation or heartbeat is missing, stale, or mismatched.
 
 ## Common workflow patterns
 
-### Ingestion changes
+### Source-first build or serving changes
+
+Typical workflow:
+
+1. Update `ingestion/source_first/` scanner/publisher/models, `scripts/source_first_rebuild.py`, `shared/source_first_config.json` / `shared/source_first_suppressions.json`, or `cloudflare-mcp/mcp-server/src/sourceFirst.ts`.
+2. Run `python -m unittest tests.python.test_source_first` (build/publish/verify) and `cd cloudflare-mcp/mcp-server && npx vitest run test/sourceFirst.test.ts --no-file-parallelism` (serving/scoring).
+3. For a config/policy change, run `python scripts/source_first_rebuild.py` locally (no `--publish`) to validate the candidate artifacts.
+4. Dispatch `source-first-rebuild.yml` with `publish: false` first, then `publish: true` to promote. See [Source-first rebuild workflow](workflows/source-first-rebuild.md).
+
+### Ingestion changes (legacy sources)
 
 Typical workflow:
 
 1. Update source-specific ingestion code or config.
 2. Run targeted Python tests.
 3. Verify checkpointing and storage behavior.
-4. Check whether retrieval metadata or Dream behavior needs a follow-up change.
+4. These pipelines feed the legacy memory model, not the source-first index.
 
-### Dream or retrieval changes
+### Dream or retrieval changes (staging/legacy)
 
 Typical workflow:
 
-1. Update the Worker server modules.
+1. Update the Worker server modules (legacy path, exercised in staging where `SOURCE_FIRST_MODE: "off"`).
 2. Run the Worker Vitest suite.
 3. Run `scripts/run_eval.py` before the change, then again after, and diff the two reports (`--compare`) — the README requires this before any ranking, forgetting, or admission change ships.
 4. Inspect the relevant `docs/` PRD if behavior is phase-gated.
 5. Check whether the orchestrator or tests need matching updates.
 
-### Orchestrator changes
+### Orchestrator changes (staging/legacy)
 
 Typical workflow:
 
@@ -98,21 +107,22 @@ A scheduled GitHub Actions workflow (`.github/workflows/openwiki-update.yml`) au
 
 ## GitHub Actions automation
 
-Beyond the OpenWiki update, the repo runs several scheduled and push-triggered workflows under `.github/workflows/`. The semantic-maintenance and sleep-report workflows are on real `cron` schedules; the ingestion workflows are not scheduled and run only on `repository_dispatch` / `workflow_dispatch`:
+Beyond the OpenWiki update, the repo runs several workflows under `.github/workflows/`. After the source-first cutover, only two workflows have real `cron` schedules: `source-first-rebuild.yml` and `openwiki-update.yml`. The semantic-maintenance and sleep-report workflows are retired from automatic schedule (manual `workflow_dispatch` only); the ingestion workflows were never scheduled and run only on `repository_dispatch` / `workflow_dispatch`:
 
+- `source-first-rebuild.yml` — the only scheduled maintenance job after cutover. Runs `scripts/source_first_rebuild.py --publish` on `cron: "30 6 * * *"` (06:30 UTC) on a self-hosted macOS runner (`knowledge-agent-sessions` label) that can read the Dropbox sources. `workflow_dispatch` accepts a `publish` boolean (defaults to `true`; set `false` for a dry build). After publish it runs `--verify-current` to confirm the promoted generation. Uploads `manifest.json`, `projects.json`, and `suppressions.json` as build evidence (30-day retention). See [Source-first rebuild workflow](workflows/source-first-rebuild.md).
 - `agent-session-ingestion.yml` — remote run of `ingestion/agent_sessions/run.py` on a self-hosted macOS runner (`knowledge-agent-sessions` label). Triggered by `repository_dispatch` (`agent-session-ingestion-manual`) or `workflow_dispatch`; not scheduled. Supports `dry_run`, `backfill`, `sync_state_only`, a `source` filter (`claude_code` or `codex_cli`), and a `limit` cap.
 - `github-ingestion.yml` — remote GitHub repo ingestion, including repo-attached agent context under `.pks/agent-context/`. Triggered by `repository_dispatch` (`github-ingestion-manual`) or `workflow_dispatch`; not scheduled. Supports `dry_run`, `no_resume`, a comma-separated `repos` filter, and `skip_code` / `skip_commits` toggles.
 - `twitter-ingestion.yml` — remote Twitter/X timeline ingestion on a self-hosted macOS runner. Triggered by `workflow_dispatch` only; not scheduled. Supports `dry_run`, `reset_state` (ignore saved `since_id`), and an optional `max_tweets` cap. Do not install a local LaunchAgent for Twitter ingestion.
-- `nightly-semantic-maintenance.yml` — runs `scripts/nightly_semantic_maintenance.py` on `cron: "20 7 * * *"` (07:20 UTC, after the Worker's `07:10 UTC` Dream trigger). Feeds bounded candidate clusters to the Worker queue. Defaults to `live` mode on schedule; `workflow_dispatch` accepts `plan` or `live` and a `max_applied` cap (defaults to `100` on schedule, `100` on manual). Guards that the retired Worker semantic slice (`SEMANTIC_SLICE_SIZE == 0`) remains disabled.
-- In source-first mode, the legacy Dream and semantic-maintenance paths above are intentionally short-circuited by the Worker; retain the workflow files as historical/rollback artifacts, but do not treat their old mutation behavior as live.
-- `nightly-sleep-report.yml` — verifies durable completion of the semantic maintenance cohort on `cron: "45 8 * * *"` (08:45 UTC) by running `scripts/nightly_semantic_maintenance.py --check-latest --max-age-hours 4`.
+- `nightly-semantic-maintenance.yml` — **retired from automatic operation by the source-first cutover**. Manual `workflow_dispatch` only; the `cron: "20 7 * * *"` schedule was removed. Accepts `plan` or `live` mode and a `max_applied` cap. Guards that the retired Worker semantic slice (`SEMANTIC_SLICE_SIZE == 0`) remains disabled. Remains as a manual-only rollback path while the legacy index is archived.
+- `nightly-sleep-report.yml` — **retired from automatic operation by the source-first cutover**. Manual `workflow_dispatch` only; the `cron: "45 8 * * *"` schedule was removed. Runs `scripts/nightly_semantic_maintenance.py --check-latest --max-age-hours 4` to inspect the archived legacy system.
 - `worker-runtime-tests.yml` — push/PR-triggered CI for `cloudflare-mcp/mcp-server/**`, `Makefile`, `README.md`, and `docs/testing-matrix.md`: type-check + `npm run test:worker`. See [Testing guidance](testing.md).
 
-The active source-first sequence is: ingestion workflows as dispatched, source-first rebuild/promotion at `06:30 UTC`, and a read-only retrieval gate in that same workflow. The old Dream/semantic/sleep sequence remains documented only for rollback archaeology and is short-circuited when source-first mode is on.
+The scheduled sequence after cutover is: source-first rebuild at `06:30 UTC`, OpenWiki update at `08:00 UTC`. The legacy Worker Dream cron at `07:10 UTC` is gone (`wrangler.json` top-level `triggers.crons: []`). The ingestion workflows have no fixed schedule and are expected to be dispatched externally (or manually) to fit the self-hosted macOS runner's availability.
 
 ## Useful source anchors
 
 - `scripts/`
+- `scripts/source_first_rebuild.py`
 - `scripts/nightly_orchestrator.py`
 - `scripts/nightly_semantic_maintenance.py`
 - `scripts/semantic_candidate_planner.py`
@@ -120,5 +130,8 @@ The active source-first sequence is: ingestion workflows as dispatched, source-f
 - `scripts/run_nightly_ingestion.sh`
 - `scripts/install_global_repo_agent_context_hook.sh`
 - `scripts/install_repo_agent_context_hook.sh`
+- `shared/source_first_config.json`
+- `shared/source_first_suppressions.json`
 - `.github/workflows/`
+- `.github/workflows/source-first-rebuild.yml`
 - `docs/testing-matrix.md`

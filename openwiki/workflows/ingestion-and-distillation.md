@@ -6,7 +6,17 @@ description: "How the system ingests GitHub, Gmail, Twitter/X, and agent-session
 
 # Ingestion and distillation workflow
 
-This repository ingests multiple source types and normalizes them into structured memory entries.
+> **Serving cutover.** The source-first serving path
+> ([Source-first memory model](../domain/source-first-memory.md)) does not
+> consume these ingestion pipelines. The GitHub, Gmail, Twitter/X, and
+> agent-session ingestion runners below feed the **legacy** self-modifying
+> memory model, which is retired from production and remains in staging.
+> They are still dispatched manually or externally for backfill/audit
+> purposes. The source-first index is built directly from authoritative
+> source files by `ingestion/source_first/` (see
+> [Source-first rebuild workflow](source-first-rebuild.md)).
+
+This repository ingests multiple source types and normalizes them into structured memory entries for the legacy memory model.
 
 The ingestion side is split between a newer source-specific ingestion layer and an older export-processing pipeline. The newer layer is the better first stop for current work.
 

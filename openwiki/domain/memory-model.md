@@ -10,6 +10,16 @@ This repository is built around a specific product idea: the system should behav
 
 The README explains the philosophy clearly: the goal is to keep durable identity and project context available, allow lower-priority material to stay retrievable when relevant, and let weak signals fade or consolidate instead of competing forever for attention.
 
+> **Production cutover.** The self-modifying model documented on this page
+> (salience scoring, retrieval policy shaping, Dream consolidation) is the
+> **legacy/staging** memory model. Production now serves
+> [source-first memory](source-first-memory.md): immutable, source-derived
+> evidence with a fixed transparent score and no overnight mutation. The
+> legacy model remains in the codebase and staging environment for
+> validation. This page describes the legacy business logic; see
+> [Source-first memory model](source-first-memory.md) for the current
+> production contract.
+
 ## Core memory concepts
 
 ### Context types and tiers

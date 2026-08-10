@@ -1,12 +1,20 @@
 ---
 type: "Reference"
 title: "Nightly orchestration workflow"
-description: "Nightly orchestrator state machine: run identity, locking, ledgering, stage persistence, resume, report generation, and launchd supervision."
+description: "Nightly orchestrator state machine (staging/legacy after the source-first cutover): run identity, locking, ledgering, stage persistence, resume, report generation, and launchd supervision."
 ---
 
 # Nightly orchestration workflow
 
-The nightly orchestrator is the repository's run-control layer. It coordinates a date-scoped nightly job, persists stage state, writes reports, and manages resume logic.
+> **Staging/legacy after the source-first cutover.** Production serving no
+> longer depends on the nightly orchestrator or Dream mutation. This page
+> documents the orchestrator as it remains in the codebase and staging
+> environment. The production maintenance job is the
+> [source-first rebuild](source-first-rebuild.md).
+
+The nightly orchestrator is the repository's run-control layer for the legacy
+Dream run. It coordinates a date-scoped nightly job, persists stage state,
+writes reports, and manages resume logic.
 
 ## What it does
 
