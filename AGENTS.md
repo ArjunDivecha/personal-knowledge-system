@@ -25,7 +25,8 @@ Do not use their validation ledgers to report source-first health.
 - Sessions are `working_context`, not canonical truth or a second result lane.
 - Redaction occurs before text normalization, checksums, embeddings, reports,
   Redis, or Vector metadata.
-- Developer/system/tool content is excluded from session evidence.
+- Developer/system/tool content and retrieval-validation meta transcripts are
+  excluded from session evidence.
 - The public Worker resolves only `sf:current_generation`; arbitrary generation
   search is confined to the authenticated CI harness.
 - A candidate is staged and retrieval-tested before the heartbeat or live

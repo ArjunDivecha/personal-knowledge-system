@@ -94,8 +94,11 @@ difference from the legacy model.
 
 Recent Claude Code and Codex sessions are parsed directly from their raw JSONL
 stores. Only user/assistant conversational text is included; developer/system
-messages and tool traffic are excluded. Redaction precedes every persisted or
-remote representation, and published provenance uses a `session://` locator.
+messages and tool traffic are excluded. Retrieval-validation prompts, probe
+queries, and PASS/FAIL reports are filtered deterministically before chunking,
+so operational test vocabulary cannot become self-retrieving evidence.
+Redaction precedes every persisted or remote representation, and published
+provenance uses a `session://` locator.
 
 `ProjectRecord` and `SourceFirstManifest` (same file) are the companion
 shapes published alongside evidence.
@@ -162,12 +165,19 @@ legacy Redis-thin-index + salience path. The gating lives in
    `sf:<generation>:project_evidence:<project_id>` ids are unioned into the
    candidate set so exact project matches are never dependent on whether the
    semantic top-K happened to include them.
-5. Fetch the evidence records for the unioned id set via `redis.mget`.
-6. Drop any record that `isSuppressed` filters out.
-7. `scoreSourceFirstResult` computes the fixed transparent score.
-8. Sort: exact identifiers, exact project, final score, then similarity.
-9. Collapse byte-identical results by checksum, retaining alternate provenance.
-10. Apply the 0.65 relevance floor and explicitly abstain if nothing remains.
+5. Query the bounded lexical maps for up to 12 meaningful query terms, count
+   term co-occurrence, and add at most 200 candidates. This recovers opaque
+   identifiers and contiguous phrases of at least three meaningful words when
+   vector top-K misses them.
+6. Fetch the evidence records for the unioned id set via `redis.mget`.
+7. Drop any record that `isSuppressed` filters out.
+8. `scoreSourceFirstResult` computes the fixed transparent score.
+9. Sort: exact identifiers, exact project, strong exact lexical phrase, final
+   score, then similarity.
+10. Collapse byte-identical results by checksum, retaining alternate provenance.
+11. Apply the 0.65 relevance floor and explicitly abstain if nothing remains;
+   explicit identifiers/projects and strong exact phrases are deterministic
+   recovery exceptions.
 
 The fixed score is the product's transparency guarantee, pinned by
 `test/sourceFirst.test.ts`:
@@ -198,14 +208,14 @@ flowchart TD
     Q["Operator query"] --> GEN["Load sf:current_generation"]
     GEN -->|"missing"| Err["source_first_generation_missing"]
     GEN -->|"present"| VQ["Vector query in generation namespace"]
-    VQ --> PROJ["findExplicitProject phrase match"]
-    PROJ -->|"named project"| UNION["Union deterministic project_evidence ids"]
+    VQ --> PROJ["Project + bounded lexical candidate recovery"]
+    PROJ -->|"named project or exact phrase"| UNION["Union deterministic candidate ids"]
     PROJ -->|"no exact project"| UNION
     UNION --> FETCH["mget evidence records from Redis"]
     FETCH --> SUP["isSuppressed filter"]
     SUP -->|"suppressed"| Drop["drop record"]
     SUP -->|"kept"| SCORE["scoreSourceFirstResult 0.70/0.15/0.10/0.05"]
-    SCORE --> SORT["Sort: exact-project, final_score, similarity"]
+    SCORE --> SORT["Sort: identifier, project, exact phrase, final_score"]
     SORT --> OUT["Slice to requested limit (max 20)"]
 ```
 

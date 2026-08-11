@@ -46,5 +46,13 @@
     "priority": "low",
     "query": "who was Albert Einstein",
     "notes": "Public figure, no personal linkage."
+  },
+  {
+    "id": "neg_sourdough_recipe",
+    "axis": "negative",
+    "enabled": true,
+    "priority": "high",
+    "query": "sourdough fermentation recipe",
+    "notes": "Regression for retrieval-test feedback: meta session transcripts containing this probe must not become topical evidence."
   }
 ]

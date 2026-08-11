@@ -16,7 +16,7 @@ The canonical high-level reference is `docs/testing-matrix.md`, which describes 
 
 The `tests/python/` directory contains a substantial regression suite around:
 
-- source-first build, scanners, redaction, and publisher atomicity (`tests/python/test_source_first.py`) — file and session determinism, role filtering, secret redaction, worktree exclusion, required-project inclusion, staged-pointer isolation, and the "failed candidate does not replace the working pointer" invariant
+- source-first build, scanners, redaction, and publisher atomicity (`tests/python/test_source_first.py`) — file and session determinism, role filtering, retrieval-meta exclusion, secret redaction, worktree exclusion, required-project inclusion, staged-pointer isolation, and the "failed candidate does not replace the working pointer" invariant
 - ingestion behavior
 - Gmail/GitHub/Twitter clients and extractors
 - memory migration and deserialization
@@ -34,7 +34,7 @@ This is the main place to look when changing the Python pipeline or repo-level b
 
 These tests cover a lot of the production control plane:
 
-- source-first scoring, session attention decay, abstention, checksum deduplication, source-family deep retrieval, suppression, operational health, and project index (`test/sourceFirst.test.ts`) — the production read path
+- source-first scoring, bounded lexical phrase recovery, session attention decay, abstention, checksum deduplication, source-family deep retrieval, suppression, operational health, and project index (`test/sourceFirst.test.ts`) — the production read path
 - retrieval policy (legacy/staging)
 - salience (legacy/staging)
 - archive guards

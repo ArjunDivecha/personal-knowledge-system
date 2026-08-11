@@ -45,6 +45,59 @@ _SECRET_PATTERNS = (
     ),
 )
 
+# Retrieval validation prompts and their PASS/FAIL reports are operational
+# traffic, not evidence about the subjects used as probes.  Without this
+# boundary, a negative-control phrase can be copied into a recent session and
+# then retrieve the transcript that issued the test.  Keep this deterministic
+# and deliberately narrow: ordinary PKS design discussion is retained, while
+# turns containing several characteristic validation-report markers are not.
+_RETRIEVAL_META_MARKERS = (
+    "personal knowledge validation",
+    "run these checks",
+    "checks pass",
+    "fails outright",
+    "pass/fail",
+    "raw supporting fields",
+    "self-referential match",
+    "test script",
+    "live acceptance",
+    "negative control",
+    "negative-control",
+    "abstention",
+    "abstain_reason",
+    "minimum_final_score",
+    "working_context_bonus",
+    "content_checksum",
+    "complete_source",
+    "get_deep",
+)
+
+
+def _is_retrieval_meta_turn(turn: SessionTurn) -> bool:
+    normalized = turn.text.casefold()
+    marker_count = sum(marker in normalized for marker in _RETRIEVAL_META_MARKERS)
+    return marker_count >= 3
+
+
+def _without_retrieval_meta_turns(
+    turns: list[SessionTurn],
+    excluded_probe_queries: list[str],
+) -> tuple[list[SessionTurn], int]:
+    normalized_probes = [
+        re.sub(r"\s+", " ", query.casefold()).strip()
+        for query in excluded_probe_queries
+        if query.strip()
+    ]
+    retained: list[SessionTurn] = []
+    for turn in turns:
+        normalized_turn = re.sub(r"\s+", " ", turn.text.casefold())
+        if _is_retrieval_meta_turn(turn):
+            continue
+        if any(probe in normalized_turn for probe in normalized_probes):
+            continue
+        retained.append(turn)
+    return retained, len(turns) - len(retained)
+
 
 def redact_session_text(text: str) -> tuple[str, int]:
     """Deterministically remove common credentials before any persistence."""
@@ -215,6 +268,7 @@ def scan_recent_sessions(
         "unmapped_session_count": 0,
         "malformed_session_count": 0,
         "redacted_match_count": 0,
+        "excluded_retrieval_meta_turn_count": 0,
         "last_successful_scan_at": now.replace(microsecond=0).isoformat(),
     }
     for surface in ("claude_code", "codex"):
@@ -235,6 +289,11 @@ def scan_recent_sessions(
     chunk_chars = int(config.get("chunk_chars", 3200))
     overlap_chars = int(config.get("chunk_overlap_chars", 240))
     require_roots = bool(settings.get("require_source_roots", True))
+    excluded_probe_queries = [
+        str(query)
+        for query in settings.get("excluded_retrieval_probe_queries") or []
+        if isinstance(query, str) and query.strip()
+    ]
     parsed: list[tuple[ParsedSession, ProjectRecord]] = []
 
     for raw_surface in settings.get("surfaces") or []:
@@ -279,7 +338,12 @@ def scan_recent_sessions(
     parsed.sort(key=lambda item: item[0].ended_at, reverse=True)
     records: list[EvidenceRecord] = []
     for session, project in parsed:
-        redacted, redaction_count = redact_session_text(_bounded_turn_text(session.turns, max_session_chars))
+        evidence_turns, excluded_meta_turns = _without_retrieval_meta_turns(
+            session.turns,
+            excluded_probe_queries,
+        )
+        diagnostics["excluded_retrieval_meta_turn_count"] += excluded_meta_turns
+        redacted, redaction_count = redact_session_text(_bounded_turn_text(evidence_turns, max_session_chars))
         diagnostics["redacted_match_count"] += redaction_count
         chunks = chunk_text(redacted, chunk_chars, overlap_chars)
         if not chunks:

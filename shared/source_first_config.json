@@ -78,6 +78,15 @@
     "max_turn_chars": 1200,
     "max_session_chars": 24000,
     "require_source_roots": true,
+    "excluded_retrieval_probe_queries": [
+      "what is the capital of France",
+      "explain how quicksort works",
+      "convert 100 fahrenheit to celsius",
+      "write a haiku about autumn leaves",
+      "python list comprehension syntax",
+      "who was Albert Einstein",
+      "sourdough fermentation recipe"
+    ],
     "surfaces": [
       {
         "name": "claude_code",

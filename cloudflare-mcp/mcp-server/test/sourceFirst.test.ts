@@ -277,6 +277,40 @@ describe("source-first project index", () => {
 		expect((result.results as Array<Record<string, unknown>>)[0]?.exact_identifier_match).toBe(true);
 	});
 
+	it("recovers a strong ordinary lexical phrase that vector search misses", async () => {
+		const exact: SourceFirstEvidence = {
+			...evidence,
+			id: "ev_dsr",
+			title: "Multiple-testing controls",
+			text: "Compute the Deflated Sharpe Ratio over every logged trial.",
+		};
+		const semantic: SourceFirstEvidence = {
+			...evidence,
+			id: "ev_plain_sharpe",
+			title: "Backtest table",
+			text: "The strategy has a plain Sharpe ratio of 1.2.",
+		};
+		const values = new Map<string, unknown>([
+			["sf:current_generation", "sf_test"],
+			["sf:sf_test:suppressions", JSON.stringify({ rules: [] })],
+			["sf:sf_test:projects", JSON.stringify([])],
+			["sf:sf_test:lex:deflated", JSON.stringify(["ev_dsr"])],
+			["sf:sf_test:lex:sharpe", JSON.stringify(["ev_dsr", "ev_plain_sharpe"])],
+			["sf:sf_test:lex:ratio", JSON.stringify(["ev_dsr", "ev_plain_sharpe"])],
+			["sf:sf_test:evidence:ev_dsr", JSON.stringify(exact)],
+			["sf:sf_test:evidence:ev_plain_sharpe", JSON.stringify(semantic)],
+		]);
+		const redis = {
+			get: async (key: string) => values.get(key) ?? null,
+			mget: async (...keys: string[]) => keys.map((key) => values.get(key) ?? null),
+		};
+		const vector = { query: async () => [{ id: "ev_plain_sharpe", score: 0.8 }] };
+		const result = await sourceFirstSearch(redis as any, vector as any, [0.1], "deflated Sharpe ratio", 5);
+		const results = result.results as Array<Record<string, unknown>>;
+		expect(results[0]?.id).toBe("ev_dsr");
+		expect(results[0]?.exact_lexical_match).toBe(true);
+	});
+
 	it("reports a stale or mismatched generation heartbeat instead of silently serving it as healthy", () => {
 		const now = new Date("2026-08-08T12:00:00.000Z");
 		expect(evaluateSourceFirstFreshness(

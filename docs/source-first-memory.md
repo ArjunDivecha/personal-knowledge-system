@@ -30,8 +30,10 @@ updates cannot masquerade as recent project facts. The global
 
 Recent Claude Code and Codex conversational turns are integrated directly as
 `working_context` evidence. System/developer messages, tool calls, and tool
-outputs are excluded. Credentials are redacted before checksums, embeddings,
-artifacts, or remote writes. Session records use logical
+outputs are excluded. Deterministically identified retrieval-validation prompts
+and their PASS/FAIL reports are also excluded, preventing a negative-control
+query copied into a session from retrieving its own test transcript.
+Credentials are redacted before checksums, embeddings, artifacts, or remote writes. Session records use logical
 `session://<surface>/<session_id>` locators rather than local raw-log paths.
 
 ## Atomic generations
@@ -51,8 +53,9 @@ A failed build or evaluation cannot replace the last working generation.
 ## Retrieval
 
 When a query explicitly names a known project, its deterministic source records
-are selected before the general semantic candidates. Ranking within that set is
-fixed and inspectable:
+are selected before the general semantic candidates. A bounded inverted index
+also recovers opaque identifiers and strong exact lexical phrases that vector
+top-K misses. Ranking within that set is fixed and inspectable:
 
 - 70% semantic similarity;
 - 15% lexical overlap;

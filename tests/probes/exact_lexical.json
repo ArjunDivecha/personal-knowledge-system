@@ -60,6 +60,16 @@
     "notes": "Exact feature mnemonics. ROOT CAUSE (baseline miss, diagnosed 2026-07-06): 16 active entries contain '1MTR' (most tier 1) yet NONE reached the vector top-40 candidates — embeddings cannot match token-level mnemonics. This is the cleanest evidence for hybrid lexical candidate generation (upgrade-plan item 1). Extra target ids added from the Redis scan."
   },
   {
+    "id": "lex_deflated_sharpe_ratio",
+    "axis": "exact_lexical",
+    "enabled": true,
+    "priority": "high",
+    "query": "deflated Sharpe ratio",
+    "expect_any_of": ["Deflated Sharpe Ratio", "deflated Sharpe", "Bailey"],
+    "min_rank": 5,
+    "notes": "Regression for bounded ordinary-phrase recovery: DSR-specific source evidence must outrank plain Sharpe tables."
+  },
+  {
     "id": "lex_guarded_connect",
     "axis": "exact_lexical",
     "enabled": false,

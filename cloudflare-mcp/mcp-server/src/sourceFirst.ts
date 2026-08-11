@@ -53,6 +53,7 @@ export interface SourceFirstSearchResult extends SourceFirstEvidence {
 	explicit_project_match: boolean;
 	exact_identifier_match: boolean;
 	exact_identifier_count: number;
+	exact_lexical_match: boolean;
 	duplicate_count: number;
 	alternate_sources: Array<{
 		project: string | null;
@@ -151,17 +152,35 @@ export function findExplicitProject(
 	}) ?? null;
 }
 
+const TOKEN_STOP_WORDS = new Set([
+	"about", "and", "are", "architecture", "as", "at", "by", "current", "for",
+	"from", "how", "in", "into", "is", "now", "of", "on", "please", "project",
+	"recent", "status", "system", "tell", "to",
+	"that", "the", "this", "was", "were", "what", "when", "where", "with",
+]);
+
+function orderedTokens(text: string): string[] {
+	return (normalizedPhrase(text).match(/[a-z0-9]{2,}/g) ?? [])
+		.filter((token) => !TOKEN_STOP_WORDS.has(token));
+}
+
 function tokens(text: string): string[] {
-	const stopWords = new Set([
-		"about", "and", "are", "architecture", "as", "at", "by", "current", "for",
-		"from", "how", "in", "into", "is", "now", "of", "on", "please", "project",
-		"recent", "status", "system", "tell", "to",
-		"that", "the", "this", "was", "were", "what", "when", "where", "with",
-	]);
 	return [...new Set(
-		(normalizedPhrase(text).match(/[a-z0-9]{2,}/g) ?? [])
-			.filter((token) => !stopWords.has(token)),
+		orderedTokens(text),
 	)];
+}
+
+function hasStrongExactLexicalPhrase(query: string, evidence: SourceFirstEvidence): boolean {
+	const needle = orderedTokens(query);
+	if (needle.length < 3) return false;
+	return [evidence.title, evidence.project ?? "", evidence.source_path, evidence.text]
+		.some((field) => {
+			const haystack = orderedTokens(field);
+			for (let index = 0; index <= haystack.length - needle.length; index += 1) {
+				if (needle.every((token, offset) => haystack[index + offset] === token)) return true;
+			}
+			return false;
+		});
 }
 
 function queryIdentifierTerms(query: string): string[] {
@@ -252,6 +271,7 @@ export function scoreSourceFirstResult(
 		explicit_project_match: false,
 		exact_identifier_match: false,
 		exact_identifier_count: 0,
+		exact_lexical_match: false,
 		duplicate_count: 1,
 		alternate_sources: [],
 	};
@@ -325,19 +345,32 @@ export async function sourceFirstSearchGeneration(
 		}
 	}
 	const identifierTerms = queryIdentifierTerms(query);
+	const lexicalCandidateTerms = [...new Set([
+		...identifierTerms,
+		...tokens(query).filter((term) => term.length >= 4),
+	])].slice(0, 12);
 	const lexicalIds: string[] = [];
-	if (identifierTerms.length > 0) {
+	if (lexicalCandidateTerms.length > 0) {
 		const rawLexical = await redis.mget(
-			...identifierTerms.map((term) => `sf:${generation}:lex:${term}`),
+			...lexicalCandidateTerms.map((term) => `sf:${generation}:lex:${term}`),
 		);
+		const candidateCounts = new Map<string, number>();
 		for (const raw of rawLexical) {
 			try {
 				const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-				if (Array.isArray(parsed)) lexicalIds.push(...parsed.map(String).slice(0, 200));
+				if (Array.isArray(parsed)) {
+					for (const id of parsed.map(String).slice(0, 200)) {
+						candidateCounts.set(id, (candidateCounts.get(id) ?? 0) + 1);
+					}
+				}
 			} catch {
 				// A missing or malformed optional lexical bucket must not break vector search.
 			}
 		}
+		lexicalIds.push(...[...candidateCounts.entries()]
+			.sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+			.slice(0, 200)
+			.map(([id]) => id));
 	}
 	const ids = [...new Set([...semanticIds, ...lexicalIds, ...exactProjectIds])];
 	const rawRecords = ids.length > 0
@@ -353,6 +386,7 @@ export async function sourceFirstSearchGeneration(
 		const evidenceTerms = new Set(tokens(`${evidence.title}\n${evidence.project ?? ""}\n${evidence.source_path}\n${evidence.text}`));
 		scored.exact_identifier_count = identifierTerms.filter((term) => evidenceTerms.has(term)).length;
 		scored.exact_identifier_match = scored.exact_identifier_count > 0;
+		scored.exact_lexical_match = hasStrongExactLexicalPhrase(query, evidence);
 		scored.explicit_project_match = Boolean(
 			explicitProject && evidence.project === String(explicitProject.name),
 		);
@@ -363,6 +397,7 @@ export async function sourceFirstSearchGeneration(
 		|| Number(right.exact_identifier_match) - Number(left.exact_identifier_match)
 		||
 		Number(right.explicit_project_match) - Number(left.explicit_project_match)
+		|| Number(right.exact_lexical_match) - Number(left.exact_lexical_match)
 		|| right.final_score - left.final_score
 		|| right.similarity_score - left.similarity_score
 	);
@@ -385,6 +420,7 @@ export async function sourceFirstSearchGeneration(
 	const eligible = diverse.filter((result) =>
 		result.final_score >= SOURCE_FIRST_MIN_FINAL_SCORE
 		|| result.exact_identifier_match
+		|| result.exact_lexical_match
 		|| result.explicit_project_match
 	);
 	const abstained = eligible.length === 0;
@@ -398,7 +434,7 @@ export async function sourceFirstSearchGeneration(
 		abstain_reason: abstained ? "no_relevant_evidence_above_threshold" : null,
 		minimum_final_score: SOURCE_FIRST_MIN_FINAL_SCORE,
 		deduplication: "content_checksum",
-		scoring: "Exact identifiers and named projects are selected first; otherwise results must clear 0.65. Base: 0.70 semantic + 0.15 lexical + 0.10 source authority + 0.05 source recency. Working context adds 0.08 * semantic relevance * 3-day attention decay. Byte-identical chunks collapse by content checksum; explicit suppressions apply; no tiers, salience, classification, or access reinforcement.",
+		scoring: "Named projects, opaque identifiers, and strong exact lexical phrase matches receive deterministic candidate recovery; otherwise results must clear 0.65. Base: 0.70 semantic + 0.15 lexical + 0.10 source authority + 0.05 source recency. Working context adds 0.08 * semantic relevance * 3-day attention decay. Byte-identical chunks collapse by content checksum; explicit suppressions apply; no tiers, salience, classification, or access reinforcement.",
 	};
 }
 

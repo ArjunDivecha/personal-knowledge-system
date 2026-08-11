@@ -213,6 +213,82 @@ class SourceFirstScannerTests(unittest.TestCase):
         self.assertNotIn("password@example", redacted)
         self.assertNotIn("abcdefghijklmnop", redacted)
 
+    def test_recent_sessions_exclude_retrieval_validation_transcripts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project_root = root / "Memory"
+            codex_root = root / "codex"
+            project_root.mkdir()
+            codex_root.mkdir()
+            timestamp = "2026-08-11T17:23:10Z"
+            validation_prompt = """Use the Personal Knowledge app and actually call its tools.
+Run these checks and show a PASS/FAIL table with the raw supporting fields.
+Search for sourdough fermentation recipe and report working_context_bonus,
+content_checksum, and complete_source."""
+            validation_report = """Personal Knowledge validation
+PASS/FAIL Raw supporting fields
+abstain_reason: null; minimum_final_score: 0.65;
+working_context_bonus: 0.04; content_checksum: abc; complete_source: true."""
+            prose_report = """9 of 10 checks pass. One fails outright: the sourdough
+query does not abstain. This is a self-referential match on the test script.
+Raw supporting fields follow."""
+            live_acceptance = """The live acceptance checks now pass on the public MCP:
+sourdough returns an explicit empty abstention, working_context is labeled,
+and get_deep returns every source chunk."""
+            (codex_root / "session.jsonl").write_text("\n".join([
+                json.dumps({"type": "session_meta", "timestamp": timestamp, "payload": {"cwd": str(project_root), "id": "codex-meta"}}),
+                json.dumps({"type": "response_item", "timestamp": timestamp, "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Keep recent ASADO network spillover work at top of mind."}]}}),
+                json.dumps({"type": "response_item", "timestamp": timestamp, "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": validation_prompt}]}}),
+                json.dumps({"type": "response_item", "timestamp": timestamp, "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": validation_report}]}}),
+                json.dumps({"type": "response_item", "timestamp": timestamp, "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": prose_report}]}}),
+                json.dumps({"type": "response_item", "timestamp": timestamp, "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": live_acceptance}]}}),
+                json.dumps({"type": "response_item", "timestamp": timestamp, "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "A historical note quoted: sourdough fermentation recipe."}]}}),
+                json.dumps({"type": "response_item", "timestamp": timestamp, "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Decision: retain one source-first index and treat sessions as working context."}]}}),
+            ]) + "\n")
+            project = ProjectRecord("p1", "Memory", str(project_root), "active", timestamp, "summary")
+            config = {
+                "chunk_chars": 3200,
+                "chunk_overlap_chars": 240,
+                "recent_sessions": {
+                    "enabled": True,
+                    "retention_days": 30,
+                    "max_sessions_per_surface": 100,
+                    "max_total_chunks": 250,
+                    "max_turn_chars": 1200,
+                    "max_session_chars": 24000,
+                    "require_source_roots": True,
+                    "excluded_retrieval_probe_queries": ["sourdough fermentation recipe"],
+                    "surfaces": [{"name": "codex", "path": str(codex_root)}],
+                },
+            }
+
+            records, diagnostics = scan_recent_sessions(
+                config,
+                [project],
+                now=datetime(2026, 8, 11, 18, 0, tzinfo=UTC),
+            )
+            combined = "\n".join(record.text for record in records)
+            self.assertIn("ASADO network spillover", combined)
+            self.assertIn("one source-first index", combined)
+            self.assertNotIn("sourdough fermentation recipe", combined)
+            self.assertNotIn("minimum_final_score", combined)
+            self.assertEqual(diagnostics["excluded_retrieval_meta_turn_count"], 5)
+
+    def test_configured_negative_probes_are_excluded_from_session_evidence(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        config = json.loads((repo_root / "shared/source_first_config.json").read_text())
+        negative_probes = json.loads((repo_root / "tests/probes/negative.json").read_text())
+        configured = {
+            query.casefold()
+            for query in config["recent_sessions"]["excluded_retrieval_probe_queries"]
+        }
+        enabled = {
+            probe["query"].casefold()
+            for probe in negative_probes
+            if probe.get("enabled") is True
+        }
+        self.assertEqual(configured, enabled)
+
 
 class SourceFirstPublisherTests(unittest.TestCase):
     def make_record(self) -> EvidenceRecord:

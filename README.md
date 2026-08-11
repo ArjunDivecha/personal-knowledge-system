@@ -25,6 +25,8 @@ Recent sessions are not a second memory lane. They use the same
 and search calculation as durable files. They are marked `working_context`,
 retain lower authority than durable sources, and receive only a small
 semantic-relevance-gated attention lift with a three-day half-life.
+Retrieval-validation prompts and PASS/FAIL reports are excluded before
+chunking so probe vocabulary cannot become self-retrieving working context.
 
 ## Retrieval contract
 
@@ -46,7 +48,8 @@ working_context_bonus =
 final_score = min(1, base_score + working_context_bonus)
 ```
 
-Exact identifiers and explicitly named projects retain ordering priority.
+Exact identifiers, strong exact lexical phrases, and explicitly named projects
+receive deterministic candidate recovery and retain ordering priority.
 Byte-identical evidence collapses on `content_checksum`, with alternate source
 paths retained. General results must clear a `0.65` final-score floor; otherwise
 the service explicitly abstains and returns no evidence.
