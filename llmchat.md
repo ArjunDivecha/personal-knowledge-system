@@ -384,3 +384,49 @@ Diagnosed and fixed three nightly ingestion pipeline failures: ARCHIVE_PATH cras
 ---
 SESSION END: 2026-05-12 00:15 PST | Agent: Claude Code
 ---
+
+---
+SESSION START: 2026-08-13 02:30 PDT | Agent: Claude Code (Fable 5)
+
+Unblocked source-first promotion. Serving had been FROZEN at
+sf_20260812T210345Z since 2026-08-12 because probe proj_t2_pipeline_steps
+failed every rebuild, so the gate correctly refused to promote — and every
+Claude surface was reading day-old memory while 12 runs/day emailed failures.
+
+Root cause is the opposite of a regression. The probe was never migrated by
+the source-first cutover (61f86d6), which DID migrate three siblings in the
+same file. Post-cutover it was doubly dead: expect_entry_ids ke_df026db27b98 /
+ke_0cb343b00189 can never match (serving returns ev_ chunks), and "15-step" /
+"15 sequential" appear in NO source file — they described the retired curated
+entries; the real pipeline is Step 0-20. Its whole pass condition had decayed
+to one incidental "34-country" phrase in ARJUN.md landing in the top 5.
+
+What actually broke it: A Complete/T2 Factor Timing Fuzzy Daily/README.md was
+updated 2026-08-12 16:27 (Version 2.2) — the same hour failures began — and its
+step-by-step section now legitimately owns the entire top 5 at final_score
+0.71-0.75, displacing the ARJUN/FABLE commentary chunks. Retrieval improved and
+the stale probe punished it.
+
+Fix (9de79d5 then 84207b5): first attempt anchored on the displaced docs and
+still failed. Corrected by reading the runner's own candidate-eval JSON
+(scripts/reports/source_first/candidate-eval-sf_20260813T094224Z.json) and
+resolving its top-5 ev_ ids against that generation's evidence.jsonl — which is
+how the README displacement was measured rather than guessed. Final probe
+asserts across BOTH the winning README ("step-by-step", "Step 2.5", "Step 20")
+and the commentary docs ("Steps 3-20", "34 countries", "34-country"), so a
+ranking shift between them cannot break it again. Verified offline by replaying
+resultText() over the exact five failing chunks before pushing; then run #35
+green, 52/52, sf_20260813T094909Z promoted, live MCP search confirms the move.
+
+REJECTED: broadening expect_any_of until green; a source_path match (vacuous,
+the query names the project); writing "15-step" into the T2 docs to resurrect
+the old assertion.
+
+STILL OPEN — 11 probes total carry ke_ ids that can never match post-cutover
+(5 exact_lexical.json, 5 project.json, 1 explicit_save.json). Ten are still
+green PURELY on their text fallbacks, i.e. on the same luck this one ran out
+of. Recommend migrating them deliberately rather than one outage at a time.
+tests/probes/README.md line 15 still calls expect_entry_ids "preferred", which
+is pre-cutover advice and now actively misleading.
+
+SESSION END: 2026-08-13 03:00 PDT | Agent: Claude Code (Fable 5)
