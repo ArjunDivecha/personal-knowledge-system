@@ -15,9 +15,8 @@
     "enabled": true,
     "priority": "high",
     "query": "T2 factor timing pipeline structure how many steps",
-    "expect_entry_ids": ["ke_df026db27b98", "ke_0cb343b00189"],
-    "expect_any_of": ["15-step", "15 sequential", "34 countries", "34-country"],
-    "notes": "Verified live 2026-07-05: two active entries describe the 15-step / 34-country T2 system (they are a duplicate pair — if a Dream merge retires one id, the other or the text fallback still passes)."
+    "expect_any_of": ["Steps 3-20", "Steps 0-2.5", "34 countries", "34-country"],
+    "notes": "Migrated 2026-08-13 (source-first). Was expecting ke_df026db27b98 / ke_0cb343b00189 plus '15-step' / '15 sequential'. Source-first serving returns ev_ chunks, so the ke_ ids could never hit again, and NEITHER '15-step' NOR '15 sequential' appears in any source file — those phrases only ever existed in the retired curated entries, and the current docs describe a Step 0-20 pipeline, not a 15-step one. That left one accidental '34-country' phrase in ARJUN.md as the entire pass condition, which flipped when ranking drifted (failing since 2026-08-12). Current source of truth: 'Steps 3-20' in ARJUN.md AND FABLE.md (the two highest-ranking docs for this query), 'Steps 0-2.5' in ARJUN.md, '34 countries' in CLAUDE.md and FILL_FIX_2026-08-09.md, '34-country' in ARJUN.md — four on-topic phrases spanning four documents, so no single chunk's rank decides the probe."
   },
   {
     "id": "proj_news_flash_step",
