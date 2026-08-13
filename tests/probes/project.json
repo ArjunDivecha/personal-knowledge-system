@@ -5,9 +5,8 @@
     "enabled": true,
     "priority": "high",
     "query": "where is the ASADO analytical warehouse stored",
-    "expect_entry_ids": ["ke_ae0a7d555995"],
     "expect_any_of": ["asado.duckdb", "DuckDB warehouse"],
-    "notes": "Verified live 2026-07-05: ke_ae0a7d555995 'ASADO consolidates into a single analytical DuckDB warehouse at Data/asado.duckdb'."
+    "notes": "Verified live 2026-07-05: ke_ae0a7d555995 'ASADO consolidates into a single analytical DuckDB warehouse at Data/asado.duckdb'. MIGRATED 2026-08-13 (source-first): dropped expect_entry_ids [ke_ae0a7d555995] — ke_ ids can never match post-cutover. Behaviour unchanged. Measured against sf_20260813T094909Z: 'asado.duckdb' hits 4/5 top chunks; 'DuckDB warehouse' hits 0/5 but is live in 5 corpus chunks, so it is kept as a genuine miss signal rather than deleted."
   },
   {
     "id": "proj_t2_pipeline_steps",
@@ -24,9 +23,8 @@
     "enabled": true,
     "priority": "medium",
     "query": "which step of the News pipeline generates the Flash report",
-    "expect_entry_ids": ["ke_449ce54a214a"],
     "expect_any_of": ["Step 4", "step 4"],
-    "notes": "Verified live 2026-07-05: ke_449ce54a214a 'Flash report generation is Step 4 in a multi-step pipeline'."
+    "notes": "Verified live 2026-07-05: ke_449ce54a214a 'Flash report generation is Step 4 in a multi-step pipeline'. MIGRATED 2026-08-13 (source-first): dropped expect_entry_ids [ke_449ce54a214a] — ke_ ids can never match post-cutover. Behaviour unchanged. NOTE the two remaining entries are NOT independent: the evaluator lowercases both sides, so 'Step 4' and 'step 4' are the same single assertion, measured at 2/5 top chunks against sf_20260813T094909Z. Effectively a one-phrase probe."
   },
   {
     "id": "proj_lawbot_vercel_limits",
@@ -43,9 +41,8 @@
     "enabled": true,
     "priority": "high",
     "query": "what infrastructure does my personal knowledge system run on",
-    "expect_entry_ids": ["ke_2fa5449b8c5b", "ke_9dc9ab024969"],
     "expect_any_of": ["Cloudflare Worker", "Upstash Redis"],
-    "notes": "Verified live 2026-07-05: ke_2fa5449b8c5b 'PKS runs on Cloudflare Worker (write gateway) + Upstash Redis (source of truth)'."
+    "notes": "Verified live 2026-07-05: ke_2fa5449b8c5b 'PKS runs on Cloudflare Worker (write gateway) + Upstash Redis (source of truth)'. MIGRATED 2026-08-13 (source-first): dropped expect_entry_ids [ke_2fa5449b8c5b, ke_9dc9ab024969] — ke_ ids can never match post-cutover. Behaviour unchanged. Measured against sf_20260813T094909Z: 'Cloudflare Worker' hits 3/5 and 'Upstash Redis' 2/5 — two genuinely independent phrases, so this one is robust."
   },
   {
     "id": "proj_lora_config",
@@ -71,8 +68,7 @@
     "enabled": false,
     "priority": "low",
     "query": "how many Factor nodes get daily enrichment in Neo4j",
-    "expect_entry_ids": ["ke_ef3260ba0530"],
     "expect_any_of": ["157 Factor nodes", "9 daily performance"],
-    "notes": "OPERATOR: verify 157/9 are still current before enabling."
+    "notes": "OPERATOR: verify 157/9 are still current before enabling. MIGRATED 2026-08-13 (source-first): dropped expect_entry_ids [ke_ef3260ba0530] — ke_ ids can never match post-cutover. Still disabled, so no retrieval data exists for it. DO NOT simply flip enabled to true: a scan of generation sf_20260813T094909Z found '157 Factor nodes' in 0 of 3477 corpus chunks, so as written this probe would fail immediately and block promotion. Establish the current Neo4j figures from a live source first, then write the assertion against a document that actually contains them."
   }
 ]

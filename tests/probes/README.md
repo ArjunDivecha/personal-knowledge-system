@@ -12,7 +12,7 @@ One JSON file per axis. Runner: `scripts/run_eval.py`. Reports land in
 | `enabled` | yes | disabled probes are loaded but not scored (drafts) |
 | `priority` | no | `high` / `medium` / `low` (reporting only) |
 | `query` | yes | the search query sent to the MCP `search` tool |
-| `expect_entry_ids` | no | pass if ANY of these ids appears in top-k (preferred — survives wording changes; note: merges can retire ids, so keep a text fallback) |
+| `expect_entry_ids` | no | **DEAD since the 2026-08-09 source-first cutover — do not add new ones.** Source-first serving returns `ev_` evidence chunks, so a `ke_` id can never appear in top-k and the field silently contributes nothing. Every probe that carried one was migrated 2026-08-13; see their `notes` for the ids that were removed. |
 | `expect_any_of` | no | pass if ANY of these strings appears (case-insensitive) in a top-k result's label/summary |
 | `forbid_any_of` | no | FAIL (stale leak) if ANY of these strings appears un-flagged in top-k |
 | `min_rank` | no | k for this probe (default: runner `--k`, 5) |

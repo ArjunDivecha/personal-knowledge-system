@@ -5,9 +5,8 @@
     "enabled": true,
     "priority": "high",
     "query": "what is my eval discipline for changing PKS retrieval",
-    "expect_entry_ids": ["ke_85828e07e5d64b1a"],
     "expect_any_of": ["run_eval.py", "before/after"],
-    "notes": "Canary entry created 2026-07-06 via create_entry (the first-ever explicit_save entry in production — the class was EMPTY before it: a full read-only Redis scan on 2026-07-06 found 0 entries with context_type=explicit_save among 6,945 active knowledge keys). Beyond recall, this probe watches whether Layer-2/retier ever weakens the highest-authority context class (June review C4)."
+    "notes": "Canary entry created 2026-07-06 via create_entry (the first-ever explicit_save entry in production — the class was EMPTY before it: a full read-only Redis scan on 2026-07-06 found 0 entries with context_type=explicit_save among 6,945 active knowledge keys). Beyond recall, this probe watches whether Layer-2/retier ever weakens the highest-authority context class (June review C4). MIGRATED 2026-08-13 (source-first): dropped expect_entry_ids [ke_85828e07e5d64b1a] — ke_ ids can never match post-cutover, which matters more here than elsewhere because the canary entry itself was the point; the class is now watched through the text fallback only. FRAGILITY WARNING: measured against sf_20260813T094909Z, 'run_eval.py' hits just 1/5 top chunks and 'before/after' hits 0/5 (though it is live in 28 corpus chunks), so this probe is one ranking shift from failing and blocking promotion."
   },
   {
     "id": "esave_class_empty_note",

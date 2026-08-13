@@ -5,9 +5,8 @@
     "enabled": true,
     "priority": "high",
     "query": "Data/asado.duckdb",
-    "expect_entry_ids": ["ke_ae0a7d555995"],
     "expect_any_of": ["asado.duckdb"],
-    "notes": "Exact file path. Pure-vector retrieval is expected to be weak here; this axis is the before/after number for hybrid retrieval (upgrade-plan item 1)."
+    "notes": "Exact file path. Pure-vector retrieval is expected to be weak here; this axis is the before/after number for hybrid retrieval (upgrade-plan item 1). MIGRATED 2026-08-13 (source-first): dropped expect_entry_ids [ke_ae0a7d555995] — source-first serving returns ev_ chunks, so ke_ ids can never match and the text fallback was already carrying the probe alone. Behaviour is unchanged. Measured against generation sf_20260813T094909Z: 'asado.duckdb' hits 5/5 top chunks, so this one is robust."
   },
   {
     "id": "lex_bbg_hist_fields",
@@ -15,9 +14,8 @@
     "enabled": true,
     "priority": "high",
     "query": "bbg.hist PX_BID PX_ASK",
-    "expect_entry_ids": ["ke_153bb3d8adb3"],
     "expect_any_of": ["PX_BID", "PX_ASK", "bbg.hist"],
-    "notes": "Exact API call + Bloomberg field mnemonics. ROOT CAUSE (baseline miss, diagnosed 2026-07-06): the original target ke_7a7bc070fbde was merged away ~2026-07-05/06 and 'PX_BID' now appears in ZERO active entries (full Redis scan) — live summarization drift; content recoverable only from archive snapshots. 'bbg.hist' survives in exactly one entry (ke_153bb3d8adb3, BLPAPI wrapper pattern), now the target. This probe doubles as a drift sentinel."
+    "notes": "Exact API call + Bloomberg field mnemonics. ROOT CAUSE (baseline miss, diagnosed 2026-07-06): the original target ke_7a7bc070fbde was merged away ~2026-07-05/06 and 'PX_BID' now appears in ZERO active entries (full Redis scan) — live summarization drift; content recoverable only from archive snapshots. 'bbg.hist' survives in exactly one entry (ke_153bb3d8adb3, BLPAPI wrapper pattern), now the target. This probe doubles as a drift sentinel. MIGRATED 2026-08-13 (source-first): dropped expect_entry_ids [ke_153bb3d8adb3] — ke_ ids can never match post-cutover. PX_BID/PX_ASK DELIBERATELY KEPT: a corpus scan of generation sf_20260813T094909Z confirms both still appear in 0 of 3477 chunks, so they remain the drift sentinel described above — do not delete them to make the probe look healthier. FRAGILITY WARNING: the entire pass now rests on 'bbg.hist', which hits only 1/5 top chunks (it is in 10 corpus chunks). One ranking shift and this probe fails and blocks promotion, exactly as proj_t2_pipeline_steps did on 2026-08-12."
   },
   {
     "id": "lex_embedding_model_name",
@@ -25,9 +23,8 @@
     "enabled": true,
     "priority": "high",
     "query": "text-embedding-3-large",
-    "expect_entry_ids": ["ke_231701212087"],
     "expect_any_of": ["text-embedding-3-large", "3072"],
-    "notes": "Exact model identifier. Verified live 2026-07-05: ke_231701212087 documents the 1536/3072 dimension mismatch."
+    "notes": "Exact model identifier. Verified live 2026-07-05: ke_231701212087 documented the 1536/3072 dimension mismatch. MIGRATED 2026-08-13 (source-first): dropped expect_entry_ids [ke_231701212087] — ke_ ids can never match post-cutover. Behaviour unchanged. Measured against sf_20260813T094909Z: both 'text-embedding-3-large' and '3072' hit 5/5 top chunks — the most robust probe in this file."
   },
   {
     "id": "lex_repo_news",
@@ -45,9 +42,8 @@
     "enabled": true,
     "priority": "medium",
     "query": "Corwin-Schultz spread estimator",
-    "expect_entry_ids": ["ke_59dd7975c96b"],
     "expect_any_of": ["Corwin-Schultz"],
-    "notes": "Proper-noun estimator name. Verified live 2026-07-05: ke_59dd7975c96b."
+    "notes": "Proper-noun estimator name. Verified live 2026-07-05: ke_59dd7975c96b. MIGRATED 2026-08-13 (source-first): dropped expect_entry_ids [ke_59dd7975c96b] — ke_ ids can never match post-cutover. Behaviour unchanged. Measured against sf_20260813T094909Z: 'Corwin-Schultz' hits 4/5 top chunks."
   },
   {
     "id": "lex_1mtr_3mtr_12mtr",
@@ -55,9 +51,8 @@
     "enabled": true,
     "priority": "medium",
     "query": "1MTR 3MTR 12MTR signal direction",
-    "expect_entry_ids": ["ke_9443a2946ad1", "ke_07de3487a6d7", "ke_17bd296a39cb", "ke_676a9207b02e"],
     "expect_any_of": ["1MTR", "mean-rever"],
-    "notes": "Exact feature mnemonics. ROOT CAUSE (baseline miss, diagnosed 2026-07-06): 16 active entries contain '1MTR' (most tier 1) yet NONE reached the vector top-40 candidates — embeddings cannot match token-level mnemonics. This is the cleanest evidence for hybrid lexical candidate generation (upgrade-plan item 1). Extra target ids added from the Redis scan."
+    "notes": "Exact feature mnemonics. ROOT CAUSE (baseline miss, diagnosed 2026-07-06): 16 active entries contain '1MTR' (most tier 1) yet NONE reached the vector top-40 candidates — embeddings cannot match token-level mnemonics. This is the cleanest evidence for hybrid lexical candidate generation (upgrade-plan item 1). MIGRATED 2026-08-13 (source-first): dropped expect_entry_ids [ke_9443a2946ad1, ke_07de3487a6d7, ke_17bd296a39cb, ke_676a9207b02e] — ke_ ids can never match post-cutover. Behaviour unchanged, and the 2026-07-06 finding has since REVERSED under source-first: measured against sf_20260813T094909Z, '1MTR' now hits 5/5 top chunks. 'mean-rever' hits 0/5 but is live in 24 corpus chunks, so it is kept as a genuine miss signal rather than deleted."
   },
   {
     "id": "lex_deflated_sharpe_ratio",
