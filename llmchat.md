@@ -430,3 +430,48 @@ tests/probes/README.md line 15 still calls expect_entry_ids "preferred", which
 is pre-cutover advice and now actively misleading.
 
 SESSION END: 2026-08-13 03:00 PDT | Agent: Claude Code (Fable 5)
+
+---
+SESSION START: 2026-08-13 03:00 PDT (cont.) | Agent: Claude Code (Fable 5)
+
+Finished the probe migration the source-first cutover left half-done: retired
+the dead ke_ entry ids from all 10 remaining probes (5 exact_lexical, 4
+project, 1 explicit_save) plus the misleading README guidance. Commit 4631bf1.
+
+WHY THIS WAS HYGIENE, NOT A BEHAVIOUR CHANGE: idHit was already permanently
+false post-cutover, and every affected probe also carried expect_any_of, so
+expectedFound == textHit before and after. Proven, not assumed — replayed the
+evaluator's own matching logic over the exact chunks generation
+sf_20260813T094909Z retrieved: 52/52 pass, 0 outcomes changed. Then confirmed
+live: run #36 green, 52/52, sf_20260813T100150Z promoted.
+
+WHAT I DELIBERATELY DID NOT DO — this was the main judgement call. Several
+missing expect_any_of phrases looked like dead weight; a corpus scan separated
+two very different cases, and only one is safe to touch:
+  - GENUINELY ABSENT (0 of 3477 chunks): PX_BID, PX_ASK, '157 Factor nodes'.
+    But PX_BID/PX_ASK were KEPT anyway — lex_bbg_hist_fields' own notes say it
+    "doubles as a drift sentinel", so their absence IS the measurement. Deleting
+    them would have destroyed the instrument while making the file look tidier.
+  - LIVE BUT UNRETRIEVED: 'mean-rever' (24 chunks), 'before/after' (28),
+    'DuckDB warehouse' (5). Kept as genuine miss signals. Removing these would
+    have masked a real retrieval gap — the exact false-OK this suite exists to
+    prevent.
+  No phrase was broadened or added to make anything greener.
+
+FRAGILITY NOW RECORDED IN EACH PROBE'S NOTES (measured hit rates):
+  robust  — lex_embedding_model_name 5/5 x2, lex_asado_duckdb_path 5/5,
+            lex_1mtr_3mtr_12mtr 5/5 (the 2026-07-06 "embeddings cannot match
+            mnemonics" finding has REVERSED under source-first),
+            lex_corwin_schultz 4/5, proj_pks_stack 3/5 + 2/5,
+            proj_asado_warehouse 4/5
+  THIN    — lex_bbg_hist_fields 1/5 and esave_eval_discipline 1/5 are each one
+            ranking shift from failing and freezing promotion, exactly as
+            proj_t2_pipeline_steps did. Arjun's call whether to harden them;
+            hardening trades sentinel sensitivity for uptime, so I did not
+            decide it unilaterally.
+  TRAP    — proj_news_flash_step's 'Step 4'/'step 4' are ONE assertion, not two
+            (the evaluator lowercases both sides). Effectively 2/5.
+  DO NOT ENABLE — proj_neo4j_factors: '157 Factor nodes' is in 0 chunks, so
+            flipping enabled:true would fail on sight and block promotion.
+
+SESSION END: 2026-08-13 03:07 PDT | Agent: Claude Code (Fable 5)
