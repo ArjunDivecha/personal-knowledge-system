@@ -55,3 +55,6 @@ scripts/reports/
 !**/.env.example
 # Checkpoints (large binary files)
 **/checkpoints/
+
+# Run outputs (house rule: results/reports are not committed)
+runs/
