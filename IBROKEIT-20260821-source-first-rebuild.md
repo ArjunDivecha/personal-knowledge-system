@@ -250,3 +250,33 @@ probes measure, and `neg_quicksort` now passes.
   content inflates lexical overlap corpus-wide. Fixing that might recover part of the 8-question
   cost above. Not done here: it is a second ranking change, and rule 2 of the eval discipline
   now in curated memory is *change one thing at a time*.
+
+
+---
+
+## Correction to the timeline above (added after the CI history was re-read)
+
+The header says "7 consecutive failures". That was accurate when written (04:54Z through
+16:51Z) but the sequence continued while this document was being drafted:
+
+| Time | Result | Why |
+|:--|:--|:--|
+| 04:54Z – 16:51Z | 7 x failure | `esave_eval_discipline` — my `beam-eval/README.md` |
+| **18:56Z** | **success** | `esave` passed **for the wrong reason** — see below |
+| 20:41Z | failure | `neg_quicksort` — the 18:55Z Prediction Markets session |
+
+So serving was NOT frozen the whole time: `sf_20260821T185636Z` promoted at 19:02:40Z.
+
+**The 18:56Z pass is worth reading closely, because it is a false green.** Its top-3
+`final_score` values for `esave_eval_discipline` were `[0.27, 0.27, 0.7318]`. The top two
+results scored **0.27** — far below the 0.65 floor — and were admitted only by the
+identifier/lexical floor bypass that defect #1 produces. One of them happened to contain
+`run_eval.py`, so the probe passed. The gate went green on junk carrying the right substring.
+
+That makes the case for both fixes stronger, not weaker:
+
+- The gate was **flaky in both directions** — failing on a legitimate ranking shift, and
+  passing on floor-bypassed noise.
+- After the fixes it is deterministic for the right reasons: `esave` matches a curated entry
+  at **0.8565 at rank 1**, and `neg_quicksort` abstains because the below-floor session record
+  is no longer admitted.
