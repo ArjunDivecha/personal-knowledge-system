@@ -425,13 +425,26 @@ export async function sourceFirstSearchGeneration(
 		);
 		results.push(scored);
 	}
+	// Matching an opaque identifier is a strong prior — it is how a query for
+	// "1MTR" recovers the one chunk naming it when vector search ranks a broad
+	// factor-research chunk higher. So an identifier match still leads.
+	//
+	// But HOW MANY distinct identifier terms a chunk matched says nothing about
+	// how well it answers the question, and using that count as the primary key
+	// let arbitrarily irrelevant chunks lead. Measured on BEAM 2026-08-21: a
+	// chunk matching both REST and API led at final_score 0.18 against 0.738,
+	// and for a "cost-saving" query the best chunk (0.772) matched one of two
+	// terms instead of two and fell to rank 5 behind a chunk scoring 0.139.
+	//
+	// Fix: tier on WHETHER a chunk matched an identifier, then order within that
+	// tier by relevance. The count survives only as a late tiebreaker between
+	// results that already scored equally.
 	results.sort((left, right) =>
-		right.exact_identifier_count - left.exact_identifier_count
-		|| Number(right.exact_identifier_match) - Number(left.exact_identifier_match)
-		||
-		Number(right.explicit_project_match) - Number(left.explicit_project_match)
+		Number(right.exact_identifier_match) - Number(left.exact_identifier_match)
+		|| Number(right.explicit_project_match) - Number(left.explicit_project_match)
 		|| Number(right.exact_lexical_match) - Number(left.exact_lexical_match)
 		|| right.final_score - left.final_score
+		|| right.exact_identifier_count - left.exact_identifier_count
 		|| right.similarity_score - left.similarity_score
 	);
 	const diverse: SourceFirstSearchResult[] = [];

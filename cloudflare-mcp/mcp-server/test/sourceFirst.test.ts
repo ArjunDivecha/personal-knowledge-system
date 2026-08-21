@@ -277,6 +277,56 @@ describe("source-first project index", () => {
 		expect((result.results as Array<Record<string, unknown>>)[0]?.exact_identifier_match).toBe(true);
 	});
 
+	// Regression: BEAM run 20260821T0435Z_fix1. exact_identifier_count was the
+	// PRIMARY sort key, so matching MORE distinct identifier terms beat being
+	// more relevant. Observed: a chunk matching both REST and API led at
+	// final_score 0.18 against 0.738. An identifier match must still lead over a
+	// non-match (that is how 1MTR recovery works), but among chunks that all
+	// matched something, relevance decides.
+	it("orders results that all match an identifier by relevance, not match count", async () => {
+		const twoTermsIrrelevant: SourceFirstEvidence = {
+			...evidence,
+			id: "ev_two_terms",
+			title: "Unrelated aside",
+			text: "A passing note about a REST endpoint and an API key rotation chore.",
+		};
+		const oneTermRelevant: SourceFirstEvidence = {
+			...evidence,
+			id: "ev_one_term",
+			title: "REST error handling",
+			text: "Typical REST errors to handle: timeouts, 429 rate limits, 500s, and malformed payloads.",
+		};
+		const values = new Map<string, unknown>([
+			["sf:current_generation", "sf_test"],
+			["sf:sf_test:suppressions", JSON.stringify({ rules: [] })],
+			["sf:sf_test:projects", JSON.stringify([])],
+			["sf:sf_test:lex:rest", JSON.stringify(["ev_two_terms", "ev_one_term"])],
+			["sf:sf_test:lex:api", JSON.stringify(["ev_two_terms"])],
+			["sf:sf_test:evidence:ev_two_terms", JSON.stringify(twoTermsIrrelevant)],
+			["sf:sf_test:evidence:ev_one_term", JSON.stringify(oneTermRelevant)],
+		]);
+		const redis = {
+			get: async (key: string) => values.get(key) ?? null,
+			mget: async (...keys: string[]) => keys.map((key) => values.get(key) ?? null),
+		};
+		// The relevant chunk is also what vector search prefers.
+		const vector = {
+			query: async () => [{ id: "ev_one_term", score: 0.95 }, { id: "ev_two_terms", score: 0.2 }],
+		};
+		const result = await sourceFirstSearch(
+			redis as any, vector as any, [0.1],
+			"When building against a REST API, what errors should I handle?", 5,
+		);
+		const rows = result.results as Array<Record<string, unknown>>;
+		expect(rows[0]?.id).toBe("ev_one_term");
+		// The count is still recorded, it just no longer dictates the order.
+		const twoTermRow = rows.find((row) => row.id === "ev_two_terms");
+		if (twoTermRow) {
+			expect(twoTermRow.exact_identifier_count as number)
+				.toBeGreaterThanOrEqual(rows[0]?.exact_identifier_count as number);
+		}
+	});
+
 	// Regression: BEAM baseline 2026-08-21 (beam-eval run 20260821T0415Z_baseline).
 	// queryIdentifierTerms treated any ALL-CAPS word as an opaque identifier, so
 	// "Mention ONLY and ALL of the concepts" produced identifier terms
