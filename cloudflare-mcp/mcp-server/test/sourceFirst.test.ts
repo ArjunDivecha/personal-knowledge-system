@@ -277,6 +277,80 @@ describe("source-first project index", () => {
 		expect((result.results as Array<Record<string, unknown>>)[0]?.exact_identifier_match).toBe(true);
 	});
 
+	// Regression: BEAM baseline 2026-08-21 (beam-eval run 20260821T0415Z_baseline).
+	// queryIdentifierTerms treated any ALL-CAPS word as an opaque identifier, so
+	// "Mention ONLY and ALL of the concepts" produced identifier terms
+	// [only, all, concepts]. Because exact_identifier_count is the primary sort
+	// key AND bypasses the 0.65 floor, every chunk containing "only" outranked
+	// genuinely relevant results — observed top-1 scoring 0.175 against a
+	// runner-up at 0.755.
+	it("does not treat an emphasized common word as an exact identifier", async () => {
+		const relevant: SourceFirstEvidence = {
+			...evidence,
+			id: "ev_relevant",
+			title: "Triangle geometry concepts",
+			text: "We covered the triangle inequality, then similar triangles, then the law of cosines.",
+		};
+		const filler: SourceFirstEvidence = {
+			...evidence,
+			id: "ev_filler",
+			title: "Unrelated scheduling note",
+			text: "I only had time for a short session, and all of it went to logistics.",
+		};
+		const values = new Map<string, unknown>([
+			["sf:current_generation", "sf_test"],
+			["sf:sf_test:suppressions", JSON.stringify({ rules: [] })],
+			["sf:sf_test:projects", JSON.stringify([])],
+			["sf:sf_test:lex:only", JSON.stringify(["ev_filler"])],
+			["sf:sf_test:lex:all", JSON.stringify(["ev_filler"])],
+			["sf:sf_test:evidence:ev_relevant", JSON.stringify(relevant)],
+			["sf:sf_test:evidence:ev_filler", JSON.stringify(filler)],
+		]);
+		const redis = {
+			get: async (key: string) => values.get(key) ?? null,
+			mget: async (...keys: string[]) => keys.map((key) => values.get(key) ?? null),
+		};
+		const vector = { query: async () => [{ id: "ev_relevant", score: 0.82 }] };
+		const result = await sourceFirstSearch(
+			redis as any, vector as any, [0.1],
+			"List the triangle geometry concepts in order. Mention ONLY and ALL of the concepts.",
+			5,
+		);
+		const rows = result.results as Array<Record<string, unknown>>;
+		expect(rows[0]?.id).toBe("ev_relevant");
+		expect(rows.find((row) => row.id === "ev_filler")?.exact_identifier_match ?? false).toBe(false);
+	});
+
+	// Regression: same baseline. A trailing sentence period made "concepts."
+	// match the identifier-punctuation rule, so an ordinary noun ending a
+	// sentence became an opaque identifier.
+	it("does not treat a word ending a sentence as a punctuated identifier", async () => {
+		const filler: SourceFirstEvidence = {
+			...evidence,
+			id: "ev_filler",
+			title: "Unrelated note",
+			text: "A stray mention of concepts with no bearing on the question.",
+		};
+		const values = new Map<string, unknown>([
+			["sf:current_generation", "sf_test"],
+			["sf:sf_test:suppressions", JSON.stringify({ rules: [] })],
+			["sf:sf_test:projects", JSON.stringify([])],
+			["sf:sf_test:lex:concepts", JSON.stringify(["ev_filler"])],
+			["sf:sf_test:evidence:ev_filler", JSON.stringify(filler)],
+		]);
+		const redis = {
+			get: async (key: string) => values.get(key) ?? null,
+			mget: async (...keys: string[]) => keys.map((key) => values.get(key) ?? null),
+		};
+		const vector = { query: async () => [{ id: "ev_filler", score: 0.2 }] };
+		const result = await sourceFirstSearch(
+			redis as any, vector as any, [0.1], "Please summarize the concepts.", 5,
+		);
+		// Nothing clears the floor on relevance, and no identifier match may
+		// smuggle the filler past it.
+		expect(result.abstained).toBe(true);
+	});
+
 	it("recovers a strong ordinary lexical phrase that vector search misses", async () => {
 		const exact: SourceFirstEvidence = {
 			...evidence,

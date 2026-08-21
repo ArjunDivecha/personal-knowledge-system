@@ -183,16 +183,49 @@ function hasStrongExactLexicalPhrase(query: string, evidence: SourceFirstEvidenc
 		});
 }
 
+// An "opaque identifier" is a token unlikely to occur as ordinary prose — 1MTR,
+// flask_sqlalchemy, a filename. Matching one is strong enough evidence that it
+// both bypasses the relevance floor and sorts ahead of final_score, so a common
+// English word misclassified here outranks genuinely relevant results.
+//
+// Two ways that happened in the BEAM 2026-08-21 baseline:
+//   "Mention ONLY and ALL of the concepts."  ONLY/ALL matched the acronym rule,
+//                                            and "concepts." kept its trailing
+//                                            period so it matched the
+//                                            punctuation rule.
+//   "the one-way cost law"                   split into the fragments one + way.
+// Both made every chunk containing a filler word an exact-identifier match.
+const COMMON_WORD_NOT_AN_IDENTIFIER = new Set([
+	"all", "and", "any", "are", "back", "both", "but", "can", "day", "did", "does", "done",
+	"down", "each", "else", "even", "ever", "every", "few", "for", "from", "full", "get",
+	"had", "has", "have", "her", "here", "him", "his", "how", "into", "its", "just", "keep",
+	"kind", "last", "less", "let", "like", "long", "made", "make", "many", "may", "might",
+	"more", "most", "much", "must", "need", "new", "next", "not", "now", "off", "old", "one",
+	"only", "onto", "our", "out", "over", "own", "part", "per", "put", "real",
+	"same", "see", "set", "she", "should", "since", "some", "such", "sure", "take", "than",
+	"that", "the", "their", "them", "then", "there", "these", "they", "thing", "this",
+	"those", "three", "through", "time", "too", "top", "true", "try", "two", "under", "until",
+	"use", "used", "very", "want", "was", "way", "well", "were", "what", "when", "where",
+	"which", "while", "who", "why", "will", "with", "would", "yes", "yet", "you", "your",
+]);
+
 function queryIdentifierTerms(query: string): string[] {
 	const rawTerms = query.match(/[A-Za-z0-9][A-Za-z0-9._/-]{2,}/g) ?? [];
 	return [...new Set(rawTerms
+		// Sentence punctuation is not identifier punctuation: "concepts." must not
+		// qualify as an identifier merely for ending a sentence.
+		.map((term) => term.replace(/^[._/-]+/, "").replace(/[._/-]+$/, ""))
+		.filter((term) => term.length >= 3)
 		.filter((term) =>
 			(/[0-9]/.test(term) && /[A-Za-z]/.test(term))
 			|| /[._/-]/.test(term)
 			|| /^[A-Z]{2,}$/.test(term)
 			|| /[a-z][A-Z]/.test(term)
 		)
-		.flatMap((term) => normalizedPhrase(term).match(/[a-z0-9]{3,}/g) ?? []))];
+		.flatMap((term) => normalizedPhrase(term).match(/[a-z0-9]{3,}/g) ?? [])
+		// A fragment that is an ordinary English word carries no identifying
+		// power, however opaque the token it was split out of looked.
+		.filter((fragment) => !COMMON_WORD_NOT_AN_IDENTIFIER.has(fragment)))];
 }
 
 export function lexicalOverlap(query: string, evidence: SourceFirstEvidence): number {
