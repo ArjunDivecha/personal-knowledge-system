@@ -68,8 +68,13 @@ For `working_context` only, retrieval adds:
 0.08 * semantic_similarity * exp(-ln(2) * age_days / 3)
 ```
 
-The lift describes attention, not authority. It cannot rescue unrelated session
-text because it is multiplied by semantic relevance.
+The lift describes attention, not authority. It may reorder evidence that
+already qualifies, but it can never be what admits evidence: the relevance
+floor is applied to the base score, before the lift is added. Multiplying the
+lift by semantic relevance bounds its size; applying the floor to the base
+score is what actually prevents an unrelated recent session being rescued.
+(Before 2026-08-21 the floor was applied after the lift, and an unrelated
+session with base 0.6292 was admitted at 0.6759.)
 
 Byte-identical results collapse by `content_checksum` while preserving
 alternate provenance. General results below `0.65` are omitted; if none remain,

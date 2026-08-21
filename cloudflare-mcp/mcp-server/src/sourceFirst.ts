@@ -463,8 +463,22 @@ export async function sourceFirstSearchGeneration(
 		byChecksum.set(result.content_checksum, result);
 		diverse.push(result);
 	}
+	// Admission is tested on base_score, NOT final_score. The working-context
+	// lift describes attention, not authority (docs/source-first-memory.md):
+	// it may reorder evidence that already clears the floor, but it must never
+	// be the thing that admits evidence past it.
+	//
+	// For authoritative evidence working_context_bonus is 0, so base_score and
+	// final_score are identical and this changes nothing. It bites only on
+	// recent session text that fails the floor on its own merits.
+	//
+	// Observed 2026-08-21 (probe neg_quicksort, "explain how quicksort works"):
+	// an unrelated Claude Code session scored similarity 0.5846 but lexical
+	// 0.6667 on the generic tokens "explain"/"works", giving base 0.6292 —
+	// below the floor — which a 0.0467 attention lift pushed to 0.6759 and
+	// admitted. That is precisely the rescue the docs say cannot happen.
 	const eligible = diverse.filter((result) =>
-		result.final_score >= SOURCE_FIRST_MIN_FINAL_SCORE
+		result.base_score >= SOURCE_FIRST_MIN_FINAL_SCORE
 		|| result.exact_identifier_match
 		|| result.exact_lexical_match
 		|| result.explicit_project_match

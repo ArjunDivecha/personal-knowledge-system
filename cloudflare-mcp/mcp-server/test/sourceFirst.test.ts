@@ -277,6 +277,63 @@ describe("source-first project index", () => {
 		expect((result.results as Array<Record<string, unknown>>)[0]?.exact_identifier_match).toBe(true);
 	});
 
+	// Regression: probe neg_quicksort, 2026-08-21. docs/source-first-memory.md
+	// promises the working-context lift "cannot rescue unrelated session text
+	// because it is multiplied by semantic relevance" — but multiplying only
+	// bounds the SIZE of the lift, it does not stop the lift being what carries
+	// a below-floor record over the line. An unrelated session scored
+	// similarity 0.5846 / lexical 0.6667 -> base 0.6292 (below the 0.65 floor),
+	// and a 0.0467 attention lift admitted it at 0.6759.
+	it("does not let the working-context lift admit evidence that fails the floor", async () => {
+		const now = new Date();
+		const session: SourceFirstEvidence = {
+			...evidence,
+			id: "ev_recent_session",
+			title: "Unrelated project — claude_code session",
+			text: "explain once again in plain english what the strategy is and how it works day to day",
+			source_kind: "claude_code_session",
+			evidence_role: "working_context",
+			source_modified_at: now.toISOString(),
+			attention_observed_at: now.toISOString(),
+			authority: 0.7,
+		};
+		const values = new Map<string, unknown>([
+			["sf:current_generation", "sf_test"],
+			["sf:sf_test:suppressions", JSON.stringify({ rules: [] })],
+			["sf:sf_test:projects", JSON.stringify([])],
+			["sf:sf_test:evidence:ev_recent_session", JSON.stringify(session)],
+		]);
+		const redis = {
+			get: async (key: string) => values.get(key) ?? null,
+			mget: async (...keys: string[]) => keys.map((key) => values.get(key) ?? null),
+		};
+		// Similarity high enough that base + lift would clear 0.65, but base alone does not.
+		const vector = { query: async () => [{ id: "ev_recent_session", score: 0.58 }] };
+		const result = await sourceFirstSearch(
+			redis as any, vector as any, [0.1], "explain how quicksort works", 5,
+		);
+		expect(result.abstained).toBe(true);
+		expect(result.results).toEqual([]);
+	});
+
+	// The lift must still REORDER what already qualifies — this is the whole
+	// point of recent-session attention, and the fix above must not kill it.
+	it("still lets the working-context lift reorder evidence that already clears the floor", () => {
+		const now = new Date();
+		const recent: SourceFirstEvidence = {
+			...evidence,
+			id: "ev_recent",
+			evidence_role: "working_context",
+			source_modified_at: now.toISOString(),
+			attention_observed_at: now.toISOString(),
+		};
+		const scoredRecent = scoreSourceFirstResult("tracker project architecture", recent, 0.95);
+		const scoredOld = scoreSourceFirstResult("tracker project architecture", evidence, 0.95);
+		expect(scoredRecent.working_context_bonus).toBeGreaterThan(0);
+		expect(scoredRecent.final_score).toBeGreaterThan(scoredOld.final_score);
+		expect(scoredRecent.base_score).toBeGreaterThanOrEqual(0.65);
+	});
+
 	// Regression: BEAM run 20260821T0435Z_fix1. exact_identifier_count was the
 	// PRIMARY sort key, so matching MORE distinct identifier terms beat being
 	// more relevant. Observed: a chunk matching both REST and API led at

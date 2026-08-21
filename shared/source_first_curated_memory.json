@@ -1,4 +1,11 @@
 {
   "schema_version": 1,
-  "entries": []
+  "entries": [
+    {
+      "id": "eval_discipline_pks_retrieval",
+      "title": "Eval discipline for changing PKS retrieval",
+      "updated_at": "2026-08-21T18:00:00+00:00",
+      "text": "My eval discipline for changing PKS retrieval: never change the ranking without a before/after measurement on the same evidence.\n\nThe procedure:\n\n1. Baseline first. Run the probe suite before touching anything. `scripts/run_eval.py` scores the enabled probes in `tests/probes/*.json` against the live MCP and writes `scripts/reports/eval_baseline_<UTC>.json`. `npm run test:source-first-candidate -- <generation> <out.json>` runs the exact production retrieval policy against a staged generation and is the gate the 2-hourly rebuild uses before promotion.\n\n2. Change one thing at a time. Two ranking changes shipped together cannot be attributed, and one can hide a regression in the other.\n\n3. Re-run against the SAME staged evidence and diff. `run_eval.py --compare OLD.json NEW.json` gives per-axis metric deltas and per-probe pass/fail flips with no network. The before/after diff is the deliverable, not the after number on its own.\n\n4. A regression test must be verified failing against the code it fixes. A test that passes both before and after proves nothing.\n\n5. Nothing is promoted on a red gate. A failed build freezes serving at the last good generation rather than replacing it; investigate the freeze, never bypass it.\n\nExternal calibration lives in `A Working/Memory/beam-eval/` — the BEAM benchmark harness (ICLR 2026, arXiv 2510.27246), which stages conversations into the staging Upstash and runs the production ranking over them. `compare_runs.py` and `three_way.py` there produce like-for-like before/after diffs with McNemar exact tests, so a two-part fix can be attributed half by half.\n\nCost and wall time are not the constraint; an unmeasured ranking change is."
+    }
+  ]
 }
