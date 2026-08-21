@@ -165,3 +165,88 @@ Unrelated to the break, and all verified before it mattered:
   relevance-outranking 0.058 → 0.003. Harness and reports:
   `/Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/beam-eval/`
 - 24 `beam_*` generations remain staged in the **staging** Upstash (never production).
+
+---
+
+# RESOLUTION (appended 2026-08-21, after Arjun said "fix it")
+
+The handoff above was overridden by explicit instruction. History left intact; this section
+records what was actually done.
+
+**Two independent causes, not one.** Fixing the first exposed a second.
+
+## 1. `esave_eval_discipline` — mine
+
+The remedy was **none of the four options listed above** — a fifth, better one. Diagnosis
+first: `run_eval.py` *does* live in `ARJUN.md` (3 mentions) and both it and
+`PRD-eval-baseline-v1.md` still ranked (#3 and #2). But the **chunks** that ranked were
+chunk 1 of ARJUN.md and chunk 1 of the PRD — and every `run_eval.py` mention is in chunk 0.
+The probe greps chunk text, so the right documents ranked with the wrong halves. It had been
+relying on incidental scattered mentions surviving chunk boundaries.
+
+**Fix:** `shared/source_first_curated_memory.json` was empty, but the mechanism exists and is
+the post-cutover equivalent of the `explicit_save` class this probe was built to watch —
+`authority 1.0`, `pinned`, and **unchunked**, so anchors cannot be split. Wrote the eval
+discipline down as a first-class curated entry. It is real, previously undocumented content,
+not test-gaming. Now ranks **#1 at 0.8565**, and the probe passes under **both** the old and
+new ranking.
+
+## 2. `neg_quicksort` — not mine, pre-existing
+
+With the first fix in, a *different* probe failed: an unrelated **Prediction Markets** Claude
+Code session from 18:55Z (created after CI's last attempt, so it could not have shown up
+earlier) was returned for *"explain how quicksort works"*.
+
+```
+similarity 0.5846   lexical 0.6667   authority 0.7   recency 1.0
+base_score  0.6292  <- BELOW the 0.65 floor
+wc_bonus   +0.0467
+FINAL       0.6759  <- admitted
+```
+
+`docs/source-first-memory.md` claimed the lift *"cannot rescue unrelated session text because
+it is multiplied by semantic relevance."* Multiplying bounds the lift's **size**; it does not
+stop the lift being what carries a below-floor record over the line. The code contradicted its
+own documented contract.
+
+**Fix:** apply the relevance floor to `base_score`, not `final_score`. Attention reorders what
+already qualifies; it never admits. A literal no-op for authoritative evidence
+(`working_context_bonus` is 0, so `base == final`) — it bites only on session text, **6.8% of
+the corpus**. Doc corrected to match the code.
+
+## Measured cost of fix 2
+
+BEAM, 400 questions, like-for-like (`runs/20260821T2000Z_fix3/COMPARISON.md`):
+
+| Metric | before | after | McNemar p |
+|:--|--:|--:|--:|
+| Correct behavior | 0.880 | 0.860 | 0.0078 |
+| Evidence support (proxy) | 0.366 | 0.361 | 0.73 |
+
+8 questions newly abstain, 0 improve. All 8 were marginal — top-1 between 0.656 and 0.701,
+admitted purely by the lift. **This is the worst case by construction:** BEAM's rebase arm is
+100% `working_context`, so the lift uniformly inflated everything and the effective floor was
+~0.57. Production is 6.8% `working_context`. BEAM measures only the downside here — the upside
+(unrelated session text no longer leaking into negative queries) is what the PKS negative
+probes measure, and `neg_quicksort` now passes.
+
+## Verification
+
+- Staged candidate `sf_20260821T193745Z`: **52/52 probes** (was 51/52 under both rankings)
+- Worker suite **366/366**; three regression tests added, each verified failing first
+- Worker `1943b265-5f33-4184-b505-66b2a0e2fe6f` deployed
+- Pushed `d97c42e..3d24054` to `origin/main` (with Arjun's explicit approval) so CI gates with
+  the same code that serves — that divergence was itself a hazard
+- CI `workflow_dispatch` run triggered to prove stage → gate → promote end to end
+
+## Left alone, deliberately
+
+- The staged-but-unpromoted candidates from the 7 failed runs (`sf_20260821T045500Z` and
+  siblings) are still in production Upstash. Safe to clean up; **not deleted** — they are the
+  evidence behind this document, and deletion is Arjun's call.
+- **Unshipped follow-up:** the lexical score of 0.6667 in the `neg_quicksort` case came from
+  the generic tokens `explain` and `works`, neither of which is in `TOKEN_STOP_WORDS` even
+  though `about`/`how`/`what`/`tell`/`please` are. Treating generic instruction verbs as
+  content inflates lexical overlap corpus-wide. Fixing that might recover part of the 8-question
+  cost above. Not done here: it is a second ranking change, and rule 2 of the eval discipline
+  now in curated memory is *change one thing at a time*.
