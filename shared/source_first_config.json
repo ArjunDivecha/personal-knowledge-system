@@ -42,6 +42,15 @@
       "path": "/Users/arjundivecha/Dropbox/AAA Backup/A Complete",
       "source_kind": "completed_project",
       "max_depth": 3
+    },
+    {
+      "path": "/Users/arjundivecha/Dropbox/AAA Backup/A Complete/Investment Learnings",
+      "source_kind": "investment_learning",
+      "max_depth": 2,
+      "include_globs": [
+        "*.md",
+        "*/*.md"
+      ]
     }
   ],
   "explicit_files": [
@@ -66,7 +75,8 @@
     "curated_memory": 1.0,
     "operating_policy": 1.0,
     "working_project": 0.9,
-    "completed_project": 0.9
+    "completed_project": 0.9,
+    "investment_learning": 1.0
   },
   "recent_sessions": {
     "enabled": true,

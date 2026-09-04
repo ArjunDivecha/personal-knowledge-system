@@ -102,6 +102,11 @@ def iter_source_files(config: dict[str, Any], *, now: datetime | None = None) ->
             continue
         kind = str(root_item.get("source_kind") or "working_project")
         max_depth = int(root_item.get("max_depth", 4))
+        # Per-root globs (relative to the root) that count as authoritative in
+        # addition to the global name rules. Added 2026-09-04 so a folder whose
+        # every markdown file is a verdict (A Complete/Investment Learnings) is
+        # indexed whole instead of only the README-shaped files inside it.
+        root_globs = [str(g) for g in (root_item.get("include_globs") or [])]
         exclude_git_worktrees = bool(config.get("exclude_git_worktrees", True))
         for current, dirnames, filenames in os.walk(root):
             current_path = Path(current)
@@ -129,7 +134,9 @@ def iter_source_files(config: dict[str, Any], *, now: datetime | None = None) ->
                     continue
                 if datetime.fromtimestamp(stat.st_mtime, UTC) < cutoff:
                     continue
-                if not is_authoritative(path, root, config):
+                if not is_authoritative(path, root, config) and not any(
+                    fnmatch.fnmatch(path.relative_to(root).as_posix(), pattern) for pattern in root_globs
+                ):
                     continue
                 resolved = path.resolve()
                 discovered[str(resolved)] = SourceFile(

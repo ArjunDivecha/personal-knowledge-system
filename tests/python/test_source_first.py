@@ -475,3 +475,32 @@ class SessionFallbackMappingTests(unittest.TestCase):
             records_off, diagnostics_off = scan_recent_sessions(config, [catalog_project], now=now)
             self.assertEqual(records_off, [])
             self.assertEqual(diagnostics_off["unmapped_by_cause"]["inside_source_root_without_project"], 1)
+
+
+class RootIncludeGlobTests(unittest.TestCase):
+    """A root may declare include_globs so every matching file is authoritative
+    even when its name is not README/PRD/REPORT-shaped (Investment Learnings)."""
+
+    def test_root_include_globs_admit_plain_markdown(self) -> None:
+        import tempfile
+        from ingestion.source_first.scanner import iter_source_files
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Investment Learnings"
+            root.mkdir()
+            (root / "INDEX.md").write_text("- [13F](13F.md): cloning does not beat SPX\n")
+            (root / "13F.md").write_text("# 13F verdict\nrejected\n")
+            (root / "notes.txt").write_text("not markdown\n")
+            config = {
+                "recent_days": 365,
+                "max_file_bytes": 750000,
+                "authoritative_names": ["README.md"],
+                "authoritative_name_contains": ["PRD"],
+                "exclude_directories": [],
+                "roots": [{"path": str(root), "source_kind": "investment_learning", "max_depth": 2, "include_globs": ["*.md"]}],
+                "source_authority": {"investment_learning": 1.0},
+            }
+            files = iter_source_files(config, now=datetime(2026, 9, 4, tzinfo=UTC))
+            names = sorted(f.path.name for f in files)
+            self.assertEqual(names, ["13F.md", "INDEX.md"])
+            self.assertTrue(all(f.source_kind == "investment_learning" and f.authority == 1.0 for f in files))
