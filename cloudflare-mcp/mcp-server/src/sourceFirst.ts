@@ -586,7 +586,7 @@ export async function sourceFirstSearchGeneration(
 		abstain_reason: abstained ? "no_relevant_evidence_above_threshold" : null,
 		minimum_final_score: SOURCE_FIRST_MIN_FINAL_SCORE,
 		deduplication: "content_checksum",
-		scoring: "Named projects, opaque identifiers, and strong exact lexical phrase matches receive deterministic candidate recovery; otherwise results must clear 0.65. Base: 0.70 semantic + 0.15 lexical + 0.10 source authority + 0.05 source recency. Working context adds 0.08 * semantic relevance * 3-day attention decay. Byte-identical chunks collapse by content checksum; explicit suppressions apply; no tiers, salience, classification, or access reinforcement.",
+		scoring: "Named projects, opaque identifiers, and strong exact lexical phrase matches receive deterministic candidate recovery (recovered candidates are rescored with their real vector similarity; vector top-K floor 100); otherwise results must clear 0.65. Base: 0.70 semantic + 0.15 lexical + 0.10 source authority + 0.05 source recency. Working context adds 0.08 * semantic relevance * 3-day attention decay. Byte-identical chunks collapse by content checksum; explicit suppressions apply; no tiers, salience, classification, or access reinforcement.",
 	};
 }
 

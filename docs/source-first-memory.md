@@ -84,6 +84,9 @@ similarity (`similarity_source: "vector_fetch"`); before that they carried
 similarity 0 and a fictitious `final_score` of roughly 0.2–0.3 while still
 sorting ahead of real semantic hits. A candidate whose vector cannot be fetched
 stays `"unscored"` rather than failing the search.
+The vector query itself asks for at least the top 100 (was 50) since 2026-09-04: on a
+6.7k-record corpus the true best chunk for a project-heavy query fell outside the top 50
+behind near-duplicate documentation chunks.
 
 Byte-identical results collapse by `content_checksum` while preserving
 alternate provenance. General results below `0.65` are omitted; if none remain,
