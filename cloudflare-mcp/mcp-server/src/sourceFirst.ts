@@ -421,9 +421,15 @@ export async function sourceFirstSearchGeneration(
 	generation: string,
 ): Promise<Record<string, unknown>> {
 	const requested = Math.max(1, Math.min(limit, 20));
+	// Vector depth floor raised 50 -> 100 on 2026-09-04. With 6.7k evidence records
+	// the best chunk for "T2 factor timing IC saturation" (similarity 0.66) fell
+	// outside a top-50 that was full of near-duplicate T2 documentation chunks,
+	// so it entered only as an unscored project-recovered candidate and lost to
+	// chunks it should have beaten. A top-K of 100 returns ids and scores only
+	// (no vectors), so the extra depth is cheap.
 	const hits = await vector.query({
 		vector: queryEmbedding,
-		topK: Math.min(100, Math.max(30, requested * 10)),
+		topK: Math.min(200, Math.max(100, requested * 10)),
 		includeMetadata: false,
 	}, { namespace: generation });
 	const semanticIds = hits.map((hit) => String(hit.id));
