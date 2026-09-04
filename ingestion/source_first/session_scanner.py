@@ -250,8 +250,8 @@ def _unmapped_cause(cwd: str, roots: list[dict[str, Any]]) -> str:
     value = cwd or ""
     if not value or value in ("/", str(Path.home())):
         return "root_or_home"
-    if value.startswith(_SCRATCH_CWD_PREFIXES):
-        return "scratch_tmp"
+    # A configured root wins over the scratch prefixes: a source root that itself
+    # lives under a temp directory (unit tests) must still classify as inside.
     for raw_root in roots:
         try:
             root = Path(str(raw_root.get("path") or "")).expanduser().resolve()
@@ -259,6 +259,8 @@ def _unmapped_cause(cwd: str, roots: list[dict[str, Any]]) -> str:
             return "inside_source_root_without_project"
         except (OSError, ValueError):
             continue
+    if value.startswith(_SCRATCH_CWD_PREFIXES):
+        return "scratch_tmp"
     return "outside_source_roots"
 
 

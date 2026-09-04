@@ -25,9 +25,11 @@ distills durable knowledge using Claude API, links to GitHub repos when
 the session was working in a git repository, and saves entries to the
 knowledge system via StorageClient.
 
-Designed for manual or scheduled local ingestion. A daily local launcher runs
-this pipeline one hour before the remote Dream job, and byte-offset tracking
-ensures each run only processes new data since the last run.
+LEGACY (retired from schedule 2026-09-04). Production PKS is source-first and
+reads sessions directly via ingestion/source_first/session_scanner.py; the ke_*
+entries this script writes are not served. Manual runs remain possible as the
+legacy-index rollback path. Byte-offset tracking ensures each run only
+processes new data since the last run.
 
 DEPENDENCIES:
 - anthropic

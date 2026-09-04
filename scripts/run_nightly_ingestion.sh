@@ -2,7 +2,11 @@
 # =============================================================================
 # NIGHTLY KNOWLEDGE INGESTION RUNNER
 # =============================================================================
-# Called by launchd via com.arjun.knowledge-ingestion.plist.
+# RETIRED FROM SCHEDULE 2026-09-04: the launchd job (com.arjun.knowledge-ingestion)
+# was unloaded because production PKS is source-first and never reads the ke_*
+# entries this pipeline writes (see launchd/retired/README.md). Safe to run
+# manually as the legacy-index rollback path; nothing schedules it.
+# Previously called by launchd via com.arjun.knowledge-ingestion.plist.
 # Wraps all three ingestion pipelines sequentially.
 # caffeinate -i is applied by the plist so the Mac stays awake for the full run.
 #
