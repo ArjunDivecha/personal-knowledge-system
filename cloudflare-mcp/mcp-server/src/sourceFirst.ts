@@ -54,6 +54,9 @@ export interface SourceFirstSearchResult extends SourceFirstEvidence {
 	exact_identifier_match: boolean;
 	exact_identifier_count: number;
 	exact_lexical_match: boolean;
+	// Where similarity_score came from: the vector top-K query, a follow-up
+	// vector fetch for a recovered candidate, or nowhere (0, unscored).
+	similarity_source: "vector_query" | "vector_fetch" | "unscored";
 	duplicate_count: number;
 	alternate_sources: Array<{
 		project: string | null;
@@ -305,9 +308,71 @@ export function scoreSourceFirstResult(
 		exact_identifier_match: false,
 		exact_identifier_count: 0,
 		exact_lexical_match: false,
+		similarity_source: similarityScore > 0 ? "vector_query" : "unscored",
 		duplicate_count: 1,
 		alternate_sources: [],
 	};
+}
+
+// Recovered candidates (identifier, strong phrase, or explicit project) come
+// from Redis maps, not the vector query, so they used to be scored with
+// similarity 0. That made their final_score fictitious (~0.2-0.3 = lexical +
+// authority + recency) while the flag tiers still sorted them ahead of real
+// semantic hits — measured 2026-09-04 when the Investment Learnings corpus was
+// added: "Corwin-Schultz spread estimator" led with two 0.296 chunks above a
+// 0.795 one, "T2 factor timing IC saturation" with five identical 0.2258s.
+// Fetch the stored vectors for a bounded number of the best-placed recovered
+// candidates and give them their honest cosine similarity. The tier order is
+// deliberately unchanged here (one ranking change at a time).
+const RECOVERED_SIMILARITY_FETCH_LIMIT = 40;
+
+function cosineSimilarity(left: number[], right: number[]): number {
+	if (left.length === 0 || left.length !== right.length) return 0;
+	let dot = 0;
+	let leftNorm = 0;
+	let rightNorm = 0;
+	for (let index = 0; index < left.length; index += 1) {
+		dot += left[index] * right[index];
+		leftNorm += left[index] * left[index];
+		rightNorm += right[index] * right[index];
+	}
+	if (leftNorm === 0 || rightNorm === 0) return 0;
+	return Math.max(0, Math.min(1, dot / Math.sqrt(leftNorm * rightNorm)));
+}
+
+export async function fetchRecoveredSimilarity(
+	vector: Index,
+	generation: string,
+	queryEmbedding: number[],
+	ids: string[],
+): Promise<Map<string, number>> {
+	const similarity = new Map<string, number>();
+	if (ids.length === 0 || queryEmbedding.length === 0) return similarity;
+	const client = vector as unknown as {
+		namespace?: (name: string) => { fetch?: (ids: string[], options: { includeVectors: boolean }) => Promise<unknown> };
+		fetch?: (ids: string[], options: { includeVectors: boolean; namespace?: string }) => Promise<unknown>;
+	};
+	try {
+		let fetched: unknown;
+		if (typeof client.namespace === "function" && typeof client.namespace(generation)?.fetch === "function") {
+			fetched = await client.namespace(generation).fetch!(ids, { includeVectors: true });
+		} else if (typeof client.fetch === "function") {
+			fetched = await client.fetch(ids, { includeVectors: true, namespace: generation });
+		} else {
+			return similarity;
+		}
+		if (!Array.isArray(fetched)) return similarity;
+		for (const item of fetched) {
+			if (!item || typeof item !== "object") continue;
+			const record = item as { id?: unknown; vector?: unknown };
+			if (typeof record.id !== "undefined" && Array.isArray(record.vector)) {
+				similarity.set(String(record.id), cosineSimilarity(queryEmbedding, record.vector as number[]));
+			}
+		}
+	} catch {
+		// Recovered candidates stay unscored rather than failing the search.
+	}
+	return similarity;
 }
 
 export async function getSourceFirstGeneration(redis: Redis): Promise<string | null> {
@@ -439,14 +504,35 @@ export async function sourceFirstSearchGeneration(
 	// Fix: tier on WHETHER a chunk matched an identifier, then order within that
 	// tier by relevance. The count survives only as a late tiebreaker between
 	// results that already scored equally.
-	results.sort((left, right) =>
+	const compareResults = (left: SourceFirstSearchResult, right: SourceFirstSearchResult): number =>
 		Number(right.exact_identifier_match) - Number(left.exact_identifier_match)
 		|| Number(right.explicit_project_match) - Number(left.explicit_project_match)
 		|| Number(right.exact_lexical_match) - Number(left.exact_lexical_match)
 		|| right.final_score - left.final_score
 		|| right.exact_identifier_count - left.exact_identifier_count
-		|| right.similarity_score - left.similarity_score
-	);
+		|| right.similarity_score - left.similarity_score;
+	results.sort(compareResults);
+	// Honest similarity for the best-placed recovered candidates (see
+	// fetchRecoveredSimilarity). Bounded so a broad identifier never turns one
+	// search into hundreds of vector fetches.
+	const unscored = results
+		.filter((result) => !similarityById.has(result.id))
+		.slice(0, RECOVERED_SIMILARITY_FETCH_LIMIT);
+	if (unscored.length > 0) {
+		const fetched = await fetchRecoveredSimilarity(vector, generation, queryEmbedding, unscored.map((result) => result.id));
+		for (const result of unscored) {
+			const similarity = fetched.get(result.id);
+			if (similarity === undefined) continue;
+			const rescored = scoreSourceFirstResult(query, result, similarity);
+			result.similarity_score = rescored.similarity_score;
+			result.base_score = rescored.base_score;
+			result.attention_score = rescored.attention_score;
+			result.working_context_bonus = rescored.working_context_bonus;
+			result.final_score = rescored.final_score;
+			result.similarity_source = "vector_fetch";
+		}
+		results.sort(compareResults);
+	}
 	const diverse: SourceFirstSearchResult[] = [];
 	const byChecksum = new Map<string, SourceFirstSearchResult>();
 	for (const result of results) {

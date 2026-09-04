@@ -277,6 +277,80 @@ describe("source-first project index", () => {
 		expect((result.results as Array<Record<string, unknown>>)[0]?.exact_identifier_match).toBe(true);
 	});
 
+	// Regression 2026-09-04: recovered candidates were scored with similarity 0
+	// because they came from the Redis lexical/project maps, not the vector
+	// query. Two chunks recovered for "Corwin-Schultz spread estimator" led at
+	// final_score 0.296 over a 0.795 semantic hit. The ranker now fetches the
+	// stored vectors for the best-placed recovered candidates and scores them
+	// with their real cosine similarity.
+	it("scores recovered candidates with their real vector similarity", async () => {
+		const relevant: SourceFirstEvidence = {
+			...evidence,
+			id: "ev_relevant_recovered",
+			content_checksum: "checksum-relevant",
+			title: "Corwin-Schultz verdict",
+			text: "Corwin-Schultz spread estimator tested on the CNN pattern universe; rejected as a filter.",
+		};
+		const unrelated: SourceFirstEvidence = {
+			...evidence,
+			id: "ev_unrelated_recovered",
+			content_checksum: "checksum-unrelated",
+			title: "Corwin-Schultz mention",
+			text: "Corwin-Schultz appears once in a long list of estimator names in an unrelated agenda.",
+		};
+		const values = new Map<string, unknown>([
+			["sf:current_generation", "sf_test"],
+			["sf:sf_test:suppressions", JSON.stringify({ rules: [] })],
+			["sf:sf_test:projects", JSON.stringify([])],
+			["sf:sf_test:lex:corwin", JSON.stringify(["ev_unrelated_recovered", "ev_relevant_recovered"])],
+			["sf:sf_test:lex:schultz", JSON.stringify(["ev_unrelated_recovered", "ev_relevant_recovered"])],
+			["sf:sf_test:evidence:ev_relevant_recovered", JSON.stringify(relevant)],
+			["sf:sf_test:evidence:ev_unrelated_recovered", JSON.stringify(unrelated)],
+		]);
+		const redis = {
+			get: async (key: string) => values.get(key) ?? null,
+			mget: async (...keys: string[]) => keys.map((key) => values.get(key) ?? null),
+		};
+		const fetchedIds: string[][] = [];
+		const vector = {
+			query: async () => [],
+			namespace: () => ({
+				fetch: async (ids: string[]) => {
+					fetchedIds.push(ids);
+					return ids.map((id) => ({ id, vector: id === "ev_relevant_recovered" ? [1, 0] : [0.05, 1] }));
+				},
+			}),
+		};
+		const result = await sourceFirstSearch(redis as any, vector as any, [1, 0], "Corwin-Schultz spread estimator", 5);
+		const rows = result.results as Array<Record<string, unknown>>;
+		expect(fetchedIds.length).toBe(1);
+		expect(rows[0]?.id).toBe("ev_relevant_recovered");
+		expect(rows[0]?.similarity_source).toBe("vector_fetch");
+		expect(Number(rows[0]?.similarity_score)).toBeGreaterThan(0.9);
+		expect(Number(rows[1]?.similarity_score)).toBeLessThan(0.1);
+		expect(Number(rows[0]?.final_score)).toBeGreaterThan(Number(rows[1]?.final_score));
+	});
+
+	it("leaves recovered candidates unscored when the vector client cannot fetch", async () => {
+		const exact: SourceFirstEvidence = { ...evidence, id: "ev_exact", title: "1MTR factor signal", text: "The 1MTR signal is an exact source identifier." };
+		const values = new Map<string, unknown>([
+			["sf:current_generation", "sf_test"],
+			["sf:sf_test:suppressions", JSON.stringify({ rules: [] })],
+			["sf:sf_test:projects", JSON.stringify([])],
+			["sf:sf_test:lex:1mtr", JSON.stringify(["ev_exact"])],
+			["sf:sf_test:evidence:ev_exact", JSON.stringify(exact)],
+		]);
+		const redis = {
+			get: async (key: string) => values.get(key) ?? null,
+			mget: async (...keys: string[]) => keys.map((key) => values.get(key) ?? null),
+		};
+		const vector = { query: async () => [] };
+		const result = await sourceFirstSearch(redis as any, vector as any, [0.1], "1MTR signal", 5);
+		const rows = result.results as Array<Record<string, unknown>>;
+		expect(rows[0]?.id).toBe("ev_exact");
+		expect(rows[0]?.similarity_source).toBe("unscored");
+	});
+
 	// Regression: probe neg_quicksort, 2026-08-21. docs/source-first-memory.md
 	// promises the working-context lift "cannot rescue unrelated session text
 	// because it is multiplied by semantic relevance" — but multiplying only

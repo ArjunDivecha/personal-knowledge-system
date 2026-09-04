@@ -76,6 +76,15 @@ score is what actually prevents an unrelated recent session being rescued.
 (Before 2026-08-21 the floor was applied after the lift, and an unrelated
 session with base 0.6292 was admitted at 0.6759.)
 
+Candidates recovered through the inverted index or an explicit project map are
+not part of the vector top-K, so their similarity is unknown at that point.
+Since 2026-09-04 the ranker fetches the stored vectors for up to 40 of the
+best-placed recovered candidates and scores them with their real cosine
+similarity (`similarity_source: "vector_fetch"`); before that they carried
+similarity 0 and a fictitious `final_score` of roughly 0.2–0.3 while still
+sorting ahead of real semantic hits. A candidate whose vector cannot be fetched
+stays `"unscored"` rather than failing the search.
+
 Byte-identical results collapse by `content_checksum` while preserving
 alternate provenance. General results below `0.65` are omitted; if none remain,
 the response explicitly abstains rather than returning confident-looking noise.
