@@ -237,6 +237,64 @@ def _project_for_cwd(cwd: str, projects: Iterable[ProjectRecord]) -> ProjectReco
     return max(candidates, key=lambda item: item[0])[1] if candidates else None
 
 
+_SCRATCH_CWD_PREFIXES = ("/private/tmp", "/tmp", "/private/var/folders", "/var/folders")
+
+
+def _unmapped_cause(cwd: str, roots: list[dict[str, Any]]) -> str:
+    """Classify why a session cwd could not be mapped to a catalog project.
+
+    The manifest used to report one opaque ``unmapped_session_count``; in practice
+    ~97% of it was headless ``claude -p`` runs launched from /tmp or /, which is
+    noise, not lost coverage. Bucketing by cause keeps the real gap visible.
+    """
+    value = cwd or ""
+    if not value or value in ("/", str(Path.home())):
+        return "root_or_home"
+    if value.startswith(_SCRATCH_CWD_PREFIXES):
+        return "scratch_tmp"
+    for raw_root in roots:
+        try:
+            root = Path(str(raw_root.get("path") or "")).expanduser().resolve()
+            Path(value).expanduser().resolve().relative_to(root)
+            return "inside_source_root_without_project"
+        except (OSError, ValueError):
+            continue
+    return "outside_source_roots"
+
+
+def _fallback_project_for_cwd(cwd: str, roots: list[dict[str, Any]]) -> ProjectRecord | None:
+    """Map a session under a configured source root to its top-level folder.
+
+    Folders without an authoritative file (README/PRD/SPEC/...) never become
+    catalog projects, so their sessions were silently dropped (206 of them in the
+    2026-09-04 measurement). The synthetic record is used only to name the
+    session evidence; it is NOT added to the published project catalog, so it
+    cannot appear in ``get_index`` or drive exact-project candidate recovery.
+    """
+    try:
+        resolved = Path(cwd).expanduser().resolve()
+    except OSError:
+        return None
+    for raw_root in roots:
+        try:
+            root = Path(str(raw_root.get("path") or "")).expanduser().resolve()
+            relative = resolved.relative_to(root)
+        except (OSError, ValueError):
+            continue
+        if not relative.parts:
+            return None
+        folder = root / relative.parts[0]
+        return ProjectRecord(
+            id=f"unlisted_{hashlib.sha256(str(folder).encode()).hexdigest()[:12]}",
+            name=relative.parts[0],
+            path=str(folder),
+            status="unlisted",
+            last_touched="",
+            summary="Derived from session cwd; folder has no authoritative source file.",
+        )
+    return None
+
+
 def _bounded_turn_text(turns: list[SessionTurn], max_session_chars: int) -> str:
     selected: list[str] = []
     used = 0
@@ -266,6 +324,13 @@ def scan_recent_sessions(
         "attention_half_life_days": float(settings.get("attention_half_life_days", 3)),
         "attention_weight": float(settings.get("attention_weight", 0.08)),
         "unmapped_session_count": 0,
+        "unmapped_by_cause": {
+            "scratch_tmp": 0,
+            "root_or_home": 0,
+            "inside_source_root_without_project": 0,
+            "outside_source_roots": 0,
+        },
+        "fallback_mapped_session_count": 0,
         "malformed_session_count": 0,
         "redacted_match_count": 0,
         "excluded_retrieval_meta_turn_count": 0,
@@ -289,6 +354,8 @@ def scan_recent_sessions(
     chunk_chars = int(config.get("chunk_chars", 3200))
     overlap_chars = int(config.get("chunk_overlap_chars", 240))
     require_roots = bool(settings.get("require_source_roots", True))
+    map_unlisted_folders = bool(settings.get("map_unlisted_folders", True))
+    source_roots = [root for root in (config.get("roots") or []) if isinstance(root, dict)]
     excluded_probe_queries = [
         str(query)
         for query in settings.get("excluded_retrieval_probe_queries") or []
@@ -326,8 +393,13 @@ def scan_recent_sessions(
                 diagnostics[f"{surface}_excluded_old_sessions"] += 1
                 continue
             project = _project_for_cwd(session.cwd, projects)
+            if project is None and map_unlisted_folders:
+                project = _fallback_project_for_cwd(session.cwd, source_roots)
+                if project is not None:
+                    diagnostics["fallback_mapped_session_count"] += 1
             if project is None:
                 diagnostics["unmapped_session_count"] += 1
+                diagnostics["unmapped_by_cause"][_unmapped_cause(session.cwd, source_roots)] += 1
                 continue
             surface_sessions.append((session, project))
         diagnostics["malformed_session_count"] += malformed_files

@@ -37,7 +37,10 @@ Do not use their validation ledgers to report source-first health.
 - No production ranking uses access signals, salience, tiers, classification,
   or Dream state.
 - Project status derives only from authoritative files, never session activity.
-- GitHub Actions is the scheduler. Do not add a local PKS LaunchAgent or cron.
+- GitHub Actions owns the build, gate, and promotion. The only local scheduled
+  piece is `launchd/com.arjundivecha.pks-rebuild-kicker.plist`, which dispatches
+  the workflow when GitHub's cron has not fired for 2h and writes a freshness
+  marker for Overseer. Never build, stage, or promote from a local scheduler.
 
 ## Active source locations
 
@@ -50,6 +53,8 @@ Do not use their validation ledgers to report source-first health.
 - `scripts/source_first_rebuild.py` — builder/operator CLI.
 - `.github/workflows/source-first-rebuild.yml` — two-hour remote schedule and
   candidate gate.
+- `scripts/kick_source_first_rebuild.sh` + `launchd/` — local cadence guard and
+  freshness marker (2026-09-04).
 - `cloudflare-mcp/mcp-server/src/sourceFirst.ts` — live retrieval.
 - `cloudflare-mcp/mcp-server/src/index.ts` — MCP tool wiring.
 - `cloudflare-mcp/mcp-server/wrangler.json` — production/staging runtime config.

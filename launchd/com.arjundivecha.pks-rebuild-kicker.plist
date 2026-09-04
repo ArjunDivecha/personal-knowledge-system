@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  PKS rebuild cadence guard (added 2026-09-04).
+
+  Every 30 minutes runs scripts/kick_source_first_rebuild.sh, which dispatches the
+  GitHub "Source-First Memory Rebuild" workflow when GitHub's own cron has not
+  started a run in 2h, and writes ingestion/checkpoints/source_first_kicker.json
+  (ok=false when the serving generation is older than 6h) for Overseer.
+
+  GitHub still owns build -> gate -> promote; nothing is built locally.
+  StartInterval (not StartCalendarInterval) so it self-heals after sleep.
+
+  SOURCE OF TRUTH: this file, git-tracked in
+    /Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system/launchd/
+  Installed by symlink into ~/Library/LaunchAgents/.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.arjundivecha.pks-rebuild-kicker</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system/scripts/kick_source_first_rebuild.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system</string>
+
+    <key>StartInterval</key>
+    <integer>1800</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system/ingestion/logs/source_first_kicker_launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system/ingestion/logs/source_first_kicker_launchd.log</string>
+</dict>
+</plist>

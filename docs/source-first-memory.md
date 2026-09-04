@@ -118,8 +118,21 @@ Verify the currently serving generation:
 ingestion/.venv/bin/python scripts/source_first_rebuild.py --verify-current
 ```
 
-The GitHub Actions workflow `Source-First Memory Rebuild` is the only scheduled
-maintenance job after cutover. It runs every two hours, meeting the recent
-session freshness SLA. GitHub owns the schedule; its self-hosted Mac runner
-provides read access to Dropbox and raw agent sessions. There is no local
-scheduled job.
+The GitHub Actions workflow `Source-First Memory Rebuild` is the only job that
+builds, gates, and promotes a generation. Its cron is every two hours, but GitHub
+cron is best-effort: between 2026-08-24 and 2026-09-04 it fired about 5.5 times a
+day (median gap 4.2h, max 12.6h). A local LaunchAgent,
+`launchd/com.arjundivecha.pks-rebuild-kicker.plist`, runs
+`scripts/kick_source_first_rebuild.sh` every 30 minutes: if no run has started in
+2h and none is queued, it dispatches the workflow; it also reads `/health` and
+writes `ingestion/checkpoints/source_first_kicker.json` (ok=false when the
+serving generation is older than 6h) so Overseer can alarm. The Worker's own
+freshness threshold is `SOURCE_FIRST_MAX_AGE_SECONDS=21600` (6h, was 36h).
+
+Recent sessions cover the full 30-day retention window (`max_total_chunks` 6000,
+`max_sessions_per_surface` 2000; before 2026-09-04 the 250-chunk cap kept ~4% of
+mapped sessions, about nine days). Sessions whose folder under a source root has
+no authoritative file are named after the top-level folder instead of being
+dropped (`map_unlisted_folders`); that synthetic project is not published to the
+catalog. The manifest buckets remaining unmapped sessions by cause; in practice
+~97% are headless `/tmp` and `/` runs.

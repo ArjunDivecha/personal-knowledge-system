@@ -20,8 +20,13 @@ concurrency:
 
 jobs:
   rebuild:
-    # The schedule is remote (GitHub), while this runner can read the
-    # authoritative Dropbox folders on the Mac. No local LaunchAgent exists.
+    # GitHub owns the schedule and the stage -> gate -> promote pipeline; this
+    # self-hosted runner reads the authoritative Dropbox folders on the Mac.
+    # GitHub cron ticks are best-effort and were observed firing ~5.5x/day
+    # instead of 12x (median gap 4.2h, max 12.6h, 2026-08-24..09-04). A local
+    # LaunchAgent (launchd/com.arjundivecha.pks-rebuild-kicker.plist ->
+    # scripts/kick_source_first_rebuild.sh) dispatches `workflow_dispatch` when
+    # no run has started in 2h. It never builds or promotes locally.
     runs-on: [self-hosted, macOS, knowledge-agent-sessions]
     timeout-minutes: 90
     env:
@@ -80,7 +85,7 @@ jobs:
         if: ${{ github.event_name == 'schedule' || inputs.publish }}
         run: |
           . ingestion/.venv-source-first/bin/activate
-          python scripts/source_first_rebuild.py --verify-current --max-age-hours 36
+          python scripts/source_first_rebuild.py --verify-current --max-age-hours 6
 
       - name: Upload build evidence
         if: always()

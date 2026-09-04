@@ -52,7 +52,8 @@
 	},
 	"workers_dev": true,
 	"vars": {
-		"SOURCE_FIRST_MODE": "on"
+		"SOURCE_FIRST_MODE": "on",
+		"SOURCE_FIRST_MAX_AGE_SECONDS": "21600"
 	},
 	"routes": [
 		{

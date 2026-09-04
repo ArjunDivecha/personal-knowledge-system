@@ -415,3 +415,63 @@ class SourceFirstPublisherTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SessionFallbackMappingTests(unittest.TestCase):
+    """Sessions under a source root whose folder has no authoritative file are
+    named after the top-level folder instead of being dropped; the remaining
+    unmapped sessions are bucketed by cause (2026-09-04)."""
+
+    def test_unlisted_folder_sessions_are_kept_and_unmapped_are_bucketed(self) -> None:
+        import tempfile
+        from ingestion.source_first.models import ProjectRecord
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "A Working"
+            unlisted = root / "Scratch Project"
+            claude_root = Path(tmp) / "claude"
+            for path in (unlisted, claude_root):
+                path.mkdir(parents=True)
+            timestamp = "2026-08-10T12:00:00Z"
+
+            def session(name: str, cwd: str, sid: str) -> None:
+                (claude_root / name).write_text("\n".join([
+                    json.dumps({"type": "user", "timestamp": timestamp, "cwd": cwd, "sessionId": sid, "message": {"role": "user", "content": "Question about the scratch project design."}}),
+                    json.dumps({"type": "assistant", "timestamp": timestamp, "cwd": cwd, "sessionId": sid, "message": {"role": "assistant", "content": [{"type": "text", "text": "Decision recorded here."}]}}),
+                ]) + "\n")
+
+            session("unlisted.jsonl", str(unlisted), "s-unlisted")
+            session("tmp.jsonl", "/private/tmp/headless", "s-tmp")
+            session("home.jsonl", "/", "s-root")
+            session("outside.jsonl", "/opt/elsewhere/project", "s-outside")
+            catalog_project = ProjectRecord("p1", "Listed", str(root / "Listed"), "active", timestamp, "summary")
+            config = {
+                "chunk_chars": 3200,
+                "chunk_overlap_chars": 240,
+                "roots": [{"path": str(root), "source_kind": "working_project", "max_depth": 4}],
+                "recent_sessions": {
+                    "enabled": True,
+                    "retention_days": 30,
+                    "max_sessions_per_surface": 100,
+                    "max_total_chunks": 250,
+                    "max_turn_chars": 1200,
+                    "max_session_chars": 24000,
+                    "require_source_roots": True,
+                    "map_unlisted_folders": True,
+                    "surfaces": [{"name": "claude_code", "path": str(claude_root)}],
+                },
+            }
+            now = datetime(2026, 8, 10, 13, 0, tzinfo=UTC)
+            records, diagnostics = scan_recent_sessions(config, [catalog_project], now=now)
+
+            self.assertEqual({record.project for record in records}, {"Scratch Project"})
+            self.assertEqual(diagnostics["fallback_mapped_session_count"], 1)
+            self.assertEqual(diagnostics["unmapped_session_count"], 3)
+            self.assertEqual(diagnostics["unmapped_by_cause"]["scratch_tmp"], 1)
+            self.assertEqual(diagnostics["unmapped_by_cause"]["root_or_home"], 1)
+            self.assertEqual(diagnostics["unmapped_by_cause"]["outside_source_roots"], 1)
+
+            config["recent_sessions"]["map_unlisted_folders"] = False
+            records_off, diagnostics_off = scan_recent_sessions(config, [catalog_project], now=now)
+            self.assertEqual(records_off, [])
+            self.assertEqual(diagnostics_off["unmapped_by_cause"]["inside_source_root_without_project"], 1)
