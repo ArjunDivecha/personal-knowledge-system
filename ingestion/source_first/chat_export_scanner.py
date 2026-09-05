@@ -47,7 +47,7 @@ from typing import Any, Iterable
 
 from .models import EvidenceRecord
 from .scanner import chunk_text, normalize_text, source_id_for_path
-from .session_scanner import redact_session_text
+from .session_scanner import SessionTurn, _without_retrieval_meta_turns, redact_session_text
 
 UTC = timezone.utc
 DEFAULT_ROOT = "/Users/arjundivecha/Dropbox/Identity and Important Papers/Arjun Digital Identity/Anthropic"
@@ -298,6 +298,17 @@ def scan_chat_exports(
     chunk_chars = int(config.get("chunk_chars", 3200))
     overlap_chars = int(config.get("chunk_overlap_chars", 240))
     records: list[EvidenceRecord] = []
+    # Same boundary as the session scanner: retrieval-validation prompts and their
+    # PASS/FAIL reports are operational traffic, not evidence about the subjects
+    # used as probes. Without it a claude.ai chat that ran the PKS validation
+    # checks re-admitted the "sourdough fermentation recipe" negative control
+    # (candidate sf_20260905T0331Z failed neg_sourdough_recipe at 0.373).
+    excluded_probe_queries = [
+        str(query)
+        for query in ((config.get("recent_sessions") or {}).get("excluded_retrieval_probe_queries") or [])
+        if isinstance(query, str) and query.strip()
+    ]
+    diagnostics["excluded_retrieval_meta_turn_count"] = 0
 
     updated_values: list[str] = []
     for raw in load_raw_conversations(export_dir):
@@ -305,6 +316,18 @@ def scan_chat_exports(
         if conversation is None:
             diagnostics["skipped_empty_conversations"] += 1
             continue
+        kept_turns, excluded_turns = _without_retrieval_meta_turns(
+            [SessionTurn(turn.role, turn.text, turn.timestamp) for turn in conversation.turns],
+            excluded_probe_queries,
+        )
+        diagnostics["excluded_retrieval_meta_turn_count"] += excluded_turns
+        if not kept_turns:
+            diagnostics["skipped_empty_conversations"] += 1
+            continue
+        conversation = ChatConversation(
+            conversation.uuid, conversation.name, conversation.created_at, conversation.updated_at,
+            [ChatTurn(turn.role, turn.text, turn.timestamp) for turn in kept_turns],
+        )
         redacted, redaction_count = redact_session_text(conversation_text(conversation, max_conversation_chars))
         diagnostics["redacted_match_count"] += redaction_count
         chunks = chunk_text(redacted, chunk_chars, overlap_chars)

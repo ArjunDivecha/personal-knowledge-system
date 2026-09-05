@@ -527,6 +527,11 @@ class ChatExportScannerTests(unittest.TestCase):
                      {"uuid": "m3", "sender": "assistant", "text": "Older branch that was regenerated.", "created_at": "2025-01-02T10:00:30Z", "parent_message_uuid": "m1"},
                  ]},
                 {"uuid": "c2", "name": "empty", "created_at": "2025-01-03T10:00:00Z", "updated_at": "2025-01-03T10:00:00Z", "chat_messages": []},
+                {"uuid": "c3", "name": "PKS validation checks", "created_at": "2025-02-01T10:00:00Z", "updated_at": "2025-02-01T10:00:00Z",
+                 "chat_messages": [
+                     {"uuid": "v1", "sender": "human", "text": "Run these checks with a negative control: search 'sourdough fermentation recipe' and confirm abstention.", "created_at": "2025-02-01T10:00:00Z"},
+                     {"uuid": "v2", "sender": "assistant", "text": "Negative control passed: abstain_reason no_relevant_evidence, minimum_final_score 0.65, PASS/FAIL report complete.", "created_at": "2025-02-01T10:01:00Z"},
+                 ]},
             ]
             with zipfile.ZipFile(root / "2026-09-04" / "conversations-000.zip", "w") as archive:
                 archive.writestr("conversations.json", json.dumps(convs))
@@ -534,15 +539,18 @@ class ChatExportScannerTests(unittest.TestCase):
                 archive.writestr("memories/acct.json", json.dumps({"conversations_memory": "**Work context**\n\nArjun is a Senior Advisor.", "project_memories": {}, "memory_files": []}))
             config = {
                 "chunk_chars": 3200, "chunk_overlap_chars": 240,
+                "recent_sessions": {"excluded_retrieval_probe_queries": ["sourdough fermentation recipe"]},
                 "chat_exports": {"enabled": True, "root": str(root), "authority": 0.6},
             }
             records, diagnostics = scan_chat_exports(config, now=datetime(2026, 9, 4, tzinfo=UTC))
+            self.assertFalse(any("sourdough" in r.text.lower() for r in records))
+            self.assertEqual(diagnostics["excluded_retrieval_meta_turn_count"], 2)
 
             chats = [r for r in records if r.source_kind == "claude_ai_chat"]
             memories = [r for r in records if r.source_kind == "curated_memory"]
             self.assertEqual(diagnostics["export_dir"], str(root / "2026-09-04"))
             self.assertEqual(diagnostics["conversation_count"], 1)
-            self.assertEqual(diagnostics["skipped_empty_conversations"], 1)
+            self.assertEqual(diagnostics["skipped_empty_conversations"], 2)  # the empty chat + the fully-filtered validation chat
             self.assertEqual(len(chats), 1)
             self.assertEqual(chats[0].source_path, "chat://claude_ai/c1")
             self.assertEqual(chats[0].authority, 0.6)
