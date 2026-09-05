@@ -337,7 +337,13 @@ function cosineSimilarity(left: number[], right: number[]): number {
 		rightNorm += right[index] * right[index];
 	}
 	if (leftNorm === 0 || rightNorm === 0) return 0;
-	return Math.max(0, Math.min(1, dot / Math.sqrt(leftNorm * rightNorm)));
+	// Upstash Vector reports COSINE similarity as (1 + cos) / 2, so query hits
+	// live on a [0, 1] scale where orthogonal = 0.5. Recovered candidates must be
+	// scored on the SAME scale or they are silently penalised: the first version
+	// of this path used raw cosine and scored a chunk that Upstash would report
+	// at 0.66 as 0.32 (verified against staging 2026-09-05: raw 0.9205 <-> 0.9603).
+	const cosine = dot / Math.sqrt(leftNorm * rightNorm);
+	return Math.max(0, Math.min(1, (1 + cosine) / 2));
 }
 
 export async function fetchRecoveredSimilarity(

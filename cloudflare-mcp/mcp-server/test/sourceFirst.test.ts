@@ -326,8 +326,10 @@ describe("source-first project index", () => {
 		expect(fetchedIds.length).toBe(1);
 		expect(rows[0]?.id).toBe("ev_relevant_recovered");
 		expect(rows[0]?.similarity_source).toBe("vector_fetch");
-		expect(Number(rows[0]?.similarity_score)).toBeGreaterThan(0.9);
-		expect(Number(rows[1]?.similarity_score)).toBeLessThan(0.1);
+		// Upstash scale: identical vectors -> 1.0, near-orthogonal -> ~0.5
+		expect(Number(rows[0]?.similarity_score)).toBeGreaterThan(0.99);
+		expect(Number(rows[1]?.similarity_score)).toBeGreaterThan(0.45);
+		expect(Number(rows[1]?.similarity_score)).toBeLessThan(0.6);
 		expect(Number(rows[0]?.final_score)).toBeGreaterThan(Number(rows[1]?.final_score));
 	});
 

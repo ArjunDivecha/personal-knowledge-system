@@ -91,7 +91,7 @@ Candidates recovered through the inverted index or an explicit project map are
 not part of the vector top-K, so their similarity is unknown at that point.
 Since 2026-09-04 the ranker fetches the stored vectors for up to 40 of the
 best-placed recovered candidates and scores them with their real cosine
-similarity (`similarity_source: "vector_fetch"`); before that they carried
+similarity on Upstash's `(1 + cos) / 2` scale (`similarity_source: "vector_fetch"`); before that they carried
 similarity 0 and a fictitious `final_score` of roughly 0.2–0.3 while still
 sorting ahead of real semantic hits. A candidate whose vector cannot be fetched
 stays `"unscored"` rather than failing the search.
