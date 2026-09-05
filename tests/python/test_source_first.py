@@ -504,3 +504,56 @@ class RootIncludeGlobTests(unittest.TestCase):
             names = sorted(f.path.name for f in files)
             self.assertEqual(names, ["13F.md", "INDEX.md"])
             self.assertTrue(all(f.source_kind == "investment_learning" and f.authority == 1.0 for f in files))
+
+
+class ChatExportScannerTests(unittest.TestCase):
+    """claude.ai export -> claude_ai_chat evidence (whole archive, no retention) plus
+    pinned curated memory from memories.json (2026-09-04)."""
+
+    def test_zip_export_becomes_chat_and_memory_evidence(self) -> None:
+        import tempfile
+        import zipfile
+        from ingestion.source_first.chat_export_scanner import scan_chat_exports
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Anthropic"
+            (root / "2026-09-04").mkdir(parents=True)
+            (root / "conversations.json").write_text("[]")  # older loose export must lose to the dated dir
+            convs = [
+                {"uuid": "c1", "name": "Country momentum", "created_at": "2025-01-02T10:00:00Z", "updated_at": "2025-01-02T11:00:00Z",
+                 "chat_messages": [
+                     {"uuid": "m1", "sender": "human", "text": "What do I think about country ETF momentum? API_KEY=abc123secret", "created_at": "2025-01-02T10:00:00Z", "parent_message_uuid": None},
+                     {"uuid": "m2", "sender": "assistant", "text": "Index-space alpha is roughly zero at the close.", "created_at": "2025-01-02T10:01:00Z", "parent_message_uuid": "m1"},
+                     {"uuid": "m3", "sender": "assistant", "text": "Older branch that was regenerated.", "created_at": "2025-01-02T10:00:30Z", "parent_message_uuid": "m1"},
+                 ]},
+                {"uuid": "c2", "name": "empty", "created_at": "2025-01-03T10:00:00Z", "updated_at": "2025-01-03T10:00:00Z", "chat_messages": []},
+            ]
+            with zipfile.ZipFile(root / "2026-09-04" / "conversations-000.zip", "w") as archive:
+                archive.writestr("conversations.json", json.dumps(convs))
+            with zipfile.ZipFile(root / "2026-09-04" / "memories-000.zip", "w") as archive:
+                archive.writestr("memories/acct.json", json.dumps({"conversations_memory": "**Work context**\n\nArjun is a Senior Advisor.", "project_memories": {}, "memory_files": []}))
+            config = {
+                "chunk_chars": 3200, "chunk_overlap_chars": 240,
+                "chat_exports": {"enabled": True, "root": str(root), "authority": 0.6},
+            }
+            records, diagnostics = scan_chat_exports(config, now=datetime(2026, 9, 4, tzinfo=UTC))
+
+            chats = [r for r in records if r.source_kind == "claude_ai_chat"]
+            memories = [r for r in records if r.source_kind == "curated_memory"]
+            self.assertEqual(diagnostics["export_dir"], str(root / "2026-09-04"))
+            self.assertEqual(diagnostics["conversation_count"], 1)
+            self.assertEqual(diagnostics["skipped_empty_conversations"], 1)
+            self.assertEqual(len(chats), 1)
+            self.assertEqual(chats[0].source_path, "chat://claude_ai/c1")
+            self.assertEqual(chats[0].authority, 0.6)
+            self.assertEqual(chats[0].evidence_role, "authoritative")
+            self.assertIn("Index-space alpha", chats[0].text)
+            self.assertNotIn("Older branch", chats[0].text)  # regenerated sibling dropped
+            self.assertIn("[REDACTED]", chats[0].text)
+            self.assertNotIn("abc123secret", chats[0].text)
+            self.assertEqual(len(memories), 1)
+            self.assertTrue(memories[0].pinned)
+            self.assertEqual(memories[0].authority, 1.0)
+            # deterministic ids across runs
+            again, _ = scan_chat_exports(config, now=datetime(2026, 9, 4, tzinfo=UTC))
+            self.assertEqual([r.id for r in records], [r.id for r in again])

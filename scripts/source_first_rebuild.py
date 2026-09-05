@@ -22,6 +22,7 @@ from ingestion.source_first.scanner import (  # noqa: E402
     source_id_for_path,
 )
 from ingestion.source_first.session_scanner import scan_recent_sessions  # noqa: E402
+from ingestion.source_first.chat_export_scanner import scan_chat_exports  # noqa: E402
 
 UTC = timezone.utc
 DEFAULT_CONFIG = REPO_ROOT / "shared" / "source_first_config.json"
@@ -124,6 +125,8 @@ def main() -> int:
     projects = build_projects(files, config, now=now)
     session_records, session_diagnostics = scan_recent_sessions(config, projects, now=now)
     records.extend(session_records)
+    chat_records, chat_diagnostics = scan_chat_exports(config, now=now)
+    records.extend(chat_records)
     records.sort(key=lambda record: (record.source_path, record.chunk_index))
     suppressions = load_json(args.suppressions)
 
@@ -151,6 +154,7 @@ def main() -> int:
         required_projects_present=present,
         required_projects_missing=missing,
         recent_sessions=session_diagnostics,
+        chat_exports=chat_diagnostics,
     ).to_dict()
     output = write_artifacts(args.artifact_root, generation, manifest, records, projects, suppressions)
     report: dict[str, Any] = {"artifact_dir": str(output), "manifest": manifest, "published": False}

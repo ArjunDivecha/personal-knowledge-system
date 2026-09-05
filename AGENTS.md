@@ -13,7 +13,10 @@ The production corpus is one immutable generation built by
 - authoritative files discovered by `ingestion/source_first/scanner.py`;
 - curated/pinned sources in `shared/source_first_config.json`;
 - recent Claude Code and Codex conversations parsed and redacted directly by
-  `ingestion/source_first/session_scanner.py`.
+  `ingestion/source_first/session_scanner.py`;
+- the newest claude.ai data export under `Identity and Important Papers/Arjun
+  Digital Identity/Anthropic/<date>/` (conversations + memories), parsed by
+  `ingestion/source_first/chat_export_scanner.py`.
 
 The old `ke_*` store, thin index, tiers, salience, reconsolidation, Dream,
 distillation, and source-specific legacy ingesters do not maintain production.
@@ -49,6 +52,8 @@ Do not use their validation ledgers to report source-first health.
 - `ingestion/source_first/models.py` — evidence/project/manifest schema.
 - `ingestion/source_first/scanner.py` — authoritative source scanner.
 - `ingestion/source_first/session_scanner.py` — recent-session integration.
+- `ingestion/source_first/chat_export_scanner.py` — claude.ai export integration
+  (whole archive as `claude_ai_chat`, memories export pinned as curated memory; 2026-09-04).
 - `ingestion/source_first/publisher.py` — staged publish and promotion.
 - `scripts/source_first_rebuild.py` — builder/operator CLI.
 - `.github/workflows/source-first-rebuild.yml` — two-hour remote schedule and

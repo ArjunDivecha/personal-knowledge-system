@@ -76,7 +76,8 @@
     "operating_policy": 1.0,
     "working_project": 0.9,
     "completed_project": 0.9,
-    "investment_learning": 1.0
+    "investment_learning": 1.0,
+    "claude_ai_chat": 0.6
   },
   "recent_sessions": {
     "enabled": true,
@@ -108,5 +109,15 @@
         "path": "~/.codex/sessions"
       }
     ]
+  },
+  "chat_exports": {
+    "enabled": true,
+    "root": "/Users/arjundivecha/Dropbox/Identity and Important Papers/Arjun Digital Identity/Anthropic",
+    "require_root": true,
+    "source_kind": "claude_ai_chat",
+    "authority": 0.6,
+    "max_turn_chars": 4000,
+    "max_conversation_chars": 60000,
+    "pin_memories": true
   }
 }

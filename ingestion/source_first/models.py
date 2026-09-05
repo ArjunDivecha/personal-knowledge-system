@@ -57,6 +57,7 @@ class SourceFirstManifest:
     required_projects_missing: list[str]
     recent_sessions: dict[str, Any] = field(default_factory=dict)
     previous_generation: str | None = None
+    chat_exports: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

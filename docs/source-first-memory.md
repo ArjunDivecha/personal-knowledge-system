@@ -33,7 +33,18 @@ Recent Claude Code and Codex conversational turns are integrated directly as
 outputs are excluded. Deterministically identified retrieval-validation prompts
 and their PASS/FAIL reports are also excluded, preventing a negative-control
 query copied into a session from retrieving its own test transcript.
-Credentials are redacted before checksums, embeddings, artifacts, or remote writes. Session records use logical
+Credentials are redacted before checksums, embeddings, artifacts, or remote writes.
+
+claude.ai conversations (since 2026-09-04) come from the newest data export under
+`Identity and Important Papers/Arjun Digital Identity/Anthropic/<YYYY-MM-DD>/`
+(the `conversations-*.zip` parts, merged and de-duplicated by uuid; regenerated
+branches resolved to the latest child). They are `claude_ai_chat` evidence with
+authority 0.6 and the ordinary floor — not `working_context`, so no attention lift
+and no 30-day cutoff; the whole archive is searchable and `get_deep` returns a
+full conversation via `chat://claude_ai/<uuid>`. The export's memories (Claude's
+own profile of Arjun, project memories, memory files) are pinned curated memory at
+authority 1.0. Dropping a newer dated export folder is all that is needed to
+refresh; the next rebuild picks it up. Session records use logical
 `session://<surface>/<session_id>` locators rather than local raw-log paths.
 
 ## Atomic generations
