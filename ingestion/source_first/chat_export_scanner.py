@@ -9,13 +9,17 @@ entirely: the legacy distillation pipeline that read them wrote to the retired
 ke_* store. This scanner reads the raw export directly and emits immutable
 evidence records, exactly like the file and session scanners.
 
-INPUT FILES (configured in shared/source_first_config.json -> "chat_exports"):
-- <root>/<YYYY-MM-DD>/conversations-*.zip   (each zip holds one conversations.json part)
-- <root>/<YYYY-MM-DD>/memories-*.zip        (memories/<account>.json)
-- <root>/conversations.json, <root>/memories.json   (older loose-file exports)
-  Default root: /Users/arjundivecha/Dropbox/Identity and Important Papers/Arjun Digital Identity/Anthropic
-  The newest export directory (by name, then mtime) wins; parts are merged and
-  de-duplicated by conversation uuid (latest updated_at kept).
+INPUT FILES (configured in shared/source_first_config.json -> "chat_exports.surfaces"):
+- claude_ai surface (root .../Arjun Digital Identity/Anthropic):
+    <root>/<YYYY-MM-DD>/conversations-*.zip   (each zip holds one conversations.json part)
+    <root>/<YYYY-MM-DD>/memories-*.zip        (memories/<account>.json)
+    <root>/conversations.json, <root>/memories.json   (older loose-file exports)
+- chatgpt surface (root .../Arjun Digital Identity/ChatGPT, added 2026-09-05):
+    <root>/<YYYY-MM-DD>/conversations-*.json  (OpenAI data export parts; mapping tree,
+    primary path taken from current_node; conversations flagged is_do_not_remember
+    are skipped and counted)
+  For each surface the newest dated export directory (by name, then mtime) wins;
+  parts are merged and de-duplicated by conversation id (latest update kept).
 
 OUTPUT: list[EvidenceRecord] + a diagnostics dict recorded in the manifest as
 "chat_exports". No files are written.
@@ -24,7 +28,7 @@ Evidence contract:
 - source_kind "claude_ai_chat", evidence_role "authoritative" (no attention lift,
   ordinary 0.65 floor), authority from config (0.6), project None, no retention
   cutoff — the whole archive since 2023 is searchable.
-- source_path "chat://claude_ai/<conversation uuid>"; all chunks of one
+- source_path "chat://<surface>/<conversation id>"; all chunks of one
   conversation share a source_id so get_deep returns the full conversation.
 - memories export -> pinned curated_memory records at authority 1.0,
   source_path "chat-export://claude_ai/memories/<section>".
@@ -70,6 +74,11 @@ class ChatConversation:
 
 
 def _iso(value: Any) -> str | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+        try:
+            return datetime.fromtimestamp(float(value), UTC).replace(microsecond=0).isoformat()
+        except (OverflowError, OSError, ValueError):
+            return None
     if not isinstance(value, str) or not value:
         return None
     try:
@@ -93,7 +102,7 @@ def find_export_dir(root: Path) -> Path | None:
     candidates = [
         path for path in root.iterdir()
         if path.is_dir() and re.fullmatch(r"\d{4}-\d{2}-\d{2}.*", path.name)
-        and (list(path.glob("conversations*.zip")) or (path / "conversations.json").exists())
+        and (list(path.glob("conversations*.zip")) or list(path.glob("conversations*.json")))
     ]
     if candidates:
         return sorted(candidates, key=lambda path: (path.name, path.stat().st_mtime))[-1]
@@ -113,6 +122,22 @@ def _json_members(path: Path, name_filter) -> Iterable[Any]:
         yield json.loads(path.read_text(encoding="utf-8", errors="replace"))
 
 
+def _conversation_key(item: dict[str, Any]) -> str | None:
+    for field in ("uuid", "conversation_id", "id"):
+        value = item.get(field)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _conversation_updated(item: dict[str, Any]) -> str:
+    value = item.get("updated_at")
+    if isinstance(value, str):
+        return value
+    epoch = item.get("update_time")
+    return _iso(epoch) or ""
+
+
 def load_raw_conversations(export_dir: Path) -> list[dict[str, Any]]:
     raw: dict[str, dict[str, Any]] = {}
     sources = sorted(export_dir.glob("conversations*.zip")) + sorted(export_dir.glob("conversations*.json"))
@@ -122,11 +147,14 @@ def load_raw_conversations(export_dir: Path) -> list[dict[str, Any]]:
             if not isinstance(items, list):
                 continue
             for item in items:
-                if not isinstance(item, dict) or not isinstance(item.get("uuid"), str):
+                if not isinstance(item, dict):
                     continue
-                previous = raw.get(item["uuid"])
-                if previous is None or str(item.get("updated_at") or "") >= str(previous.get("updated_at") or ""):
-                    raw[item["uuid"]] = item
+                key = _conversation_key(item)
+                if key is None:
+                    continue
+                previous = raw.get(key)
+                if previous is None or _conversation_updated(item) >= _conversation_updated(previous):
+                    raw[key] = item
     return list(raw.values())
 
 
@@ -202,6 +230,54 @@ def parse_conversation(raw: dict[str, Any], max_turn_chars: int) -> ChatConversa
     return ChatConversation(str(raw["uuid"]), str(raw.get("name") or "").strip(), created, updated, turns)
 
 
+def parse_chatgpt_conversation(raw: dict[str, Any], max_turn_chars: int) -> ChatConversation | None:
+    """OpenAI data export: a `mapping` tree of nodes {id, message, parent, children};
+    `current_node` names the leaf of the conversation as last displayed, so walking
+    its parent chain gives the primary path without any branch heuristics.
+    Hidden system/tool nodes and model reasoning (content_type thoughts /
+    reasoning_recap) are excluded; only string parts of text and multimodal_text
+    messages from user and assistant are kept."""
+    mapping = raw.get("mapping")
+    if not isinstance(mapping, dict) or not mapping:
+        return None
+    ordered: list[dict[str, Any]] = []
+    current = raw.get("current_node")
+    seen: set[str] = set()
+    if isinstance(current, str) and current in mapping:
+        while isinstance(current, str) and current in mapping and current not in seen:
+            seen.add(current)
+            node = mapping[current]
+            ordered.append(node)
+            current = node.get("parent") if isinstance(node, dict) else None
+        ordered.reverse()
+    else:
+        ordered = sorted(
+            (node for node in mapping.values() if isinstance(node, dict)),
+            key=lambda node: float(((node.get("message") or {}).get("create_time") or 0) or 0),
+        )
+    turns: list[ChatTurn] = []
+    for node in ordered:
+        message = node.get("message") if isinstance(node, dict) else None
+        if not isinstance(message, dict):
+            continue
+        role = ((message.get("author") or {}).get("role"))
+        if role not in ("user", "assistant"):
+            continue
+        content = message.get("content") or {}
+        if content.get("content_type") not in ("text", "multimodal_text"):
+            continue
+        text = "\n".join(part.strip() for part in (content.get("parts") or []) if isinstance(part, str) and part.strip())
+        timestamp = _iso(message.get("create_time")) or _iso(raw.get("create_time")) or ""
+        if text:
+            turns.append(ChatTurn(role, text[:max_turn_chars], timestamp))
+    if not turns:
+        return None
+    created = _iso(raw.get("create_time")) or turns[0].timestamp
+    updated = _iso(raw.get("update_time")) or turns[-1].timestamp or created
+    key = _conversation_key(raw) or ""
+    return ChatConversation(key, str(raw.get("title") or "").strip(), created, updated, turns)
+
+
 def conversation_text(conversation: ChatConversation, max_conversation_chars: int) -> str:
     """Turns in order from the start, bounded. The opening question and its
     answers carry the durable content of a chat, so truncation drops the tail."""
@@ -258,6 +334,22 @@ def _memory_sections(memories: dict[str, Any]) -> list[tuple[str, str]]:
     return sections
 
 
+def _surfaces(settings: dict[str, Any]) -> list[dict[str, Any]]:
+    """Config shape: {"surfaces": [{name, root, source_kind, authority, pin_memories}]}.
+    The pre-2026-09-05 single-root shape ({"root": ...}) is read as one claude_ai surface."""
+    surfaces = settings.get("surfaces")
+    if isinstance(surfaces, list) and surfaces:
+        return [dict(item) for item in surfaces if isinstance(item, dict)]
+    return [{
+        "name": "claude_ai",
+        "root": settings.get("root") or DEFAULT_ROOT,
+        "source_kind": settings.get("source_kind") or "claude_ai_chat",
+        "authority": settings.get("authority", 0.6),
+        "pin_memories": settings.get("pin_memories", True),
+        "require_root": settings.get("require_root", True),
+    }]
+
+
 def scan_chat_exports(
     config: dict[str, Any],
     *,
@@ -272,32 +364,23 @@ def scan_chat_exports(
         "conversation_count": 0,
         "conversation_chunk_count": 0,
         "skipped_empty_conversations": 0,
+        "skipped_do_not_remember": 0,
+        "excluded_retrieval_meta_turn_count": 0,
         "memory_section_count": 0,
         "memory_chunk_count": 0,
         "redacted_match_count": 0,
         "oldest_conversation_at": None,
         "newest_conversation_at": None,
+        "surfaces": {},
         "last_successful_scan_at": now.replace(microsecond=0).isoformat(),
     }
     if not enabled:
         return [], diagnostics
 
-    root = Path(str(settings.get("root") or DEFAULT_ROOT)).expanduser()
-    require_root = bool(settings.get("require_root", True))
-    export_dir = find_export_dir(root)
-    if export_dir is None:
-        if require_root:
-            raise RuntimeError(f"chat_export_root_unavailable:{root}")
-        return [], diagnostics
-    diagnostics["export_dir"] = str(export_dir)
-
-    source_kind = str(settings.get("source_kind") or "claude_ai_chat")
-    authority = float(settings.get("authority", 0.6))
     max_turn_chars = int(settings.get("max_turn_chars", 4000))
     max_conversation_chars = int(settings.get("max_conversation_chars", 60000))
     chunk_chars = int(config.get("chunk_chars", 3200))
     overlap_chars = int(config.get("chunk_overlap_chars", 240))
-    records: list[EvidenceRecord] = []
     # Same boundary as the session scanner: retrieval-validation prompts and their
     # PASS/FAIL reports are operational traffic, not evidence about the subjects
     # used as probes. Without it a claude.ai chat that ran the PKS validation
@@ -308,89 +391,131 @@ def scan_chat_exports(
         for query in ((config.get("recent_sessions") or {}).get("excluded_retrieval_probe_queries") or [])
         if isinstance(query, str) and query.strip()
     ]
-    diagnostics["excluded_retrieval_meta_turn_count"] = 0
+    records: list[EvidenceRecord] = []
+    all_updated: list[str] = []
 
-    updated_values: list[str] = []
-    for raw in load_raw_conversations(export_dir):
-        conversation = parse_conversation(raw, max_turn_chars)
-        if conversation is None:
-            diagnostics["skipped_empty_conversations"] += 1
+    for surface in _surfaces(settings):
+        name = str(surface.get("name") or "claude_ai")
+        if name not in ("claude_ai", "chatgpt"):
+            raise ValueError(f"unsupported_chat_export_surface:{name}")
+        root = Path(str(surface.get("root") or (DEFAULT_ROOT if name == "claude_ai" else ""))).expanduser()
+        require_root = bool(surface.get("require_root", True))
+        source_kind = str(surface.get("source_kind") or f"{name}_chat")
+        authority = float(surface.get("authority", 0.6))
+        parse = parse_conversation if name == "claude_ai" else parse_chatgpt_conversation
+        stats: dict[str, Any] = {
+            "export_dir": None, "conversation_count": 0, "conversation_chunk_count": 0,
+            "skipped_empty_conversations": 0, "skipped_do_not_remember": 0,
+            "excluded_retrieval_meta_turn_count": 0, "memory_section_count": 0, "memory_chunk_count": 0,
+            "redacted_match_count": 0, "oldest_conversation_at": None, "newest_conversation_at": None,
+        }
+        diagnostics["surfaces"][name] = stats
+        export_dir = find_export_dir(root)
+        if export_dir is None:
+            if require_root:
+                raise RuntimeError(f"chat_export_root_unavailable:{name}:{root}")
             continue
-        kept_turns, excluded_turns = _without_retrieval_meta_turns(
-            [SessionTurn(turn.role, turn.text, turn.timestamp) for turn in conversation.turns],
-            excluded_probe_queries,
-        )
-        diagnostics["excluded_retrieval_meta_turn_count"] += excluded_turns
-        if not kept_turns:
-            diagnostics["skipped_empty_conversations"] += 1
-            continue
-        conversation = ChatConversation(
-            conversation.uuid, conversation.name, conversation.created_at, conversation.updated_at,
-            [ChatTurn(turn.role, turn.text, turn.timestamp) for turn in kept_turns],
-        )
-        redacted, redaction_count = redact_session_text(conversation_text(conversation, max_conversation_chars))
-        diagnostics["redacted_match_count"] += redaction_count
-        chunks = chunk_text(redacted, chunk_chars, overlap_chars)
-        if not chunks:
-            diagnostics["skipped_empty_conversations"] += 1
-            continue
-        diagnostics["conversation_count"] += 1
-        updated_values.append(conversation.updated_at)
-        logical_path = f"chat://claude_ai/{conversation.uuid}"
-        day = conversation.updated_at[:10]
-        title = f"Claude.ai chat — {conversation.name or 'untitled'} — {day}"[:240]
-        source_id = source_id_for_path(logical_path)
-        for index, chunk in enumerate(chunks):
-            checksum = hashlib.sha256(chunk.encode()).hexdigest()
-            identity = f"claude_ai:{conversation.uuid}:{index}:{checksum}"
-            records.append(EvidenceRecord(
-                id=f"ev_chat_{hashlib.sha256(identity.encode()).hexdigest()[:20]}",
-                source_id=source_id,
-                title=title,
-                text=chunk,
-                source_path=logical_path,
-                source_kind=source_kind,
-                project=None,
-                source_modified_at=conversation.updated_at,
-                content_checksum=checksum,
-                chunk_index=index,
-                chunk_count=len(chunks),
-                authority=authority,
-            ))
-    diagnostics["conversation_chunk_count"] = len(records)
-    if updated_values:
-        diagnostics["oldest_conversation_at"] = min(updated_values)
-        diagnostics["newest_conversation_at"] = max(updated_values)
+        stats["export_dir"] = str(export_dir)
+        if diagnostics["export_dir"] is None:
+            diagnostics["export_dir"] = str(export_dir)
 
-    if bool(settings.get("pin_memories", True)):
-        memories = load_raw_memories(export_dir)
-        if memories:
-            sections = _memory_sections(memories)
-            diagnostics["memory_section_count"] = len(sections)
-            memory_modified = _iso(memories.get("updated_at")) or diagnostics["newest_conversation_at"] or now.replace(microsecond=0).isoformat()
-            for key, body in sections:
-                redacted, redaction_count = redact_session_text(normalize_text(body))
-                diagnostics["redacted_match_count"] += redaction_count
-                chunks = chunk_text(redacted, chunk_chars, overlap_chars)
-                logical_path = f"chat-export://claude_ai/memories/{key}"
-                source_id = source_id_for_path(logical_path)
-                for index, chunk in enumerate(chunks):
-                    checksum = hashlib.sha256(chunk.encode()).hexdigest()
-                    identity = f"claude_ai_memory:{key}:{index}:{checksum}"
-                    records.append(EvidenceRecord(
-                        id=f"ev_chatmem_{hashlib.sha256(identity.encode()).hexdigest()[:20]}",
-                        source_id=source_id,
-                        title=f"Claude.ai memory — {key}"[:240],
-                        text=chunk,
-                        source_path=logical_path,
-                        source_kind="curated_memory",
-                        project=None,
-                        source_modified_at=memory_modified,
-                        content_checksum=checksum,
-                        chunk_index=index,
-                        chunk_count=len(chunks),
-                        authority=1.0,
-                        pinned=True,
-                    ))
-                    diagnostics["memory_chunk_count"] += 1
+        updated_values: list[str] = []
+        for raw in load_raw_conversations(export_dir):
+            if name == "chatgpt" and raw.get("is_do_not_remember") is True:
+                stats["skipped_do_not_remember"] += 1
+                continue
+            conversation = parse(raw, max_turn_chars)
+            if conversation is None or not conversation.uuid:
+                stats["skipped_empty_conversations"] += 1
+                continue
+            kept_turns, excluded_turns = _without_retrieval_meta_turns(
+                [SessionTurn(turn.role, turn.text, turn.timestamp) for turn in conversation.turns],
+                excluded_probe_queries,
+            )
+            stats["excluded_retrieval_meta_turn_count"] += excluded_turns
+            if not kept_turns:
+                stats["skipped_empty_conversations"] += 1
+                continue
+            conversation = ChatConversation(
+                conversation.uuid, conversation.name, conversation.created_at, conversation.updated_at,
+                [ChatTurn(turn.role, turn.text, turn.timestamp) for turn in kept_turns],
+            )
+            redacted, redaction_count = redact_session_text(conversation_text(conversation, max_conversation_chars))
+            stats["redacted_match_count"] += redaction_count
+            chunks = chunk_text(redacted, chunk_chars, overlap_chars)
+            if not chunks:
+                stats["skipped_empty_conversations"] += 1
+                continue
+            stats["conversation_count"] += 1
+            updated_values.append(conversation.updated_at)
+            logical_path = f"chat://{name}/{conversation.uuid}"
+            day = conversation.updated_at[:10]
+            label = "Claude.ai chat" if name == "claude_ai" else "ChatGPT chat"
+            title = f"{label} — {conversation.name or 'untitled'} — {day}"[:240]
+            source_id = source_id_for_path(logical_path)
+            for index, chunk in enumerate(chunks):
+                checksum = hashlib.sha256(chunk.encode()).hexdigest()
+                # Identity prefix "claude_ai:" is kept byte-identical to the 2026-09-04
+                # format so existing embeddings are reused across generations.
+                identity = f"{name}:{conversation.uuid}:{index}:{checksum}"
+                records.append(EvidenceRecord(
+                    id=f"ev_chat_{hashlib.sha256(identity.encode()).hexdigest()[:20]}",
+                    source_id=source_id,
+                    title=title,
+                    text=chunk,
+                    source_path=logical_path,
+                    source_kind=source_kind,
+                    project=None,
+                    source_modified_at=conversation.updated_at,
+                    content_checksum=checksum,
+                    chunk_index=index,
+                    chunk_count=len(chunks),
+                    authority=authority,
+                ))
+                stats["conversation_chunk_count"] += 1
+        if updated_values:
+            stats["oldest_conversation_at"] = min(updated_values)
+            stats["newest_conversation_at"] = max(updated_values)
+            all_updated.extend(updated_values)
+
+        if name == "claude_ai" and bool(surface.get("pin_memories", True)):
+            memories = load_raw_memories(export_dir)
+            if memories:
+                sections = _memory_sections(memories)
+                stats["memory_section_count"] = len(sections)
+                memory_modified = _iso(memories.get("updated_at")) or stats["newest_conversation_at"] or now.replace(microsecond=0).isoformat()
+                for key, body in sections:
+                    redacted, redaction_count = redact_session_text(normalize_text(body))
+                    stats["redacted_match_count"] += redaction_count
+                    chunks = chunk_text(redacted, chunk_chars, overlap_chars)
+                    logical_path = f"chat-export://claude_ai/memories/{key}"
+                    source_id = source_id_for_path(logical_path)
+                    for index, chunk in enumerate(chunks):
+                        checksum = hashlib.sha256(chunk.encode()).hexdigest()
+                        identity = f"claude_ai_memory:{key}:{index}:{checksum}"
+                        records.append(EvidenceRecord(
+                            id=f"ev_chatmem_{hashlib.sha256(identity.encode()).hexdigest()[:20]}",
+                            source_id=source_id,
+                            title=f"Claude.ai memory — {key}"[:240],
+                            text=chunk,
+                            source_path=logical_path,
+                            source_kind="curated_memory",
+                            project=None,
+                            source_modified_at=memory_modified,
+                            content_checksum=checksum,
+                            chunk_index=index,
+                            chunk_count=len(chunks),
+                            authority=1.0,
+                            pinned=True,
+                        ))
+                        stats["memory_chunk_count"] += 1
+
+        for key in ("conversation_count", "conversation_chunk_count", "skipped_empty_conversations",
+                    "skipped_do_not_remember", "excluded_retrieval_meta_turn_count",
+                    "memory_section_count", "memory_chunk_count", "redacted_match_count"):
+            diagnostics[key] += stats[key]
+
+    if all_updated:
+        diagnostics["oldest_conversation_at"] = min(all_updated)
+        diagnostics["newest_conversation_at"] = max(all_updated)
     return records, diagnostics

@@ -565,3 +565,47 @@ class ChatExportScannerTests(unittest.TestCase):
             # deterministic ids across runs
             again, _ = scan_chat_exports(config, now=datetime(2026, 9, 4, tzinfo=UTC))
             self.assertEqual([r.id for r in records], [r.id for r in again])
+
+
+class ChatGptExportScannerTests(unittest.TestCase):
+    """OpenAI data export -> chatgpt_chat evidence via the current_node primary path;
+    is_do_not_remember conversations are skipped (2026-09-05)."""
+
+    def test_mapping_tree_follows_current_node_and_respects_do_not_remember(self) -> None:
+        import tempfile
+        from ingestion.source_first.chat_export_scanner import scan_chat_exports
+
+        def msg(mid, role, text, t, ctype="text"):
+            return {"id": mid, "message": {"id": mid, "author": {"role": role}, "create_time": t,
+                                           "content": {"content_type": ctype, "parts": [text]}, "metadata": {}}}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "ChatGPT"
+            (root / "2026-09-04").mkdir(parents=True)
+            mapping = {
+                "root": {"id": "root", "message": None, "parent": None, "children": ["u1"]},
+                "u1": {**msg("u1", "user", "What drives country ETF momentum?", 1700000000.0), "parent": "root", "children": ["a1", "a2"]},
+                "a1": {**msg("a1", "assistant", "Old regenerated answer.", 1700000010.0), "parent": "u1", "children": []},
+                "a2": {**msg("a2", "assistant", "Index-space alpha is near zero at the close.", 1700000020.0), "parent": "u1", "children": ["s1"]},
+                "s1": {**msg("s1", "assistant", "hidden reasoning", 1700000021.0, ctype="thoughts"), "parent": "a2", "children": []},
+            }
+            convs = [
+                {"id": "g1", "conversation_id": "g1", "title": "Momentum", "create_time": 1700000000.0, "update_time": 1700000030.0, "current_node": "s1", "mapping": mapping},
+                {"id": "g2", "conversation_id": "g2", "title": "Private", "create_time": 1700000000.0, "update_time": 1700000030.0, "current_node": "u1", "mapping": mapping, "is_do_not_remember": True},
+            ]
+            (root / "2026-09-04" / "conversations-000.json").write_text(json.dumps(convs))
+            config = {
+                "chunk_chars": 3200, "chunk_overlap_chars": 240,
+                "chat_exports": {"enabled": True, "surfaces": [{"name": "chatgpt", "root": str(root), "source_kind": "chatgpt_chat", "authority": 0.6}]},
+            }
+            records, diagnostics = scan_chat_exports(config, now=datetime(2026, 9, 5, tzinfo=UTC))
+            self.assertEqual(len(records), 1)
+            r = records[0]
+            self.assertEqual(r.source_kind, "chatgpt_chat")
+            self.assertEqual(r.source_path, "chat://chatgpt/g1")
+            self.assertIn("near zero at the close", r.text)
+            self.assertNotIn("Old regenerated", r.text)
+            self.assertNotIn("hidden reasoning", r.text)
+            self.assertEqual(r.source_modified_at, "2023-11-14T22:13:50+00:00")
+            self.assertEqual(diagnostics["skipped_do_not_remember"], 1)
+            self.assertEqual(diagnostics["surfaces"]["chatgpt"]["conversation_count"], 1)

@@ -43,8 +43,11 @@ authority 0.6 and the ordinary floor — not `working_context`, so no attention 
 and no 30-day cutoff; the whole archive is searchable and `get_deep` returns a
 full conversation via `chat://claude_ai/<uuid>`. The export's memories (Claude's
 own profile of Arjun, project memories, memory files) are pinned curated memory at
-authority 1.0. Dropping a newer dated export folder is all that is needed to
-refresh; the next rebuild picks it up. Session records use logical
+authority 1.0. ChatGPT conversations (OpenAI data export, since 2026-09-05) are handled
+the same way from `.../Arjun Digital Identity/ChatGPT/<YYYY-MM-DD>/conversations-*.json`
+as `chatgpt_chat` evidence (primary path from `current_node`; model reasoning and
+conversations flagged *do not remember* are excluded). Dropping a newer dated export
+folder under either root is all that is needed to refresh; the next rebuild picks it up. Session records use logical
 `session://<surface>/<session_id>` locators rather than local raw-log paths.
 
 ## Atomic generations

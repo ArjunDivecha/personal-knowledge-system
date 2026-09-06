@@ -52,8 +52,9 @@ Do not use their validation ledgers to report source-first health.
 - `ingestion/source_first/models.py` — evidence/project/manifest schema.
 - `ingestion/source_first/scanner.py` — authoritative source scanner.
 - `ingestion/source_first/session_scanner.py` — recent-session integration.
-- `ingestion/source_first/chat_export_scanner.py` — claude.ai export integration
-  (whole archive as `claude_ai_chat`, memories export pinned as curated memory; 2026-09-04).
+- `ingestion/source_first/chat_export_scanner.py` — claude.ai and ChatGPT export
+  integration (whole archives as `claude_ai_chat` / `chatgpt_chat`, claude.ai memories
+  pinned as curated memory; 2026-09-04/05).
 - `ingestion/source_first/publisher.py` — staged publish and promotion.
 - `scripts/source_first_rebuild.py` — builder/operator CLI.
 - `.github/workflows/source-first-rebuild.yml` — two-hour remote schedule and
