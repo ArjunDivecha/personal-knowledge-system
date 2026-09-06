@@ -63,7 +63,7 @@ describe("source-first scoring", () => {
 		const fresh = scoreSourceFirstResult("Tracker portfolio signals", session, 0.8, now);
 		const authoritative = scoreSourceFirstResult("Tracker portfolio signals", evidence, 0.8, now);
 		expect(fresh.attention_score).toBe(0.8);
-		expect(fresh.working_context_bonus).toBe(0.064);
+		expect(fresh.working_context_bonus).toBe(0.032); // 0.04 * 0.8 (weight halved 2026-09-05)
 		expect(fresh.final_score).toBeGreaterThan(authoritative.final_score);
 		expect(workingContextAttentionScore(
 			{ ...session, attention_observed_at: "2026-08-07T00:00:00.000Z" },

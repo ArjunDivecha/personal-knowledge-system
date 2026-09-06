@@ -79,10 +79,12 @@ top-K misses. Ranking within that set is fixed and inspectable:
 For `working_context` only, retrieval adds:
 
 ```text
-0.08 * semantic_similarity * exp(-ln(2) * age_days / 3)
+0.04 * semantic_similarity * exp(-ln(2) * age_days / 3)
 ```
 
-The lift describes attention, not authority. It may reorder evidence that
+The lift describes attention, not authority. (Weight 0.08 → 0.04 and session
+authority 0.7 → 0.6 on 2026-09-05: at 0.08 a burst of same-day sessions about a
+topic outranked the document that answered the question.) It may reorder evidence that
 already qualifies, but it can never be what admits evidence: the relevance
 floor is applied to the base score, before the lift is added. Multiplying the
 lift by semantic relevance bounds its size; applying the floor to the base

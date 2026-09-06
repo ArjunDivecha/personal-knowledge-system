@@ -357,6 +357,8 @@ def scan_recent_sessions(
     overlap_chars = int(config.get("chunk_overlap_chars", 240))
     require_roots = bool(settings.get("require_source_roots", True))
     map_unlisted_folders = bool(settings.get("map_unlisted_folders", True))
+    # 0.7 -> 0.6 on 2026-09-05 together with the attention-weight change (see sourceFirst.ts).
+    session_authority = float(settings.get("session_authority", 0.6))
     source_roots = [root for root in (config.get("roots") or []) if isinstance(root, dict)]
     excluded_probe_queries = [
         str(query)
@@ -444,7 +446,7 @@ def scan_recent_sessions(
                 content_checksum=checksum,
                 chunk_index=chunk_index,
                 chunk_count=len(chunks),
-                authority=0.7,
+                authority=session_authority,
                 evidence_role="working_context",
                 session_surface=surface,
                 session_id=session.session_id,

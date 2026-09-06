@@ -84,7 +84,7 @@
     "enabled": true,
     "retention_days": 30,
     "attention_half_life_days": 3,
-    "attention_weight": 0.08,
+    "attention_weight": 0.04,
     "max_sessions_per_surface": 2000,
     "max_total_chunks": 6000,
     "map_unlisted_folders": true,
@@ -97,7 +97,6 @@
       "convert 100 fahrenheit to celsius",
       "write a haiku about autumn leaves",
       "python list comprehension syntax",
-      "who was Albert Einstein",
       "sourdough fermentation recipe",
       "how to fold an origami crane"
     ],
@@ -110,7 +109,8 @@
         "name": "codex",
         "path": "~/.codex/sessions"
       }
-    ]
+    ],
+    "session_authority": 0.6
   },
   "chat_exports": {
     "enabled": true,

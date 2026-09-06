@@ -43,7 +43,7 @@ base_score =
   + 0.05 * source_recency
 
 working_context_bonus =
-    0.08 * semantic_similarity * exp(-ln(2) * age_days / 3)
+    0.04 * semantic_similarity * exp(-ln(2) * age_days / 3)
 
 final_score = min(1, base_score + working_context_bonus)
 ```

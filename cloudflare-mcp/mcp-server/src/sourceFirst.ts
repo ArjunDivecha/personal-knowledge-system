@@ -273,6 +273,8 @@ export function isSuppressed(query: string, evidence: SourceFirstEvidence, rules
 	return false;
 }
 
+export const WORKING_CONTEXT_ATTENTION_WEIGHT = 0.04;
+
 export function scoreSourceFirstResult(
 	query: string,
 	evidence: SourceFirstEvidence,
@@ -289,7 +291,14 @@ export function scoreSourceFirstResult(
 		0.05 * recencyScore
 	);
 	const attentionScore = workingContextAttentionScore(evidence, similarityScore, now);
-	const workingContextBonus = 0.08 * attentionScore;
+	// Attention weight 0.08 -> 0.04 on 2026-09-05 (Arjun's decision). At 0.08, a
+	// burst of same-day sessions about a topic outranked the document that
+	// actually answered the question: "where does ASADO keep its consolidated
+	// macro database" returned four Codex sessions from that evening above the
+	// README chunk holding the DuckDB path (candidate gate para_asado_b, run
+	// 34007082909). Recent work still surfaces for recency questions; a source
+	// that answers now beats chatter about the topic.
+	const workingContextBonus = WORKING_CONTEXT_ATTENTION_WEIGHT * attentionScore;
 	const finalScore = Math.round(Math.min(1, baseScore + workingContextBonus) * 10000) / 10000;
 	return {
 		...evidence,
@@ -592,7 +601,7 @@ export async function sourceFirstSearchGeneration(
 		abstain_reason: abstained ? "no_relevant_evidence_above_threshold" : null,
 		minimum_final_score: SOURCE_FIRST_MIN_FINAL_SCORE,
 		deduplication: "content_checksum",
-		scoring: "Named projects, opaque identifiers, and strong exact lexical phrase matches receive deterministic candidate recovery (recovered candidates are rescored with their real vector similarity; vector top-K floor 100); otherwise results must clear 0.65. Base: 0.70 semantic + 0.15 lexical + 0.10 source authority + 0.05 source recency. Working context adds 0.08 * semantic relevance * 3-day attention decay. Byte-identical chunks collapse by content checksum; explicit suppressions apply; no tiers, salience, classification, or access reinforcement.",
+		scoring: "Named projects, opaque identifiers, and strong exact lexical phrase matches receive deterministic candidate recovery (recovered candidates are rescored with their real vector similarity; vector top-K floor 100); otherwise results must clear 0.65. Base: 0.70 semantic + 0.15 lexical + 0.10 source authority + 0.05 source recency. Working context adds 0.04 * semantic relevance * 3-day attention decay (session authority 0.6). Byte-identical chunks collapse by content checksum; explicit suppressions apply; no tiers, salience, classification, or access reinforcement.",
 	};
 }
 
