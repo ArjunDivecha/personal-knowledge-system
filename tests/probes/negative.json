@@ -29,7 +29,7 @@
     "enabled": true,
     "priority": "medium",
     "query": "write a haiku about autumn leaves",
-    "notes": "Creative request with no personalization operator ('for me' absent) — per conditioning-retrieval-policy, bare creative asks imply no lookup."
+    "notes": "Creative request with no personalization operator ('for me' absent) \u2014 per conditioning-retrieval-policy, bare creative asks imply no lookup."
   },
   {
     "id": "neg_python_syntax",
@@ -37,15 +37,15 @@
     "enabled": true,
     "priority": "medium",
     "query": "python list comprehension syntax",
-    "notes": "Generic syntax question. Risk of false injection from coding-adjacent entries — exactly what this axis measures."
+    "notes": "Generic syntax question. Risk of false injection from coding-adjacent entries \u2014 exactly what this axis measures."
   },
   {
     "id": "neg_who_is_einstein",
     "axis": "negative",
-    "enabled": true,
+    "enabled": false,
     "priority": "low",
     "query": "who was Albert Einstein",
-    "notes": "Public figure, no personal linkage."
+    "notes": "Public figure, no personal linkage. RETIRED 2026-09-05: premise no longer holds \u2014 the ChatGPT archive (ingested 2026-09-05) contains a 2023 chat in which Arjun asked for relativity explained in the style of Donald Trump (chat://chatgpt/..., 'Mark Berger's movie soundtracks'), so 'who was Albert Einstein' legitimately retrieves Arjun's own conversation at 0.69. Replaced by neg_origami_crane (verified 0 chunks mention origami across 24,140 records)."
   },
   {
     "id": "neg_sourdough_recipe",
@@ -54,5 +54,13 @@
     "priority": "high",
     "query": "sourdough fermentation recipe",
     "notes": "Regression for retrieval-test feedback: meta session transcripts containing this probe must not become topical evidence."
+  },
+  {
+    "id": "neg_origami_crane",
+    "axis": "negative",
+    "enabled": true,
+    "priority": "high",
+    "query": "how to fold an origami crane",
+    "notes": "Negative control added 2026-09-05 replacing neg_who_is_einstein. Verified lexically absent across all 24,140 evidence records of sf_20260906T030854Z (files, sessions, claude.ai + ChatGPT archives). If this ever retrieves, check first whether a chat about origami actually exists before touching ranking."
   }
 ]
