@@ -475,3 +475,59 @@ FRAGILITY NOW RECORDED IN EACH PROBE'S NOTES (measured hit rates):
             flipping enabled:true would fail on sight and block promotion.
 
 SESSION END: 2026-08-13 03:07 PDT | Agent: Claude Code (Fable 5)
+
+---
+
+## SESSION START 2026-09-10 — Upstash knowledge-embeddings capacity review
+
+**Read-only. Nothing deleted, no code changed.**
+
+Trigger: Upstash warned the vector index hit 80% of quota, up from 70% two days
+earlier, with an estimate of "a couple of weeks" before indexing stops.
+
+**Finding: it is not a capacity problem.** 506,966 vectors of a 660,000 quota
+(76.8%), but 416,136 of them (82.1%, 58 namespaces) are orphaned. Real runway
+is **2–3 days**, not weeks.
+
+**Root cause: the rebuild's failure path has no cleanup.**
+`_record_and_prune_generations` (`ingestion/source_first/publisher.py:296`)
+works correctly — it is a sliding window over `sf:generation_history` and
+prunes promoted generations cleanly (verified: the 09-09 20:56 generation
+promoted and was later pruned, namespace and Redis keys both gone). But prune
+is reachable ONLY from `promote_generation()` (`publisher.py:288`). The
+workflow is stage → verify → gate → promote. Any run that dies before promote
+has already written ~24,000 vectors, never enters the history chain, and is
+therefore invisible to the window permanently.
+
+Evidence: across 300 runs (08-13 → 09-10; 247 success, 44 failure, 9 cancelled)
+orphan namespaces track failures day-for-day. 08-15: 12/12 runs failed, 12
+orphans. 08-21: 8 failed, 9 orphans. Thirteen consecutive clean days
+(08-22 → 09-03) produced zero orphans. The dominant failing step is
+`Run exact production retrieval policy against candidate` — the quality gate
+rejecting a fully-built candidate, stranding the whole namespace.
+
+**Recommended (awaiting Arjun's approval, nothing done):** delete the 58
+orphans first (→ 13.8% of quota), then add cleanup-on-failure, then a
+reconciling sweep against the live `/info` inventory as backstop. Do NOT
+upgrade the plan — it buys ~2 weeks and fixes nothing.
+
+**Excluded:** the `(default)` namespace (18,248 vectors) is the legacy `ke_`
+index, read only by the pre-source-first `mcp-server/` (last touched
+2026-02-05, deployment status unknown). Separate decision.
+
+**Redis checked and healthy:** 176 MB of 3 GB (5.7%), 6.3M keys.
+
+**Two traps recorded for future agents:**
+1. `.env` lists `UPSTASH_REDIS_REST_URL` twice — line 10 is knowledge-embeddings,
+   line 75 is the California law chatbot. `dotenv_values()` takes the LAST, so
+   it silently reads the wrong database. Use first-key-wins (Arjun's
+   convention), as `ingestion/.env` does.
+2. Promoted generations get pruned, so surviving manifests carrying
+   `published_at` are a BIASED sample — reading them at face value falsely
+   suggests serving was frozen for 32 days. It was not. Check actual workflow
+   runs, not manifest residue.
+
+Report:
+`/Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system/reports/20260910_upstash_capacity_review/README.md`
+
+## SESSION END 2026-09-10
