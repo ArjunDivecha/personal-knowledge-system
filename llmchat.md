@@ -531,3 +531,20 @@ Report:
 `/Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system/reports/20260910_upstash_capacity_review/README.md`
 
 ## SESSION END 2026-09-10
+
+## SESSION START 2026-09-13 — Upstash cleanup (approved) + cleanup-on-failure fix
+
+Arjun approved the 09-10 recommendation. Deleted 62 orphan `sf_*` namespaces (513,082 vectors)
+and the legacy `(default)` namespace (18,248). **knowledge-embeddings: 603,967 → 72,637 vectors
+(91.5% → 11.0%).** Redis: 6.46M → 897K keys. Serving generation `sf_20260913T155402Z` verified
+healthy afterwards. Shipped `discard_generation` / `sweep_orphans` + workflow steps so a failed or
+cancelled run cleans up after itself. Report:
+`/Users/arjundivecha/Dropbox/AAA Backup/A Working/Memory/knowledge-system/reports/20260913_upstash_cleanup/README.md`
+
+Not fixed: the gate is rejecting every candidate today on probe `para_asado_b` (4 failures since
+16:17Z). Each rejection now gets discarded instead of leaking ~24K vectors.
+
+Trap: Upstash SCAN returns at most 1,000 keys per call regardless of COUNT. Any per-generation SCAN
+over this keyspace is minutes; do one pass and bucket.
+
+## SESSION END 2026-09-13

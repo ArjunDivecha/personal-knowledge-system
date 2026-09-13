@@ -91,6 +91,14 @@ def main() -> int:
     parser.add_argument("--promote-generation", help="promote an already staged and verified generation")
     parser.add_argument("--verify-generation", help="verify a staged generation without requiring the live heartbeat")
     parser.add_argument("--verify-current", action="store_true", help="verify the currently promoted remote generation")
+    parser.add_argument("--discard-generation", help="delete a staged candidate that failed the gate or was cancelled (refuses the live/rollback chain)")
+    parser.add_argument("--sweep-orphans", action="store_true", help="delete every sf_* namespace that is neither serving nor a rollback")
+    parser.add_argument(
+        "--orphan-min-age-hours",
+        type=float,
+        default=3.0,
+        help="with --sweep-orphans, leave namespaces younger than this alone (a run may still be staging them)",
+    )
     parser.add_argument(
         "--max-age-hours",
         type=float,
@@ -103,6 +111,16 @@ def main() -> int:
         raise ValueError("--publish and --stage are mutually exclusive")
     if args.promote_generation:
         report = SourceFirstPublisher().promote_generation(args.promote_generation)
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+    if args.discard_generation:
+        report = SourceFirstPublisher().discard_generation(args.discard_generation)
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+    if args.sweep_orphans:
+        if args.orphan_min_age_hours < 0:
+            raise ValueError("--orphan-min-age-hours must be non-negative")
+        report = SourceFirstPublisher().sweep_orphans(min_age_seconds=int(args.orphan_min_age_hours * 3600))
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0
     if args.verify_generation:

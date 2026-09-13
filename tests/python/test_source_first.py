@@ -41,6 +41,16 @@ class FakeRedis:
     def mget(self, *keys):
         return [self.store.get(key) for key in keys]
 
+    def scan(self, cursor, match="*", count=100):
+        import fnmatch
+        return 0, [key for key in list(self.store) if fnmatch.fnmatch(key, match)]
+
+    def delete(self, *keys):
+        removed = 0
+        for key in keys:
+            removed += self.store.pop(key, None) is not None
+        return removed
+
 
 class FakeVector:
     def __init__(self, fail_upsert: bool = False):
@@ -54,6 +64,12 @@ class FakeVector:
         for record_id, vector, metadata in vectors:
             target[record_id] = SimpleNamespace(id=record_id, vector=vector, metadata=metadata)
         return "OK"
+
+    def list_namespaces(self):
+        return list(self.namespaces)
+
+    def delete_namespace(self, namespace):
+        self.namespaces.pop(namespace, None)
 
     def fetch(self, ids, include_vectors=False, include_metadata=False, namespace=""):
         target = self.namespaces.get(namespace, {})
@@ -367,6 +383,56 @@ class SourceFirstPublisherTests(unittest.TestCase):
                 suppressions={"schema_version": 1, "rules": []},
             )
         self.assertEqual(redis.get(CURRENT_GENERATION_KEY), "sf_working")
+
+    def _stage(self, publisher, generation):
+        return publisher.publish(
+            generation=generation,
+            manifest={"generation": generation, "built_at": "2026-08-10T00:00:00+00:00"},
+            records=[self.make_record()],
+            projects=[],
+            suppressions={"schema_version": 1, "rules": []},
+            promote=False,
+        )
+
+    def test_discard_removes_staged_candidate_but_refuses_live_generation(self):
+        redis = FakeRedis()
+        vector = FakeVector()
+        publisher = SourceFirstPublisher(redis=redis, vector=vector, openai=SimpleNamespace(embeddings=FakeEmbeddings()))
+        self._stage(publisher, "sf_live")
+        publisher.promote_generation("sf_live")
+        self._stage(publisher, "sf_rejected")
+        self.assertIn("sf_rejected", vector.namespaces)
+        self.assertTrue(any(k.startswith("sf:sf_rejected:") for k in redis.store))
+
+        report = publisher.discard_generation("sf_rejected")
+        self.assertTrue(report["discarded"])
+        self.assertNotIn("sf_rejected", vector.namespaces)
+        self.assertFalse(any(k.startswith("sf:sf_rejected:") for k in redis.store))
+        self.assertIsNone(redis.get("sf:manifest:sf_rejected"))
+
+        with self.assertRaises(RuntimeError):
+            publisher.discard_generation("sf_live")
+        self.assertIn("sf_live", vector.namespaces)
+        self.assertEqual(redis.get(CURRENT_GENERATION_KEY), "sf_live")
+
+    def test_sweep_deletes_old_orphans_and_keeps_chain_and_young_candidates(self):
+        redis = FakeRedis()
+        vector = FakeVector()
+        publisher = SourceFirstPublisher(redis=redis, vector=vector, openai=SimpleNamespace(embeddings=FakeEmbeddings()))
+        self._stage(publisher, "sf_20260913T100000Z")
+        publisher.promote_generation("sf_20260913T100000Z")
+        self._stage(publisher, "sf_20260913T120000Z")
+        publisher.promote_generation("sf_20260913T120000Z")   # chain: 12:00 live, 10:00 rollback
+        self._stage(publisher, "sf_20260913T080000Z")         # old orphan
+        self._stage(publisher, "sf_20260913T130000Z")         # young: still in flight
+        vector.namespaces["sf_20260901T000000Z"] = {}         # namespace with no redis keys at all
+
+        report = publisher.sweep_orphans(min_age_seconds=3 * 3600, now=datetime(2026, 9, 13, 14, 0, tzinfo=UTC))
+        swept = {row["generation"] for row in report["swept"]}
+        self.assertEqual(swept, {"sf_20260913T080000Z", "sf_20260901T000000Z"})
+        self.assertEqual(report["skipped_young"], ["sf_20260913T130000Z"])
+        self.assertEqual(set(vector.namespaces), {"sf_20260913T100000Z", "sf_20260913T120000Z", "sf_20260913T130000Z"})
+        self.assertFalse(any(k.startswith("sf:sf_20260913T080000Z:") for k in redis.store))
 
     def test_publish_records_a_generation_heartbeat(self):
         redis = FakeRedis()

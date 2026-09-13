@@ -87,6 +87,23 @@ jobs:
           . ingestion/.venv-source-first/bin/activate
           python scripts/source_first_rebuild.py --verify-current --max-age-hours 6
 
+      # A candidate that fails the gate (or dies mid-upsert, or is cancelled) has
+      # already written ~24k vectors + sf:* keys that promotion's prune can never
+      # see. Discard it here; the sweep catches anything a dead runner left behind.
+      - name: Discard the failed or cancelled candidate
+        if: ${{ (failure() || cancelled()) && steps.stage.outputs.generation != '' }}
+        continue-on-error: true
+        run: |
+          . ingestion/.venv-source-first/bin/activate
+          python scripts/source_first_rebuild.py --discard-generation "${{ steps.stage.outputs.generation }}"
+
+      - name: Sweep orphaned staging namespaces
+        if: always()
+        continue-on-error: true
+        run: |
+          . ingestion/.venv-source-first/bin/activate
+          python scripts/source_first_rebuild.py --sweep-orphans --orphan-min-age-hours 3
+
       - name: Upload build evidence
         if: always()
         uses: actions/upload-artifact@v4

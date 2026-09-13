@@ -317,27 +317,111 @@ class SourceFirstPublisher:
         self.redis.set(GENERATION_HISTORY_KEY, json.dumps(keep, sort_keys=True))
 
         pruned: list[str] = []
-        if hasattr(self.redis, "scan") and hasattr(self.redis, "delete") and hasattr(self.vector, "delete_namespace"):
-            for old_generation in prune:
-                if old_generation in keep or old_generation == generation:
-                    continue
-                cursor = 0
-                keys: list[str] = []
-                while True:
-                    cursor, batch_keys = self.redis.scan(
-                        cursor,
-                        match=f"sf:{old_generation}:*",
-                        count=500,
-                    )
-                    keys.extend(str(key) for key in batch_keys)
-                    if int(cursor) == 0:
-                        break
-                keys.append(f"{MANIFEST_KEY_PREFIX}{old_generation}")
-                for batch_keys in batched(list(dict.fromkeys(keys)), 100):
-                    self.redis.delete(*batch_keys)
-                self.vector.delete_namespace(namespace=old_generation)
+        targets = [g for g in prune if g not in keep and g != generation]
+        if targets and self._can_delete_storage():
+            key_buckets = self._collect_generation_keys(set(targets))
+            for old_generation in targets:
+                self._delete_generation_storage(old_generation, key_buckets.get(old_generation, []))
                 pruned.append(old_generation)
         return {"retained_generations": keep, "pruned_generations": pruned}
+
+    # ------------------------------------------------------------------
+    # Storage cleanup. Every staged candidate writes a vector namespace plus
+    # sf:<generation>:* Redis keys and a manifest. Promotion prunes the chain
+    # above (live + 2 rollbacks), but a candidate that fails or is cancelled
+    # before promotion never enters the chain, so it must be discarded
+    # explicitly (discard_generation) or caught by the sweep (sweep_orphans).
+    # 2026-09-13: 62 such orphans held 513k of 660k quota vectors.
+    # ------------------------------------------------------------------
+
+    def _can_delete_storage(self) -> bool:
+        return (
+            hasattr(self.redis, "scan")
+            and hasattr(self.redis, "delete")
+            and hasattr(self.vector, "delete_namespace")
+        )
+
+    def _protected_generations(self) -> set[str]:
+        """Serving generation plus the rollback chain — never deleted."""
+        protected: set[str] = set()
+        current = self.redis.get(CURRENT_GENERATION_KEY)
+        if isinstance(current, str) and current:
+            protected.add(current)
+        raw = self.redis.get(GENERATION_HISTORY_KEY)
+        try:
+            history = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, ValueError):
+            history = []
+        if isinstance(history, list):
+            protected.update(str(value) for value in history if value)
+        return protected
+
+    def _collect_generation_keys(self, generations: set[str]) -> dict[str, list[str]]:
+        """One SCAN pass over sf:* bucketing keys by generation.
+
+        A SCAN per generation costs a full keyspace walk each time (minutes
+        per generation on a multi-million-key database); one pass is cheap.
+        """
+        buckets: dict[str, list[str]] = {g: [] for g in generations}
+        cursor = 0
+        while True:
+            cursor, batch_keys = self.redis.scan(cursor, match="sf:*", count=10000)
+            for key in batch_keys:
+                parts = str(key).split(":")
+                if len(parts) >= 3 and parts[1] in buckets:
+                    buckets[parts[1]].append(str(key))
+            if int(cursor) == 0:
+                break
+        return buckets
+
+    def _delete_generation_storage(self, generation: str, keys: list[str]) -> int:
+        keys = list(dict.fromkeys([*keys, f"{MANIFEST_KEY_PREFIX}{generation}"]))
+        for batch_keys in batched(keys, 500):
+            self.redis.delete(*batch_keys)
+        self.vector.delete_namespace(namespace=generation)
+        return len(keys)
+
+    def discard_generation(self, generation: str) -> dict[str, Any]:
+        """Delete a staged candidate that will never be promoted."""
+        if not generation or not generation.startswith("sf_"):
+            raise RuntimeError("discard_generation_invalid_name")
+        if generation in self._protected_generations():
+            raise RuntimeError("refusing_to_discard_live_generation")
+        if not self._can_delete_storage():
+            raise RuntimeError("storage_client_cannot_delete")
+        keys = self._collect_generation_keys({generation}).get(generation, [])
+        deleted = self._delete_generation_storage(generation, keys)
+        return {"generation": generation, "discarded": True, "redis_keys_deleted": deleted}
+
+    def sweep_orphans(self, *, min_age_seconds: int = 3 * 3600, now: datetime | None = None) -> dict[str, Any]:
+        """Delete every sf_* namespace that is neither serving nor a rollback.
+
+        Backstop for candidates abandoned without a discard (runner died,
+        job cancelled mid-upsert). Namespaces younger than min_age_seconds are
+        left alone because they may belong to a run still in flight.
+        """
+        now = now or datetime.now(timezone.utc)
+        if not self._can_delete_storage() or not hasattr(self.vector, "list_namespaces"):
+            return {"swept": [], "skipped_young": [], "protected": sorted(self._protected_generations())}
+        protected = self._protected_generations()
+
+        def age_seconds(name: str) -> float:
+            try:
+                staged = datetime.strptime(name, "sf_%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+            except ValueError:
+                return float("inf")
+            return (now - staged).total_seconds()
+
+        candidates = [n for n in self.vector.list_namespaces() if str(n).startswith("sf_") and n not in protected]
+        young = [n for n in candidates if age_seconds(n) < min_age_seconds]
+        orphans = [n for n in candidates if n not in young]
+        swept: list[dict[str, Any]] = []
+        if orphans:
+            buckets = self._collect_generation_keys(set(orphans))
+            for name in sorted(orphans):
+                deleted = self._delete_generation_storage(name, buckets.get(name, []))
+                swept.append({"generation": name, "redis_keys_deleted": deleted})
+        return {"swept": swept, "skipped_young": sorted(young), "protected": sorted(protected)}
 
     def verify_generation(
         self,
