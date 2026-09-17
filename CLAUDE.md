@@ -55,6 +55,8 @@ Anything below not run by you this session: treat as **(unverified)** and confir
 - **No-fake-zero rule.** Unmeasured metrics render as `UNMEASURED`/null, never a fabricated 0 (see `scripts/run_eval.py` header).
 - **PRDs in `docs/` are aspirational** — prefer runtime code + recent git history when they conflict.
 - Write tools (`create_entry`, `archive_entry`, Dream apply, …) require `mcp:write` scope; reads are always available.
+- **Jev answerability gate (2026-09-17).** `search` sends query + returned passages to TypeSafe's Jev (`src/jevGate.ts`) and abstains with `jev_no_answer_evidence` when no passage clears `JEV_ABSTENTION_THRESHOLD` (0.2). Fails open; never gates project/exact-phrase/opaque-identifier recovery. Vars in `wrangler.json` and the rebuild workflow must match; secret `TYPESAFE_API_KEY` lives in Cloudflare, GitHub, `.env`. See `docs/source-first-memory.md`.
+- **Failed candidates must be discarded.** A staged candidate that fails the gate leaks a ~24k-vector namespace; the workflow's `--discard-generation` / `--sweep-orphans` steps (commit 54748f1) do this. Between 2026-09-13 and 09-17 that commit sat unpushed, 45 orphans filled the 660k Upstash quota and no rebuild could stage. Symptom: `UpstashError: Exceeded max count`. Fix: `ingestion/.venv/bin/python scripts/source_first_rebuild.py --sweep-orphans --orphan-min-age-hours 3`.
 
 ## Current state
 - **Active.** Recent work: nightly orchestrator hardening, SDK auth/billing routing, Dream insight synthesis, and an **eval-baseline** effort (8-axis probe suite + `run_eval.py`).

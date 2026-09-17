@@ -34,7 +34,15 @@ Do not use their validation ledgers to report source-first health.
   search is confined to the authenticated CI harness.
 - A candidate is staged and retrieval-tested before the heartbeat or live
   pointer moves.
-- General retrieval abstains below the relevance floor.
+- General retrieval abstains below the relevance floor. Above it, the Jev
+  answerability gate (`src/jevGate.ts`, on since 2026-09-17, threshold 0.2)
+  may add a second abstention when no returned passage carries answer
+  evidence; it never admits, reorders, or gates project / exact-phrase /
+  opaque-identifier recovery, and it fails open. The probe evaluator runs
+  the gate from the same env vars as the Worker.
+- A staged candidate that fails the gate is discarded (`--discard-generation`)
+  and orphans are swept (`--sweep-orphans`); an unswept candidate leaks ~24k
+  vectors of the 660k quota.
 - Byte-identical chunks collapse by checksum; source-family maps power
   `get_deep`.
 - No production ranking uses access signals, salience, tiers, classification,

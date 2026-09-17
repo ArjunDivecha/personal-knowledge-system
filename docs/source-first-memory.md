@@ -108,6 +108,45 @@ Byte-identical results collapse by `content_checksum` while preserving
 alternate provenance. General results below `0.65` are omitted; if none remain,
 the response explicitly abstains rather than returning confident-looking noise.
 
+### Jev answerability gate (since 2026-09-17)
+
+`final_score` measures similarity, not answerability: on the BEAM benchmark the
+production score could not separate unanswerable questions from answerable ones
+at any threshold (Youden J 0.075–0.131; 0 of 40 unanswerable questions abstained).
+TypeSafe's Jev — a decision-only model that returns a yes/no probability — asked
+per passage *"does this passage state information usable in a direct answer to
+the query?"* separates them at AUC 0.865 / Youden J 0.642
+(`../beam-eval/runs/20260917T0220Z_jev_abstention/JEV_ABSTENTION.md`).
+
+So after the floor and the slice, `src/jevGate.ts` sends the query plus exactly
+the passages the caller would receive to `api.typesafe.ai` in one request
+(~200 ms) and attaches `jev_evidence` / `jev_relevant` to every result plus a
+`jev` report on the payload. With `JEV_ABSTENTION_MODE=on`, if no returned
+passage's evidence probability reaches `JEV_ABSTENTION_THRESHOLD` (0.2 in
+production) the search abstains with `abstain_reason: "jev_no_answer_evidence"`.
+`shadow` annotates without abstaining; `off` (or no `TYPESAFE_API_KEY`) is
+byte-identical to the pre-gate search.
+
+Rules the gate obeys:
+
+- it can only **add** an abstention — never admit, never reorder;
+- deterministic recovery is exempt: an explicitly named project, a strong exact
+  lexical phrase, or an opaque identifier (digits, code punctuation, acronym,
+  camelCase — *not* fragments of a hyphenated phrase like "Brazil-only") keeps
+  its results regardless of the Jev score;
+- it **fails open**: any error, timeout (2.5 s) or malformed reply leaves the
+  ranked results untouched and reports `jev.status: "unavailable"`;
+- the probe evaluator runs the same gate from the same env, so the promotion
+  suite fails a candidate the gate would break.
+
+Threshold 0.2 rather than BEAM's fitted 0.5: on the production probes the
+lowest-scoring unprotected positive (`para_bbg_b`) sits at 0.29–0.34 and Jev's
+score for the same input drifts by up to 0.08 between calls, so 0.5 and 0.3
+both abstained on it. At 0.2 BEAM still gives 40% correct abstention at 6.4%
+false abstention; raising it is an eval-gated change. Privacy: query and
+passage text leave the machine on every search that clears the floor — a
+decision Arjun made on 2026-09-16.
+
 Explicit suppression rules are applied before results are returned. A rule can
 permit direct historical lookup while preventing the topic from appearing in
 unrelated searches.
