@@ -35,6 +35,11 @@ jobs:
       UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
       UPSTASH_VECTOR_REST_URL: ${{ secrets.UPSTASH_VECTOR_REST_URL }}
       UPSTASH_VECTOR_REST_TOKEN: ${{ secrets.UPSTASH_VECTOR_REST_TOKEN }}
+      # Jev answerability gate — must match the Worker's wrangler.json vars so
+      # the promotion suite exercises exactly what production serves.
+      TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+      JEV_ABSTENTION_MODE: "on"
+      JEV_ABSTENTION_THRESHOLD: "0.2"
       PYTHON_BIN: /opt/homebrew/bin/python3.12
       PYTHONUNBUFFERED: "1"
 

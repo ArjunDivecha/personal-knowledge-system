@@ -77,6 +77,7 @@ import {
 	getSourceFirstOperationalStatus,
 	sourceFirstSearch,
 } from "./sourceFirst";
+import { jevGateFromEnv } from "./jevGate.ts";
 
 // GitHub accounts to query
 const GITHUB_ACCOUNTS = ['arjun-via', 'ArjunDivecha'];
@@ -2868,7 +2869,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 					}
 					if (this.env.SOURCE_FIRST_MODE === "on") {
 						return {
-							content: [{ type: "text", text: JSON.stringify(await sourceFirstSearch(redis, vector, queryEmbedding, topic, 5)) }],
+							content: [{ type: "text", text: JSON.stringify(await sourceFirstSearch(redis, vector, queryEmbedding, topic, 5, { jev: jevGateFromEnv(this.env) })) }],
 						};
 					}
 
@@ -2971,7 +2972,7 @@ export class KnowledgeMCP extends McpAgent<Env, unknown, AuthProps> {
 						return {
 							content: [{
 								type: "text",
-								text: JSON.stringify(await sourceFirstSearch(redis, vector, queryEmbedding, query, requestedLimit)),
+								text: JSON.stringify(await sourceFirstSearch(redis, vector, queryEmbedding, query, requestedLimit, { jev: jevGateFromEnv(this.env) })),
 							}],
 						};
 					}

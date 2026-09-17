@@ -53,7 +53,9 @@
 	"workers_dev": true,
 	"vars": {
 		"SOURCE_FIRST_MODE": "on",
-		"SOURCE_FIRST_MAX_AGE_SECONDS": "21600"
+		"SOURCE_FIRST_MAX_AGE_SECONDS": "21600",
+		"JEV_ABSTENTION_MODE": "on",
+		"JEV_ABSTENTION_THRESHOLD": "0.2"
 	},
 	"routes": [
 		{

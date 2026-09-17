@@ -6,6 +6,7 @@ import { Redis } from "@upstash/redis";
 import { Index } from "@upstash/vector";
 import OpenAI from "openai";
 
+import { jevGateFromEnv } from "../src/jevGate.ts";
 import { sourceFirstSearchGeneration } from "../src/sourceFirst.ts";
 
 type Probe = {
@@ -63,6 +64,8 @@ function scoreProbe(probe: Probe, payload: Record<string, unknown>): Record<stri
 		top_final_scores: top.map((result) => result.final_score ?? null),
 		expected_found: expectedFound,
 		leaks,
+		jev: payload.jev ?? null,
+		top_jev_evidence: top.map((result) => result.jev_evidence ?? null),
 	};
 }
 
@@ -70,6 +73,12 @@ async function main(): Promise<void> {
 	const generation = process.argv[2];
 	if (!generation) throw new Error("usage: evaluate-source-first-candidate.ts <generation> [output.json]");
 	const outputPath = process.argv[3] ?? `/tmp/source-first-candidate-${generation}.json`;
+	// Jev answerability gate: exercised here exactly as the Worker exercises it,
+	// so a threshold that would abstain on a positive probe fails the candidate
+	// instead of surprising a live search. Off unless TYPESAFE_API_KEY and
+	// JEV_ABSTENTION_MODE are set in the environment.
+	const jevGate = jevGateFromEnv(process.env);
+	process.stdout.write(`jev gate: ${jevGate ? `${jevGate.mode} threshold ${jevGate.threshold}` : "off"}\n`);
 	const required = [
 		"UPSTASH_REDIS_REST_URL",
 		"UPSTASH_REDIS_REST_TOKEN",
@@ -104,6 +113,7 @@ async function main(): Promise<void> {
 			probe.query,
 			5,
 			generation,
+			{ jev: jevGate },
 		);
 		const row = scoreProbe(probe, payload);
 		rows.push(row);
@@ -113,6 +123,7 @@ async function main(): Promise<void> {
 	const report = {
 		schema_version: 1,
 		generation,
+		jev_gate: jevGate ? { mode: jevGate.mode, threshold: jevGate.threshold } : null,
 		generated_at: new Date().toISOString(),
 		passed: failed.length === 0,
 		probe_count: rows.length,

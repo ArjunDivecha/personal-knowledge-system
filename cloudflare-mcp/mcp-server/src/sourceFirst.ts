@@ -1,6 +1,8 @@
 import type { Redis } from "@upstash/redis/cloudflare";
 import type { Index } from "@upstash/vector";
 
+import { applyJevGate, type JevGateConfig, type JevGateReport } from "./jevGate.ts";
+
 export const SOURCE_FIRST_CURRENT_KEY = "sf:current_generation";
 export const SOURCE_FIRST_HEARTBEAT_KEY = "sf:heartbeat";
 export const SOURCE_FIRST_MIN_FINAL_SCORE = 0.65;
@@ -54,6 +56,9 @@ export interface SourceFirstSearchResult extends SourceFirstEvidence {
 	exact_identifier_match: boolean;
 	exact_identifier_count: number;
 	exact_lexical_match: boolean;
+	// Jev answerability probabilities (jevGate.ts); null when the gate is off or unavailable.
+	jev_evidence?: number | null;
+	jev_relevant?: number | null;
 	// Where similarity_score came from: the vector top-K query, a follow-up
 	// vector fetch for a recovered candidate, or nowhere (0, unscored).
 	similarity_source: "vector_query" | "vector_fetch" | "unscored";
@@ -427,6 +432,11 @@ export function evaluateSourceFirstFreshness(
 	};
 }
 
+export interface SourceFirstSearchOptions {
+	/** Optional Jev answerability gate (jevGate.ts). Absent -> behaviour unchanged. */
+	jev?: JevGateConfig;
+}
+
 export async function sourceFirstSearchGeneration(
 	redis: Redis,
 	vector: Index,
@@ -434,6 +444,7 @@ export async function sourceFirstSearchGeneration(
 	query: string,
 	limit: number,
 	generation: string,
+	options: SourceFirstSearchOptions = {},
 ): Promise<Record<string, unknown>> {
 	const requested = Math.max(1, Math.min(limit, 20));
 	// Vector depth floor raised 50 -> 100 on 2026-09-04. With 6.7k evidence records
@@ -590,18 +601,35 @@ export async function sourceFirstSearchGeneration(
 		|| result.exact_lexical_match
 		|| result.explicit_project_match
 	);
-	const abstained = eligible.length === 0;
+	let returned = eligible.slice(0, requested);
+	let abstained = returned.length === 0;
+	let abstainReason: string | null = abstained ? "no_relevant_evidence_above_threshold" : null;
+	// Jev answerability gate — runs AFTER the floor and the slice, on exactly
+	// the passages the caller would have received. It can only add an
+	// abstention (never admit, never reorder), never gates deterministic
+	// recovery, and fails open. See jevGate.ts for the evidence.
+	let jev: JevGateReport | null = null;
+	if (options.jev && options.jev.mode !== "off" && !abstained) {
+		const gated = await applyJevGate(query, returned, options.jev);
+		jev = gated.report;
+		if (gated.abstain) {
+			returned = [];
+			abstained = true;
+			abstainReason = "jev_no_answer_evidence";
+		}
+	}
 	return {
 		mode: "source_first",
 		generation,
 		query,
 		explicit_project: explicitProject?.name ?? null,
-		results: eligible.slice(0, requested),
+		results: returned,
 		abstained,
-		abstain_reason: abstained ? "no_relevant_evidence_above_threshold" : null,
+		abstain_reason: abstainReason,
+		jev,
 		minimum_final_score: SOURCE_FIRST_MIN_FINAL_SCORE,
 		deduplication: "content_checksum",
-		scoring: "Named projects, opaque identifiers, and strong exact lexical phrase matches receive deterministic candidate recovery (recovered candidates are rescored with their real vector similarity; vector top-K floor 100); otherwise results must clear 0.65. Base: 0.70 semantic + 0.15 lexical + 0.10 source authority + 0.05 source recency. Working context adds 0.04 * semantic relevance * 3-day attention decay (session authority 0.6). Byte-identical chunks collapse by content checksum; explicit suppressions apply; no tiers, salience, classification, or access reinforcement.",
+		scoring: "Named projects, opaque identifiers, and strong exact lexical phrase matches receive deterministic candidate recovery (recovered candidates are rescored with their real vector similarity; vector top-K floor 100); otherwise results must clear 0.65. Base: 0.70 semantic + 0.15 lexical + 0.10 source authority + 0.05 source recency. Working context adds 0.04 * semantic relevance * 3-day attention decay (session authority 0.6). Byte-identical chunks collapse by content checksum; explicit suppressions apply; no tiers, salience, classification, or access reinforcement. Optional Jev answerability gate (jev field): after ranking, abstains when no returned passage clears the evidence threshold; never gates identifier/project/exact-lexical recovery; fails open.",
 	};
 }
 
@@ -611,6 +639,7 @@ export async function sourceFirstSearch(
 	queryEmbedding: number[],
 	query: string,
 	limit: number,
+	options: SourceFirstSearchOptions = {},
 ): Promise<Record<string, unknown>> {
 	const generation = await getSourceFirstGeneration(redis);
 	if (!generation) {
@@ -621,7 +650,7 @@ export async function sourceFirstSearch(
 			abstain_reason: "source_first_generation_missing",
 		};
 	}
-	return sourceFirstSearchGeneration(redis, vector, queryEmbedding, query, limit, generation);
+	return sourceFirstSearchGeneration(redis, vector, queryEmbedding, query, limit, generation, options);
 }
 
 export async function getSourceFirstEvidence(redis: Redis, id: string): Promise<Record<string, unknown>> {

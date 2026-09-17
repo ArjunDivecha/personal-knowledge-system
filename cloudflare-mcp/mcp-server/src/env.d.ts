@@ -26,6 +26,14 @@ declare global {
 		// Maximum age of the promoted source-first generation before health reports
 		// the serving state as stale/degraded. Defaults to 36 hours.
 		SOURCE_FIRST_MAX_AGE_SECONDS?: string;
+		// Jev answerability gate on source-first search (src/jevGate.ts).
+		// off (default) -> byte-identical search; shadow -> annotate results
+		// with jev_evidence but never abstain; on -> abstain when no returned
+		// passage clears JEV_ABSTENTION_THRESHOLD (default 0.5). Requires the
+		// TYPESAFE_API_KEY secret; without it the gate is silently off.
+		TYPESAFE_API_KEY?: string;
+		JEV_ABSTENTION_MODE?: "off" | "shadow" | "on";
+		JEV_ABSTENTION_THRESHOLD?: string;
 		// Insight synthesis (CMA-dreaming parity). "on" enables nightly cluster
 		// detection + judge enqueue; verdicts apply additively next cycle.
 		// See docs/pks-dream-insight-synthesis-prd-2026-07-02.md.
