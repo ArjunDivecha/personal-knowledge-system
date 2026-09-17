@@ -21,9 +21,12 @@
 //   exactly as the ranker produced them and reports jev.status "unavailable".
 //   A third-party outage must never make PKS return nothing.
 // - Deterministic recovery is never gated. Results that entered through an
-//   exact identifier, an explicitly named project, or a strong exact lexical
-//   phrase are the ranker's guarantee that "1MTR" finds the one chunk naming
-//   it; a semantic answerability judgment does not override that guarantee.
+//   opaque exact identifier, an explicitly named project, or a strong exact
+//   lexical phrase are the ranker's guarantee that "1MTR" finds the one chunk
+//   naming it; a semantic answerability judgment does not override that
+//   guarantee. Identifier protection is withheld when the query's only
+//   "identifiers" are fragments of a hyphenated phrase (see
+//   queryHasOpaqueIdentifier in sourceFirst.ts).
 // - The gate can only ADD abstentions. It never admits evidence the floor
 //   rejected and never reorders.
 // - No config -> byte-identical behaviour. The BEAM harness and the probe
@@ -141,6 +144,18 @@ function noul(answers: Record<string, unknown>, key: string): number | null {
 	return Number.isFinite(value) ? Math.round(value * 1000) / 1000 : null;
 }
 
+export interface JevGateContext {
+	/**
+	 * Whether exact_identifier_match results are exempt from the gate. The
+	 * caller sets this from the query: true when it names a genuinely opaque
+	 * identifier (1MTR, asado.duckdb, PKS), false when the only "identifiers"
+	 * are fragments of a hyphenated phrase ("Brazil-only" -> brazil). Default
+	 * true (the conservative choice). Project and exact-phrase matches are
+	 * always exempt.
+	 */
+	protectIdentifierMatches?: boolean;
+}
+
 /**
  * Score `results` with Jev and, in "on" mode, decide abstention. Mutates the
  * result objects to attach jev_evidence / jev_relevant. Returns the report and
@@ -150,7 +165,9 @@ export async function applyJevGate<T extends GateableResult>(
 	query: string,
 	results: T[],
 	config: JevGateConfig,
+	context: JevGateContext = {},
 ): Promise<{ results: T[]; abstain: boolean; report: JevGateReport }> {
+	const protectIdentifiers = context.protectIdentifierMatches ?? true;
 	const report: JevGateReport = {
 		mode: config.mode,
 		status: "skipped",
@@ -203,7 +220,7 @@ export async function applyJevGate<T extends GateableResult>(
 			if (result.jev_evidence !== null && (maxEvidence === null || result.jev_evidence > maxEvidence)) {
 				maxEvidence = result.jev_evidence;
 			}
-			if (result.exact_identifier_match || result.exact_lexical_match || result.explicit_project_match) {
+			if ((protectIdentifiers && result.exact_identifier_match) || result.exact_lexical_match || result.explicit_project_match) {
 				protectedCount += 1;
 			}
 		});

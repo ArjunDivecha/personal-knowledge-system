@@ -236,6 +236,26 @@ function queryIdentifierTerms(query: string): string[] {
 		.filter((fragment) => !COMMON_WORD_NOT_AN_IDENTIFIER.has(fragment)))];
 }
 
+// Whether the query names something genuinely opaque — a token with digits
+// (1MTR), code punctuation (flask_sqlalchemy, asado.duckdb, a path), an
+// acronym (PKS), or camelCase. A hyphenated ordinary phrase ("Brazil-only",
+// "source-first") does NOT count: its fragments still feed identifier recovery
+// above, but the Jev gate must not treat every chunk containing "brazil" as
+// protected. Observed live 2026-09-17: "What Sharpe ratio did my Brazil-only
+// carry trade strategy achieve?" scored evidence 0.08 on all five results yet
+// could not abstain because all five were "identifier" matches on brazil.
+export function queryHasOpaqueIdentifier(query: string): boolean {
+	const rawTerms = query.match(/[A-Za-z0-9][A-Za-z0-9._/-]{2,}/g) ?? [];
+	return rawTerms
+		.map((term) => term.replace(/^[._/-]+/, "").replace(/[._/-]+$/, ""))
+		.filter((term) => term.length >= 3)
+		.some((term) =>
+			(/[0-9]/.test(term) && /[A-Za-z]/.test(term))
+			|| /[._/]/.test(term)
+			|| /^[A-Z]{2,}$/.test(term)
+			|| /[a-z][A-Z]/.test(term));
+}
+
 export function lexicalOverlap(query: string, evidence: SourceFirstEvidence): number {
 	const queryTokens = tokens(query);
 	if (queryTokens.length === 0) return 0;
@@ -610,7 +630,9 @@ export async function sourceFirstSearchGeneration(
 	// recovery, and fails open. See jevGate.ts for the evidence.
 	let jev: JevGateReport | null = null;
 	if (options.jev && options.jev.mode !== "off" && !abstained) {
-		const gated = await applyJevGate(query, returned, options.jev);
+		const gated = await applyJevGate(query, returned, options.jev, {
+			protectIdentifierMatches: queryHasOpaqueIdentifier(query),
+		});
 		jev = gated.report;
 		if (gated.abstain) {
 			returned = [];

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { applyJevGate, buildJevRequest, jevGateFromEnv } from "../src/jevGate";
-import { sourceFirstSearch, type SourceFirstEvidence } from "../src/sourceFirst";
+import { queryHasOpaqueIdentifier, sourceFirstSearch, type SourceFirstEvidence } from "../src/sourceFirst";
 
 const evidence: SourceFirstEvidence = {
 	id: "ev_tracker",
@@ -94,6 +94,23 @@ describe("jev gate decisions", () => {
 			expect(gated.report.protected_results).toBe(1);
 			expect(gated.report.would_abstain).toBe(false);
 		}
+	});
+
+	it("gates identifier matches when the query has no opaque identifier", async () => {
+		const results = [result({ exact_identifier_match: true })];
+		const gated = await applyJevGate("q", results, { ...config, fetch: jevResponse({ answerable: 0.0, p0_evidence: 0.05, p0_relevant: 0.1 }) }, { protectIdentifierMatches: false });
+		expect(gated.abstain).toBe(true);
+		expect(gated.report.protected_results).toBe(0);
+	});
+
+	it("classifies opaque identifiers the way the gate needs", () => {
+		expect(queryHasOpaqueIdentifier("what is 1MTR")).toBe(true);
+		expect(queryHasOpaqueIdentifier("where is asado.duckdb")).toBe(true);
+		expect(queryHasOpaqueIdentifier("PKS relevance floor")).toBe(true);
+		expect(queryHasOpaqueIdentifier("flask_sqlalchemy setup")).toBe(true);
+		expect(queryHasOpaqueIdentifier("What Sharpe ratio did my Brazil-only carry trade strategy achieve?")).toBe(false);
+		expect(queryHasOpaqueIdentifier("the one-way cost law")).toBe(false);
+		expect(queryHasOpaqueIdentifier("how did I compute trailing spreads")).toBe(false);
 	});
 
 	it("fails open on an HTTP error", async () => {

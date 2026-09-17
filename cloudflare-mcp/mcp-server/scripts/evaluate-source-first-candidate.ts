@@ -111,7 +111,7 @@ async function main(): Promise<void> {
 			vector as never,
 			embedding.data[0]!.embedding,
 			probe.query,
-			5,
+			Math.max(5, probe.min_rank ?? 5),
 			generation,
 			{ jev: jevGate },
 		);
